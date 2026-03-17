@@ -21,6 +21,13 @@ export const coreModules = [
     priority: 'High',
   },
   {
+    id: 'fingerprint',
+    name: 'Fingerprint',
+    description: 'Employee fingerprint enrollment and biometric device synchronization.',
+    status: 'In Planning',
+    priority: 'High',
+  },
+  {
     id: 'leave-management',
     name: 'Leave Management',
     description: 'Leave policies, requests, approvals, and leave balance tracking.',
@@ -78,7 +85,7 @@ export const systemPhases = [
   {
     phase: 'Phase 1',
     title: 'Foundation',
-    items: ['Authentication & Roles', 'Employee Management', 'Attendance & Time Tracking'],
+    items: ['Authentication & Roles', 'Employee Management', 'Attendance & Time Tracking', 'Fingerprint'],
   },
   {
     phase: 'Phase 2',
