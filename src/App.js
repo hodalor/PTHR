@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
 
@@ -165,6 +165,17 @@ const overlapDaysInclusive = (startA, endA, startB, endB) => {
     return 0;
   }
   return Math.floor((overlapEnd - overlapStart) / DAY_IN_MS) + 1;
+};
+
+const getInclusiveDaysBetween = (startDateValue, endDateValue) => {
+  const start = parseIsoDateValue(startDateValue);
+  const end = parseIsoDateValue(endDateValue);
+  if (!start || !end) {
+    return 0;
+  }
+  const startTime = Math.min(start.getTime(), end.getTime());
+  const endTime = Math.max(start.getTime(), end.getTime());
+  return Math.floor((endTime - startTime) / DAY_IN_MS) + 1;
 };
 
 const fitText = (ctx, value, maxWidth) => {
@@ -441,6 +452,16 @@ function App() {
   const [attendancePerformanceSearchText, setAttendancePerformanceSearchText] = useState('');
   const [selectedPerformanceEmployeeId, setSelectedPerformanceEmployeeId] = useState('');
   const [attendanceDetailModal, setAttendanceDetailModal] = useState({ type: '', key: '' });
+  const [leaveViewTab, setLeaveViewTab] = useState('requests');
+  const [leaveRequestPageTab, setLeaveRequestPageTab] = useState('requests');
+  const [leaveMenuExpanded, setLeaveMenuExpanded] = useState(false);
+  const [leaveSearchText, setLeaveSearchText] = useState('');
+  const [leaveDepartmentFilter, setLeaveDepartmentFilter] = useState('All');
+  const [leaveStatusFilter, setLeaveStatusFilter] = useState('All');
+  const [leaveSortBy, setLeaveSortBy] = useState('date-desc');
+  const [leaveActionMessage, setLeaveActionMessage] = useState('');
+  const [leaveApprovalDrafts, setLeaveApprovalDrafts] = useState({});
+  const [toasts, setToasts] = useState([]);
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
     mode: 'partial',
     amount: '',
@@ -793,7 +814,275 @@ function App() {
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
   const attendanceRows = useMemo(() => moduleRowsState['attendance-time'] || [], [moduleRowsState]);
   const fingerprintRows = useMemo(() => moduleRowsState.fingerprint || [], [moduleRowsState]);
+  const leaveRequestRows = useMemo(
+    () =>
+      leaveRows
+        .map((leaveRow) => {
+          const matchedEmployee =
+            employeeBaseRows.find((employee) => String(employee.id || '') === String(leaveRow.employeeId || '')) ||
+            employeeBaseRows.find((employee) => String(employee.fullName || '') === String(leaveRow.employee || '')) ||
+            null;
+          const statusLower = String(leaveRow.status || '').trim().toLowerCase();
+          const departmentApproval =
+            leaveRow.departmentApproval ||
+            leaveRow.supervisorApproval ||
+            leaveRow.managerApproval ||
+            (statusLower === 'approved' || statusLower === 'active' || statusLower === 'planned'
+              ? 'Approved'
+              : statusLower === 'rejected'
+                ? 'Rejected'
+                : 'Pending');
+          const hrApproval =
+            leaveRow.hrApproval ||
+            (statusLower === 'approved' || statusLower === 'active' || statusLower === 'planned'
+              ? 'Approved'
+              : statusLower === 'rejected'
+                ? 'Rejected'
+                : 'Pending');
+          const managerApproval =
+            leaveRow.finalManagerApproval ||
+            leaveRow.branchManagerApproval ||
+            (statusLower === 'approved' || statusLower === 'active' ? 'Approved' : statusLower === 'rejected' ? 'Rejected' : 'Pending');
+          const normalizedStatus =
+            departmentApproval === 'Rejected' || hrApproval === 'Rejected' || managerApproval === 'Rejected'
+              ? 'Rejected'
+              : departmentApproval === 'Pending'
+                ? 'Pending Department'
+                : hrApproval === 'Pending'
+                  ? 'Pending HR'
+                  : managerApproval === 'Pending'
+                    ? 'Pending Manager'
+                    : 'Approved';
+          const daysRequested =
+            Math.max(0, toNumberValue(leaveRow.daysRequested)) || getInclusiveDaysBetween(leaveRow.startDate, leaveRow.endDate);
+          return {
+            ...leaveRow,
+            employeeId: leaveRow.employeeId || matchedEmployee?.id || '',
+            employee: leaveRow.employee || matchedEmployee?.fullName || '',
+            department: leaveRow.department || matchedEmployee?.department || 'Unassigned',
+            reason: leaveRow.reason || '',
+            departmentApproval,
+            departmentApprover: leaveRow.departmentApprover || '',
+            departmentComment: leaveRow.departmentComment || leaveRow.managerRemark || '',
+            departmentApprovedOn: leaveRow.departmentApprovedOn || leaveRow.managerApprovedOn || '',
+            hrApprover: leaveRow.hrApprover || '',
+            hrComment: leaveRow.hrComment || leaveRow.hrRemark || '',
+            hrApprovedOn: leaveRow.hrApprovedOn || '',
+            managerApproval,
+            managerApprover: leaveRow.managerApprover || '',
+            managerComment: leaveRow.managerComment || '',
+            managerApprovedOn: leaveRow.managerApprovedOn || '',
+            hrApproval,
+            status: normalizedStatus,
+            daysRequested,
+          };
+        })
+        .sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || ''))),
+    [employeeBaseRows, leaveRows]
+  );
+  const leaveBalanceRows = useMemo(
+    () =>
+      employeeBaseRows.map((employee) => {
+        const payrollRows = moduleRowsState['payroll-management'] || [];
+        const payrollProfile =
+          payrollRows.find((row) => String(row.employeeId || '') === String(employee.id || '')) ||
+          payrollRows.find((row) => String(row.employee || '') === String(employee.fullName || ''));
+        const approvedDays = leaveRequestRows
+          .filter(
+            (row) =>
+              String(row.employeeId || '') === String(employee.id || '') &&
+              String(row.departmentApproval || '') === 'Approved' &&
+              String(row.managerApproval || '') === 'Approved' &&
+              String(row.hrApproval || '') === 'Approved'
+          )
+          .reduce((total, row) => total + row.daysRequested, 0);
+        const pendingDays = leaveRequestRows
+          .filter(
+            (row) =>
+              String(row.employeeId || '') === String(employee.id || '') &&
+              String(row.status || '').toLowerCase().includes('pending')
+          )
+          .reduce((total, row) => total + row.daysRequested, 0);
+        const openingBalance = Math.max(0, toNumberValue(employee.leaveBalanceDays));
+        const availableBalance = Math.max(0, openingBalance - approvedDays);
+        const basicPay = Math.max(0, toNumberValue(payrollProfile?.basicPay));
+        const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
+        const dailyBasicPay = basicPay > 0 ? basicPay / workingDays : 0;
+        const unusedLeaveDays = availableBalance;
+        const estimatedPayoutAmount = unusedLeaveDays * dailyBasicPay;
+        const contractEndDate = String(employee.contractEndDate || '');
+        const isContractEnded = Boolean(contractEndDate) && contractEndDate <= getTodayIsoDate();
+        return {
+          employeeId: employee.id,
+          employee: employee.fullName,
+          department: employee.department || 'Unassigned',
+          contractEndDate: contractEndDate || 'No End Date',
+          openingBalance,
+          approvedDays,
+          pendingDays,
+          availableBalance,
+          dailyBasicPay,
+          unusedLeaveDays,
+          leavePayoutAmount: estimatedPayoutAmount,
+          payoutStatus: isContractEnded ? 'Payable Now' : 'Payable At Contract End',
+        };
+      }),
+    [appSettings.payrollWorkingDays, employeeBaseRows, leaveRequestRows, moduleRowsState]
+  );
+  const leaveDepartmentOptions = useMemo(() => {
+    const options = [...new Set(leaveBalanceRows.map((row) => String(row.department || '').trim()).filter(Boolean))];
+    return ['All', ...options.sort((a, b) => a.localeCompare(b))];
+  }, [leaveBalanceRows]);
+  const getLeaveViewStatus = useCallback(
+    (row, viewTab = leaveViewTab) => {
+      if (viewTab === 'department') {
+        return String(row.departmentApproval || 'Pending');
+      }
+      if (viewTab === 'hr') {
+        return String(row.hrApproval || 'Pending');
+      }
+      if (viewTab === 'manager') {
+        return String(row.managerApproval || 'Pending');
+      }
+      return String(row.status || 'Pending');
+    },
+    [leaveViewTab]
+  );
+  const leaveStatusOptions = useMemo(() => {
+    const options = [
+      ...new Set(
+        leaveRequestRows
+          .map((row) => getLeaveViewStatus(row, leaveViewTab))
+          .filter((value) => String(value || '').trim().length > 0)
+      ),
+    ];
+    return ['All', ...options.sort((a, b) => a.localeCompare(b))];
+  }, [getLeaveViewStatus, leaveRequestRows, leaveViewTab]);
+  const leaveRequestFilteredRows = useMemo(() => {
+    const query = leaveSearchText.trim().toLowerCase();
+    const scopedRows = leaveRequestRows.filter((row) => {
+      if (leaveViewTab === 'hr') {
+        return String(row.departmentApproval || '') === 'Approved';
+      }
+      if (leaveViewTab === 'manager') {
+        return String(row.departmentApproval || '') === 'Approved' && String(row.hrApproval || '') === 'Approved';
+      }
+      return true;
+    });
+    const filteredRows = scopedRows.filter((row) => {
+      const matchesDepartment =
+        leaveDepartmentFilter === 'All' || String(row.department || '') === String(leaveDepartmentFilter);
+      if (!matchesDepartment) {
+        return false;
+      }
+      const statusLabel = getLeaveViewStatus(row);
+      const matchesStatus = leaveStatusFilter === 'All' || String(statusLabel) === String(leaveStatusFilter);
+      if (!matchesStatus) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return (
+        String(row.employee || '').toLowerCase().includes(query) ||
+        String(row.employeeId || '').toLowerCase().includes(query) ||
+        String(row.type || '').toLowerCase().includes(query) ||
+        String(row.department || '').toLowerCase().includes(query)
+      );
+    });
+    if (leaveSortBy === 'date-asc') {
+      return [...filteredRows].sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || '')));
+    }
+    if (leaveSortBy === 'employee-asc') {
+      return [...filteredRows].sort((a, b) => String(a.employee || '').localeCompare(String(b.employee || '')));
+    }
+    if (leaveSortBy === 'employee-desc') {
+      return [...filteredRows].sort((a, b) => String(b.employee || '').localeCompare(String(a.employee || '')));
+    }
+    if (leaveSortBy === 'days-asc') {
+      return [...filteredRows].sort((a, b) => Number(a.daysRequested || 0) - Number(b.daysRequested || 0));
+    }
+    if (leaveSortBy === 'days-desc') {
+      return [...filteredRows].sort((a, b) => Number(b.daysRequested || 0) - Number(a.daysRequested || 0));
+    }
+    return [...filteredRows].sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
+  }, [getLeaveViewStatus, leaveDepartmentFilter, leaveRequestRows, leaveSearchText, leaveSortBy, leaveStatusFilter, leaveViewTab]);
+  const leaveBalanceFilteredRows = useMemo(() => {
+    const query = leaveSearchText.trim().toLowerCase();
+    const filteredRows = leaveBalanceRows.filter((row) => {
+      const matchesDepartment =
+        leaveDepartmentFilter === 'All' || String(row.department || '') === String(leaveDepartmentFilter);
+      if (!matchesDepartment) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return (
+        String(row.employee || '').toLowerCase().includes(query) ||
+        String(row.employeeId || '').toLowerCase().includes(query) ||
+        String(row.department || '').toLowerCase().includes(query)
+      );
+    });
+    if (leaveSortBy === 'employee-asc') {
+      return [...filteredRows].sort((a, b) => String(a.employee || '').localeCompare(String(b.employee || '')));
+    }
+    if (leaveSortBy === 'employee-desc') {
+      return [...filteredRows].sort((a, b) => String(b.employee || '').localeCompare(String(a.employee || '')));
+    }
+    if (leaveSortBy === 'days-asc') {
+      return [...filteredRows].sort((a, b) => Number(a.availableBalance || 0) - Number(b.availableBalance || 0));
+    }
+    if (leaveSortBy === 'days-desc') {
+      return [...filteredRows].sort((a, b) => Number(b.availableBalance || 0) - Number(a.availableBalance || 0));
+    }
+    return filteredRows;
+  }, [leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
+  const leaveFormEmployeeMatches = useMemo(() => {
+    const query = String(formValues.leaveEmployeeSearch || '').trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    return employeeBaseRows
+      .filter((employee) => {
+        const employeeId = String(employee.id || '').toLowerCase();
+        const employeeName = String(employee.fullName || '').toLowerCase();
+        return employeeId.includes(query) || employeeName.includes(query);
+      })
+      .slice(0, 6);
+  }, [employeeBaseRows, formValues.leaveEmployeeSearch]);
+  const selectedLeaveFormEmployee = useMemo(
+    () =>
+      employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '') === String(formValues.employee || '')) ||
+      null,
+    [employeeBaseRows, formValues.employee, formValues.employeeId]
+  );
+  const selectedLeaveFormBalance = useMemo(
+    () => leaveBalanceRows.find((row) => String(row.employeeId || '') === String(selectedLeaveFormEmployee?.id || '')) || null,
+    [leaveBalanceRows, selectedLeaveFormEmployee]
+  );
+  const leaveFormAutoDaysRequested = useMemo(
+    () => getInclusiveDaysBetween(formValues.startDate, formValues.endDate),
+    [formValues.endDate, formValues.startDate]
+  );
   const todayIsoDate = useMemo(() => getTodayIsoDate(), []);
+  const selectedLeaveDetailRow = useMemo(() => {
+    if (activeModuleId !== 'leave-management') {
+      return null;
+    }
+    return leaveRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
+  }, [activeModuleId, leaveRequestRows, modalState.rowId]);
+  const getApprovalBadgeClass = (approvalValue) => {
+    const normalized = String(approvalValue || '').trim().toLowerCase();
+    if (normalized === 'approved') {
+      return 'is-approved';
+    }
+    if (normalized === 'rejected') {
+      return 'is-rejected';
+    }
+    return 'is-pending';
+  };
   const attendanceTodayRows = useMemo(
     () =>
       attendanceRows
@@ -1301,7 +1590,8 @@ function App() {
     printWindow.focus();
     printWindow.print();
   };
-  const showMainModuleTable = activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock';
+  const showMainModuleTable =
+    (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') && activeModuleId !== 'leave-management';
   const fingerprintConnectionState = useMemo(() => {
     if (appSettings.fingerprintIntegration.mode === 'simulation') {
       return 'Simulation Ready';
@@ -1382,9 +1672,23 @@ function App() {
     setFormValues({});
     setFormError('');
   };
+  const leaveSubmenuItems = [
+    { key: 'requests', label: 'Leave Requests' },
+    { key: 'department', label: 'Department Approval' },
+    { key: 'hr', label: 'HR Approval' },
+    { key: 'manager', label: 'Manager Approval' },
+  ];
+  const showToast = (message, type = 'info') => {
+    const toastId = `TST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    setToasts((prev) => [...prev, { id: toastId, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+    }, 3200);
+  };
 
   const handleModuleChange = (moduleId) => {
     setActiveModuleId(moduleId);
+    setLeaveMenuExpanded(moduleId === 'leave-management');
     if (moduleId === 'settings') {
       setSettingsTab('general');
     }
@@ -1411,6 +1715,14 @@ function App() {
     setAttendancePerformanceSearchText('');
     setSelectedPerformanceEmployeeId('');
     setAttendanceDetailModal({ type: '', key: '' });
+    setLeaveViewTab('requests');
+    setLeaveRequestPageTab('requests');
+    setLeaveSearchText('');
+    setLeaveDepartmentFilter('All');
+    setLeaveStatusFilter('All');
+    setLeaveSortBy('date-desc');
+    setLeaveActionMessage('');
+    setLeaveApprovalDrafts({});
     setPenaltyActionDraft({
       mode: 'partial',
       amount: '',
@@ -1421,6 +1733,7 @@ function App() {
 
   const handleClockIn = () => {
     if (!selectedAttendanceEmployee) {
+      showToast('Select an employee before clock in.', 'error');
       return;
     }
     const checkInTime = getCurrentClockValue();
@@ -1481,36 +1794,51 @@ function App() {
       }
       return { ...prev, 'attendance-time': [newRow, ...currentRows] };
     });
+    showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock in captured successfully.`, 'success');
   };
 
   const handleClockOut = () => {
     if (!selectedAttendanceEmployee) {
+      showToast('Select an employee before clock out.', 'error');
       return;
     }
     const checkOutTime = getCurrentClockValue();
     const nowDate = getTodayIsoDate();
+    const currentRows = moduleRowsState['attendance-time'] || [];
+    const existingRow = currentRows.find(
+      (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+    );
+    if (!existingRow) {
+      showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
+      return;
+    }
+    if (!existingRow.checkIn || getMinutesBetweenClocks(existingRow.checkIn, checkOutTime) <= 0) {
+      showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
+      return;
+    }
 
     setModuleRowsState((prev) => {
-      const currentRows = prev['attendance-time'] || [];
-      const existingRowIndex = currentRows.findIndex(
+      const stateRows = prev['attendance-time'] || [];
+      const existingRowIndex = stateRows.findIndex(
         (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
       );
       if (existingRowIndex < 0) {
         return prev;
       }
-      const existingRow = currentRows[existingRowIndex];
-      if (!existingRow.checkIn || getMinutesBetweenClocks(existingRow.checkIn, checkOutTime) <= 0) {
+      const matchedRow = stateRows[existingRowIndex];
+      if (!matchedRow.checkIn || getMinutesBetweenClocks(matchedRow.checkIn, checkOutTime) <= 0) {
         return prev;
       }
-      const workedHours = formatWorkedDuration(existingRow.checkIn, checkOutTime);
-      const updatedRows = [...currentRows];
+      const workedHours = formatWorkedDuration(matchedRow.checkIn, checkOutTime);
+      const updatedRows = [...stateRows];
       updatedRows[existingRowIndex] = {
-        ...existingRow,
+        ...matchedRow,
         checkOut: checkOutTime,
         workedHours,
       };
       return { ...prev, 'attendance-time': updatedRows };
     });
+    showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock out captured successfully.`, 'success');
   };
 
   const handleEnrollFingerprint = () => {
@@ -1556,6 +1884,145 @@ function App() {
         syncStatus: appSettings.fingerprintIntegration.mode === 'live' ? 'Queued' : 'Simulated',
       })),
     }));
+  };
+  const getLeaveApprovalInput = (leaveId) => {
+    const input = leaveApprovalDrafts[leaveId] || {};
+    return {
+      actorName: String(input.actorName || appSettings.penaltyActorUsername || '').trim(),
+      comment: String(input.comment || '').trim(),
+    };
+  };
+  const handleDepartmentLeaveDecision = (leaveId, decision) => {
+    if (!leaveId) {
+      return;
+    }
+    const input = getLeaveApprovalInput(leaveId);
+    if (!input.actorName || !input.comment) {
+      setLeaveActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    setModuleRowsState((prev) => ({
+      ...prev,
+      'leave-management': (prev['leave-management'] || []).map((row) => {
+        if (String(row.id || '') !== String(leaveId || '')) {
+          return row;
+        }
+        const currentApproval = row.departmentApproval || row.supervisorApproval || row.managerApproval || 'Pending';
+        if (String(currentApproval) !== 'Pending') {
+          return row;
+        }
+        return {
+          ...row,
+          departmentApproval: normalizedDecision,
+          departmentApprover: input.actorName,
+          departmentComment: input.comment,
+          departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+          hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.hrApproval || 'Pending',
+          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
+          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
+        };
+      }),
+    }));
+    setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Department rejected leave request ${leaveId}.`
+        : `Department approved leave request ${leaveId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLeaveActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Department approval rejected the leave request.'
+        : 'Department approval completed. Request moved to HR.'
+    );
+  };
+  const handleHrLeaveDecision = (leaveId, decision) => {
+    if (!leaveId) {
+      return;
+    }
+    const input = getLeaveApprovalInput(leaveId);
+    if (!input.actorName || !input.comment) {
+      setLeaveActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    setModuleRowsState((prev) => ({
+      ...prev,
+      'leave-management': (prev['leave-management'] || []).map((row) => {
+        if (String(row.id || '') !== String(leaveId || '')) {
+          return row;
+        }
+        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || 'Pending') !== 'Pending') {
+          return row;
+        }
+        return {
+          ...row,
+          hrApproval: normalizedDecision,
+          hrApprover: input.actorName,
+          hrComment: input.comment,
+          hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
+          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
+        };
+      }),
+    }));
+    setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected' ? `HR rejected leave request ${leaveId}.` : `HR approved leave request ${leaveId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLeaveActionMessage(
+      normalizedDecision === 'Rejected' ? 'HR rejected the leave request.' : 'HR approved. Request moved to branch manager.'
+    );
+  };
+  const handleManagerLeaveDecision = (leaveId, decision) => {
+    if (!leaveId) {
+      return;
+    }
+    const input = getLeaveApprovalInput(leaveId);
+    if (!input.actorName || !input.comment) {
+      setLeaveActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    setModuleRowsState((prev) => ({
+      ...prev,
+      'leave-management': (prev['leave-management'] || []).map((row) => {
+        if (String(row.id || '') !== String(leaveId || '')) {
+          return row;
+        }
+        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || '') !== 'Approved') {
+          return row;
+        }
+        if (String(row.managerApproval || 'Pending') !== 'Pending') {
+          return row;
+        }
+        return {
+          ...row,
+          managerApproval: normalizedDecision,
+          managerApprover: input.actorName,
+          managerComment: input.comment,
+          managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
+        };
+      }),
+    }));
+    setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Manager rejected leave request ${leaveId}.`
+        : `Manager approved leave request ${leaveId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLeaveActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Branch manager rejected the leave request.'
+        : 'Branch manager approved the leave request. Balance now takes effect.'
+    );
   };
   const handlePenaltyActionSave = () => {
     if (!selectedPenaltyRow || selectedPenaltyRow.outstandingAmount <= 0) {
@@ -1610,14 +2077,31 @@ function App() {
 
   const startCreate = () => {
     setEditRowId('new');
-    setFormValues({});
+    setFormValues(
+      activeModuleId === 'leave-management'
+        ? {
+            leaveEmployeeSearch: '',
+            employee: '',
+            employeeId: '',
+            department: '',
+            type: 'Annual',
+            startDate: getTodayIsoDate(),
+            endDate: getTodayIsoDate(),
+            reason: '',
+          }
+        : {}
+    );
     setFormError('');
     setModalState({ mode: 'form', rowId: null });
   };
 
   const startEdit = (row) => {
     setEditRowId(row.id);
-    setFormValues({ ...row });
+    setFormValues(
+      activeModuleId === 'leave-management'
+        ? { ...row, leaveEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim() }
+        : { ...row }
+    );
     setFormError('');
     setModalState({ mode: 'form', rowId: row.id });
   };
@@ -1657,6 +2141,98 @@ function App() {
     }
     if (activeModuleId === 'attendance-time') {
       setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
+      return;
+    }
+    if (activeModuleId === 'leave-management') {
+      if (!selectedLeaveFormEmployee) {
+        setFormError('Select a valid employee from search.');
+        showToast('Select a valid employee from search.', 'error');
+        return;
+      }
+      const reason = String(formValues.reason || '').trim();
+      if (!reason) {
+        setFormError('Reason is required.');
+        showToast('Reason is required.', 'error');
+        return;
+      }
+      if (String(formValues.startDate || '') < todayIsoDate || String(formValues.endDate || '') < todayIsoDate) {
+        setFormError('Past dates are not allowed for leave request.');
+        showToast('Past dates are not allowed for leave request.', 'error');
+        return;
+      }
+      const leaveDays = getInclusiveDaysBetween(formValues.startDate, formValues.endDate);
+      if (leaveDays <= 0) {
+        setFormError('Select a valid start and end date.');
+        showToast('Select a valid start and end date.', 'error');
+        return;
+      }
+      if (selectedLeaveFormBalance && leaveDays > selectedLeaveFormBalance.availableBalance) {
+        setFormError(
+          `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`
+        );
+        showToast(
+          `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`,
+          'error'
+        );
+        return;
+      }
+      const rowId =
+        editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
+      const requestPayload = {
+        id: rowId,
+        employee: selectedLeaveFormEmployee.fullName,
+        employeeId: selectedLeaveFormEmployee.id,
+        department: selectedLeaveFormEmployee.department || 'Unassigned',
+        type: formValues.type || 'Annual',
+        startDate: formValues.startDate,
+        endDate: formValues.endDate,
+        daysRequested: leaveDays,
+        reason,
+        requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+        departmentApproval: formValues.departmentApproval || 'Pending',
+        departmentApprover: formValues.departmentApprover || '',
+        departmentComment: formValues.departmentComment || '',
+        departmentApprovedOn: formValues.departmentApprovedOn || '',
+        hrApproval: formValues.hrApproval || 'Pending',
+        hrApprover: formValues.hrApprover || '',
+        hrComment: formValues.hrComment || '',
+        hrApprovedOn: formValues.hrApprovedOn || '',
+        managerApproval: formValues.managerApproval || 'Pending',
+        managerApprover: formValues.managerApprover || '',
+        managerComment: formValues.managerComment || '',
+        managerApprovedOn: formValues.managerApprovedOn || '',
+        status:
+          formValues.status ||
+          (formValues.departmentApproval === 'Rejected' || formValues.hrApproval === 'Rejected' || formValues.managerApproval === 'Rejected'
+            ? 'Rejected'
+            : formValues.departmentApproval === 'Approved'
+              ? formValues.hrApproval === 'Approved'
+                ? formValues.managerApproval === 'Approved'
+                  ? 'Approved'
+                  : 'Pending Manager'
+                : 'Pending HR'
+              : 'Pending Department'),
+      };
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management':
+          editRowId === 'new'
+            ? [requestPayload, ...(prev['leave-management'] || [])]
+            : (prev['leave-management'] || []).map((row) => (row.id === editRowId ? requestPayload : row)),
+      }));
+      setLeaveActionMessage(
+        editRowId === 'new'
+          ? 'Leave request submitted to department approval.'
+          : 'Leave request updated successfully.'
+      );
+      showToast(
+        editRowId === 'new'
+          ? `Leave request submitted for ${selectedLeaveFormEmployee.fullName}.`
+          : 'Leave request updated successfully.',
+        'success'
+      );
+      setSelectedRowId(rowId);
+      closeModal();
       return;
     }
 
@@ -2324,12 +2900,65 @@ function App() {
           <div className="sidebar-section" key={section.title}>
             <h2>{section.title}</h2>
             <nav>
-              {section.items.map((item) => (
-                <button key={item.id} type="button" className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`} onClick={() => handleModuleChange(item.id)}>
-                  <span>{item.label}</span>
-                  {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
-                </button>
-              ))}
+              {section.items.map((item) => {
+                if (item.id === 'leave-management') {
+                  return (
+                    <div key={item.id} className="menu-group">
+                      <button
+                        type="button"
+                        className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
+                        onClick={() => {
+                          if (activeModuleId !== 'leave-management') {
+                            handleModuleChange('leave-management');
+                            setLeaveMenuExpanded(true);
+                            return;
+                          }
+                          setLeaveMenuExpanded((prev) => !prev);
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <span className={`menu-arrow ${leaveMenuExpanded ? 'open' : ''}`}>▾</span>
+                      </button>
+                      {leaveMenuExpanded ? (
+                        <div className="menu-subitems">
+                          {leaveSubmenuItems.map((submenu) => (
+                            <button
+                              key={submenu.key}
+                              type="button"
+                              className={`menu-subitem ${
+                                activeModuleId === 'leave-management' && leaveViewTab === submenu.key ? 'active' : ''
+                              }`}
+                              onClick={() => {
+                                if (activeModuleId !== 'leave-management') {
+                                  handleModuleChange('leave-management');
+                                }
+                                setLeaveMenuExpanded(true);
+                                setLeaveViewTab(submenu.key);
+                                if (submenu.key === 'requests') {
+                                  setLeaveRequestPageTab('requests');
+                                }
+                              }}
+                            >
+                              {submenu.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
+                    onClick={() => handleModuleChange(item.id)}
+                  >
+                    <span>{item.label}</span>
+                    {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
+                  </button>
+                );
+              })}
             </nav>
           </div>
         ))}
@@ -3765,6 +4394,236 @@ function App() {
                   ) : null}
                 </div>
               ) : null}
+              {activeModuleId === 'leave-management' ? (
+                <div className="attendance-ops-card">
+                  <div className="attendance-ops-head">
+                    <h4>Leave System</h4>
+                    <span>Request list • Department approval • HR approval • Manager approval</span>
+                  </div>
+                  <div className="attendance-audit-filters">
+                    <label>
+                      <span>Department</span>
+                      <select
+                        className="filter-select"
+                        value={leaveDepartmentFilter}
+                        onChange={(event) => setLeaveDepartmentFilter(event.target.value)}
+                      >
+                        {leaveDepartmentOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Status</span>
+                      <select
+                        className="filter-select"
+                        value={leaveStatusFilter}
+                        onChange={(event) => setLeaveStatusFilter(event.target.value)}
+                      >
+                        {leaveStatusOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Sort</span>
+                      <select className="filter-select" value={leaveSortBy} onChange={(event) => setLeaveSortBy(event.target.value)}>
+                        <option value="date-desc">Date (Newest)</option>
+                        <option value="date-asc">Date (Oldest)</option>
+                        <option value="employee-asc">Employee (A-Z)</option>
+                        <option value="employee-desc">Employee (Z-A)</option>
+                        <option value="days-desc">Days (High-Low)</option>
+                        <option value="days-asc">Days (Low-High)</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Search</span>
+                      <input
+                        placeholder="Name, ID, type, department"
+                        value={leaveSearchText}
+                        onChange={(event) => setLeaveSearchText(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="attendance-stats-grid">
+                    <article className="attendance-stat">
+                      <strong>{leaveRequestFilteredRows.length}</strong>
+                      <span>Total Requests</span>
+                    </article>
+                    <article className="attendance-stat">
+                      <strong>
+                        {leaveRequestFilteredRows.filter((row) =>
+                          String(getLeaveViewStatus(row)).toLowerCase().includes('pending')
+                        ).length}
+                      </strong>
+                      <span>Pending Requests</span>
+                    </article>
+                    <article className="attendance-stat">
+                      <strong>{leaveRequestFilteredRows.filter((row) => String(getLeaveViewStatus(row)) === 'Approved').length}</strong>
+                      <span>Approved Requests</span>
+                    </article>
+                    <article className="attendance-stat">
+                      <strong>{leaveRequestFilteredRows.filter((row) => String(getLeaveViewStatus(row)) === 'Rejected').length}</strong>
+                      <span>Rejected Requests</span>
+                    </article>
+                  </div>
+                  {leaveActionMessage ? <p className="field-title">{leaveActionMessage}</p> : null}
+                  {leaveViewTab === 'requests' ? (
+                    <div className="settings-tab-strip leave-request-page-tabs">
+                      <button
+                        type="button"
+                        className={`settings-tab-btn ${leaveRequestPageTab === 'requests' ? 'active' : ''}`}
+                        onClick={() => setLeaveRequestPageTab('requests')}
+                      >
+                        Request List
+                      </button>
+                      <button
+                        type="button"
+                        className={`settings-tab-btn ${leaveRequestPageTab === 'balances' ? 'active' : ''}`}
+                        onClick={() => setLeaveRequestPageTab('balances')}
+                      >
+                        Leave Balance
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="attendance-audit-wrap">
+                    {leaveViewTab !== 'requests' || leaveRequestPageTab === 'requests' ? (
+                      <div className="attendance-audit-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Request</th>
+                              <th>Employee</th>
+                              <th>Dates</th>
+                              <th>Days</th>
+                              <th>Type</th>
+                              <th>Department</th>
+                              <th>HR</th>
+                              <th>Manager</th>
+                              <th>Approval Trail</th>
+                              <th>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {leaveRequestFilteredRows.length > 0 ? (
+                              leaveRequestFilteredRows.map((row) => {
+                                return (
+                                  <tr
+                                    key={row.id}
+                                    className={selectedRowId === row.id ? 'selected-row' : ''}
+                                    onClick={() => openDetails(row.id)}
+                                  >
+                                    <td>{row.id}</td>
+                                    <td>
+                                      {row.employee} ({row.employeeId})
+                                    </td>
+                                    <td>
+                                      {row.startDate} → {row.endDate}
+                                    </td>
+                                    <td>{row.daysRequested}</td>
+                                    <td>{row.type}</td>
+                                    <td>
+                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.departmentApproval)}`}>
+                                        {row.departmentApproval}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.hrApproval)}`}>
+                                        {row.hrApproval}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.managerApproval)}`}>
+                                        {row.managerApproval}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      {[
+                                        row.departmentApprover
+                                          ? `Department: ${row.departmentApprover} (${row.departmentComment || 'No comment'})`
+                                          : '',
+                                        row.hrApprover ? `HR: ${row.hrApprover} (${row.hrComment || 'No comment'})` : '',
+                                        row.managerApprover
+                                          ? `Manager: ${row.managerApprover} (${row.managerComment || 'No comment'})`
+                                          : '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' | ') || 'No approvals yet'}
+                                    </td>
+                                    <td>
+                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(getLeaveViewStatus(row))}`}>
+                                        {getLeaveViewStatus(row)}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            ) : (
+                              <tr>
+                                <td colSpan={10}>No leave requests for the selected filters.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                    {leaveViewTab === 'requests' && leaveRequestPageTab === 'balances' ? (
+                      <div className="attendance-audit-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Employee</th>
+                              <th>Department</th>
+                              <th>Contract End</th>
+                              <th>Opening Balance</th>
+                              <th>Approved Days</th>
+                              <th>Pending Days</th>
+                              <th>Available Balance</th>
+                              <th>Daily Basic Pay</th>
+                              <th>Unused Leave Days</th>
+                              <th>Leave Payout</th>
+                              <th>Payout Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {leaveBalanceFilteredRows.length > 0 ? (
+                              leaveBalanceFilteredRows.map((row) => (
+                                <tr key={row.employeeId}>
+                                  <td>
+                                    {row.employee} ({row.employeeId})
+                                  </td>
+                                  <td>{row.department}</td>
+                                  <td>{row.contractEndDate}</td>
+                                  <td>{row.openingBalance.toFixed(1)}</td>
+                                  <td>{row.approvedDays.toFixed(1)}</td>
+                                  <td>{row.pendingDays.toFixed(1)}</td>
+                                  <td>{row.availableBalance.toFixed(1)}</td>
+                                  <td>
+                                    {appSettings.defaultCurrency} {row.dailyBasicPay.toFixed(2)}
+                                  </td>
+                                  <td>{row.unusedLeaveDays.toFixed(1)}</td>
+                                  <td>
+                                    {appSettings.defaultCurrency} {row.leavePayoutAmount.toFixed(2)}
+                                  </td>
+                                  <td>{row.payoutStatus}</td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr>
+                                <td colSpan={11}>No leave balance rows for the selected filters.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               {activeModuleId === 'fingerprint' ? (
                 <div className="fingerprint-ops-card">
                   <div className="attendance-ops-head">
@@ -4047,7 +4906,131 @@ function App() {
               </button>
             </div>
             {isFormModal ? (
-              <div className="form-grid">
+              activeModuleId === 'leave-management' ? (
+                <div className="form-grid">
+                  <label>
+                    <span>Employee Search *</span>
+                    <input
+                      value={formValues.leaveEmployeeSearch || ''}
+                      placeholder="Search by name or ID"
+                      onChange={(event) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          leaveEmployeeSearch: event.target.value,
+                          employeeId: '',
+                          employee: '',
+                          department: '',
+                        }))
+                      }
+                    />
+                  </label>
+                  {leaveFormEmployeeMatches.length > 0 ? (
+                    <div className="row-actions">
+                      {leaveFormEmployeeMatches.map((employee) => (
+                        <button
+                          key={employee.id}
+                          type="button"
+                          className="mini-btn"
+                          onClick={() =>
+                            setFormValues((prev) => ({
+                              ...prev,
+                              leaveEmployeeSearch: `${employee.fullName} (${employee.id})`,
+                              employee: employee.fullName,
+                              employeeId: employee.id,
+                              department: employee.department || 'Unassigned',
+                            }))
+                          }
+                        >
+                          {employee.fullName} ({employee.id})
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <label>
+                    <span>Leave Type *</span>
+                    <select
+                      className="filter-select"
+                      value={formValues.type || 'Annual'}
+                      onChange={(event) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          type: event.target.value,
+                        }))
+                      }
+                    >
+                      {['Annual', 'Sick', 'Maternity', 'Paternity', 'Emergency', 'Unpaid'].map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Start Date *</span>
+                    <input
+                      type="date"
+                      value={formValues.startDate || ''}
+                      min={todayIsoDate}
+                      onChange={(event) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          startDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>End Date *</span>
+                    <input
+                      type="date"
+                      value={formValues.endDate || ''}
+                      min={formValues.startDate || todayIsoDate}
+                      onChange={(event) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          endDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Days Requested</span>
+                    <input value={leaveFormAutoDaysRequested > 0 ? String(leaveFormAutoDaysRequested) : ''} readOnly />
+                  </label>
+                  <label>
+                    <span>Remaining Balance</span>
+                    <input
+                      value={
+                        selectedLeaveFormBalance ? `${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s)` : ''
+                      }
+                      readOnly
+                    />
+                  </label>
+                  <label>
+                    <span>Reason *</span>
+                    <textarea
+                      className="form-textarea"
+                      value={formValues.reason || ''}
+                      onChange={(event) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          reason: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  {formError ? <p className="form-error">{formError}</p> : null}
+                  <div className="form-actions">
+                    <button type="button" className="primary-btn" onClick={handleSave}>
+                      Save
+                    </button>
+                    <button type="button" className="neutral-btn" onClick={closeModal}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="form-grid">
                 {visibleFormFields.map((field) => (
                   <label key={field.key}>
                     <span>
@@ -4223,7 +5206,8 @@ function App() {
                     Cancel
                   </button>
                 </div>
-              </div>
+                </div>
+              )
             ) : (
               <div className="details-card">
                 {modalRow ? (
@@ -4278,6 +5262,173 @@ function App() {
                             </div>
                           );
                         })}
+                      </div>
+                    ) : null}
+                    {activeModuleId === 'leave-management' && selectedLeaveDetailRow ? (
+                      <div className="penalty-action-card">
+                        <strong>Leave Approval Details</strong>
+                        <span>
+                          {selectedLeaveDetailRow.startDate} → {selectedLeaveDetailRow.endDate} •{' '}
+                          {selectedLeaveDetailRow.daysRequested} day(s) • {selectedLeaveDetailRow.type}
+                        </span>
+                        <span>{selectedLeaveDetailRow.reason || 'No reason provided.'}</span>
+                        <div className="details-badges">
+                          <span
+                            className={`approval-stage-badge ${getApprovalBadgeClass(
+                              selectedLeaveDetailRow.departmentApproval
+                            )}`}
+                          >
+                            Department: {selectedLeaveDetailRow.departmentApproval}
+                          </span>
+                          <span className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.hrApproval)}`}>
+                            HR: {selectedLeaveDetailRow.hrApproval}
+                          </span>
+                          <span
+                            className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.managerApproval)}`}
+                          >
+                            Manager: {selectedLeaveDetailRow.managerApproval}
+                          </span>
+                        </div>
+                        <div className="details-grid-table">
+                          <div className="detail-cell">
+                            <span>Department Actor</span>
+                            <strong>{selectedLeaveDetailRow.departmentApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Department Comment</span>
+                            <strong>{selectedLeaveDetailRow.departmentComment || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>HR Actor</span>
+                            <strong>{selectedLeaveDetailRow.hrApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>HR Comment</span>
+                            <strong>{selectedLeaveDetailRow.hrComment || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Manager Actor</span>
+                            <strong>{selectedLeaveDetailRow.managerApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Manager Comment</span>
+                            <strong>{selectedLeaveDetailRow.managerComment || '—'}</strong>
+                          </div>
+                        </div>
+                        {leaveViewTab !== 'requests' ? (
+                          <div className="attendance-ops-form">
+                            <label>
+                              <span>Actor</span>
+                              <input
+                                value={
+                                  (leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).actorName ||
+                                  appSettings.penaltyActorUsername ||
+                                  ''
+                                }
+                                onChange={(event) =>
+                                  setLeaveApprovalDrafts((prev) => ({
+                                    ...prev,
+                                    [selectedLeaveDetailRow.id]: {
+                                      ...(prev[selectedLeaveDetailRow.id] || {}),
+                                      actorName: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>Comment</span>
+                              <input
+                                value={(leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).comment || ''}
+                                onChange={(event) =>
+                                  setLeaveApprovalDrafts((prev) => ({
+                                    ...prev,
+                                    [selectedLeaveDetailRow.id]: {
+                                      ...(prev[selectedLeaveDetailRow.id] || {}),
+                                      comment: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <div className="row-actions">
+                              {leaveViewTab === 'department' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
+                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
+                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                              {leaveViewTab === 'hr' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
+                                    }
+                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
+                                    }
+                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                              {leaveViewTab === 'manager' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
+                                    }
+                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
+                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
+                                    }
+                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
 
@@ -4755,6 +5906,15 @@ function App() {
               )
             ) : null}
           </div>
+        </div>
+      ) : null}
+      {toasts.length > 0 ? (
+        <div className="toast-stack">
+          {toasts.map((toast) => (
+            <div key={toast.id} className={`toast-item ${toast.type}`}>
+              <span>{toast.message}</span>
+            </div>
+          ))}
         </div>
       ) : null}
     </div>
