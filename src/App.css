@@ -279,6 +279,28 @@ body {
   outline: none;
 }
 
+.form-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+.form-section {
+  background: #f2fbf5;
+  border-radius: 12px;
+  padding: 14px 16px 6px;
+  border: 1px solid #c7e8d0;
+}
+
+.form-section-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #2f6b3b;
+  margin: 0 0 6px;
+}
+
 .search-input:focus,
 .filter-select:focus,
 .form-grid input:focus,

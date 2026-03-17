@@ -781,6 +781,78 @@ function App() {
     return field.label;
   };
   const isEmployeeModule = activeModuleId === 'employee-management';
+  const employeeFormSections = useMemo(
+    () =>
+      isEmployeeModule
+        ? [
+            {
+              id: 'information',
+              title: 'Information',
+              fields: [
+                'fullName',
+                'idCardType',
+                'idCardNumber',
+                'password',
+                'pensionId',
+                'taxId',
+                'nhimaNumber',
+                'mobileMoneyNumber',
+                'mobileMoneyName',
+                'bankName',
+                'bankAccountNumber',
+                'bankAccountName',
+                'bankBranchName',
+                'bankBranchCode',
+                'department',
+                'position',
+                'lineManager',
+                'leaveBalanceDays',
+                'contractType',
+                'contractTypeOther',
+                'passportPhoto',
+                'idFront',
+                'idBack',
+                'otherDocuments',
+                'otherDocumentsNote',
+                'status',
+                'employmentState',
+              ],
+            },
+            {
+              id: 'contacts',
+              title: 'Contacts',
+              fields: [
+                'phonePrimary',
+                'phoneSecondary',
+                'email',
+                'address',
+                'emergencyContact1Name',
+                'emergencyContact1Phone',
+                'emergencyContact2Name',
+                'emergencyContact2Phone',
+                'referee1',
+                'referee2',
+              ],
+            },
+            {
+              id: 'dates',
+              title: 'Dates',
+              fields: ['dob', 'contractStartDate', 'contractEndDate'],
+            },
+          ]
+        : [],
+    [isEmployeeModule]
+  );
+  const employeeFormFieldMap = useMemo(() => {
+    if (!isEmployeeModule) {
+      return {};
+    }
+    const map = {};
+    visibleFormFields.forEach((field) => {
+      map[field.key] = field;
+    });
+    return map;
+  }, [isEmployeeModule, visibleFormFields]);
   const employeeStatusOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
@@ -812,6 +884,19 @@ function App() {
       .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
   }, [isEmployeeModule, loanRows, modalRow]);
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
+  const payrollFormEmployeeMatches = useMemo(() => {
+    const query = String(formValues.payrollEmployeeSearch || '').trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    return employeeBaseRows
+      .filter((employee) => {
+        const employeeId = String(employee.id || '').toLowerCase();
+        const employeeName = String(employee.fullName || '').toLowerCase();
+        return employeeId.includes(query) || employeeName.includes(query);
+      })
+      .slice(0, 6);
+  }, [employeeBaseRows, formValues.payrollEmployeeSearch]);
   const attendanceRows = useMemo(() => moduleRowsState['attendance-time'] || [], [moduleRowsState]);
   const fingerprintRows = useMemo(() => moduleRowsState.fingerprint || [], [moduleRowsState]);
   const leaveRequestRows = useMemo(
@@ -1082,6 +1167,165 @@ function App() {
       return 'is-rejected';
     }
     return 'is-pending';
+  };
+  const renderFormFieldControl = (field) => {
+    if (!field) {
+      return null;
+    }
+    return (
+      <label key={field.key}>
+        <span>
+          {getFieldLabel(field)}
+          {field.required ? ' *' : ''}
+        </span>
+        {field.type === 'select' ? (
+          <select
+            className="filter-select"
+            value={formValues[field.key] || ''}
+            onChange={(event) =>
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: event.target.value,
+              }))
+            }
+          >
+            <option value="">Select {getFieldLabel(field)}</option>
+            {(
+              field.key === 'department' && activeModuleId === 'employee-management'
+                ? currentDepartmentOptions
+                : field.key === 'employmentState' && activeModuleId === 'employee-management'
+                  ? currentEmploymentStageOptions
+                  : field.options || []
+            ).map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        ) : field.type === 'textarea' ? (
+          <textarea
+            className="form-textarea"
+            value={formValues[field.key] || ''}
+            onChange={(event) =>
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: event.target.value,
+              }))
+            }
+          />
+        ) : field.type === 'file' ? (
+          <>
+            <input
+              type="file"
+              multiple={field.multiple}
+              onChange={(event) => {
+                const selectedFiles = Array.from(event.target.files || []);
+                const selectedFilesMeta = selectedFiles.map((file) => ({
+                  name: file.name,
+                  url: URL.createObjectURL(file),
+                  isImage: file.type.startsWith('image/'),
+                  note: '',
+                }));
+                setFormValues((prev) => {
+                  const previousFiles = Array.isArray(prev[`${field.key}Files`]) ? prev[`${field.key}Files`] : [];
+                  const mergedFiles = field.multiple ? [...previousFiles, ...selectedFilesMeta] : selectedFilesMeta;
+                  const mergedImagePreviews = mergedFiles.filter((file) => file.isImage).map((file) => file.url);
+                  return {
+                    ...prev,
+                    [field.key]: mergedFiles.map((file) => file.name).join(', '),
+                    [`${field.key}Preview`]: field.multiple
+                      ? mergedImagePreviews
+                      : mergedImagePreviews[0] || '',
+                    [`${field.key}Files`]: mergedFiles,
+                  };
+                });
+              }}
+            />
+            {formValues[field.key] ? <span className="file-name">{formValues[field.key]}</span> : null}
+            {Array.isArray(formValues[`${field.key}Files`]) && formValues[`${field.key}Files`].length > 0 ? (
+              <div className="file-link-list">
+                {formValues[`${field.key}Files`].map((fileItem, index) => (
+                  <div className="file-entry-card" key={`${field.key}-${fileItem.name}-${index}`}>
+                    <div className="file-link-row">
+                      <a className="file-link" href={fileItem.url} target="_blank" rel="noreferrer">
+                        {fileItem.name}
+                      </a>
+                      <div className="file-inline-actions">
+                        <a className="file-download" href={fileItem.url} download={fileItem.name}>
+                          Download
+                        </a>
+                        <button
+                          type="button"
+                          className="file-remove-btn"
+                          onClick={() =>
+                            setFormValues((prev) => {
+                              const previousFiles = Array.isArray(prev[`${field.key}Files`])
+                                ? prev[`${field.key}Files`]
+                                : [];
+                              const updatedFiles = previousFiles.filter((_, itemIndex) => itemIndex !== index);
+                              const updatedPreviews = updatedFiles
+                                .filter((file) => file.isImage)
+                                .map((file) => file.url);
+                              return {
+                                ...prev,
+                                [field.key]: updatedFiles.map((file) => file.name).join(', '),
+                                [`${field.key}Preview`]: field.multiple
+                                  ? updatedPreviews
+                                  : updatedPreviews[0] || '',
+                                [`${field.key}Files`]: updatedFiles,
+                              };
+                            })
+                          }
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                    <input
+                      className="file-note-input"
+                      placeholder="Document note (e.g. School Certificate, Contract)"
+                      value={fileItem.note || ''}
+                      onChange={(event) =>
+                        setFormValues((prev) => {
+                          const previousFiles = Array.isArray(prev[`${field.key}Files`])
+                            ? prev[`${field.key}Files`]
+                            : [];
+                          const updatedFiles = previousFiles.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, note: event.target.value } : item
+                          );
+                          return {
+                            ...prev,
+                            [`${field.key}Files`]: updatedFiles,
+                          };
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {!field.multiple && formValues[`${field.key}Preview`] ? (
+              <img
+                src={formValues[`${field.key}Preview`]}
+                alt={`${getFieldLabel(field)} preview`}
+                className="upload-preview"
+              />
+            ) : null}
+          </>
+        ) : (
+          <input
+            type={field.type || 'text'}
+            value={formValues[field.key] || ''}
+            onChange={(event) =>
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: event.target.value,
+              }))
+            }
+          />
+        )}
+      </label>
+    );
   };
   const attendanceTodayRows = useMemo(
     () =>
@@ -2089,6 +2333,13 @@ function App() {
             endDate: getTodayIsoDate(),
             reason: '',
           }
+        : activeModuleId === 'payroll-management'
+          ? {
+              payrollEmployeeSearch: '',
+              employee: '',
+              employeeId: '',
+              month: '',
+            }
         : {}
     );
     setFormError('');
@@ -2100,6 +2351,11 @@ function App() {
     setFormValues(
       activeModuleId === 'leave-management'
         ? { ...row, leaveEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim() }
+        : activeModuleId === 'payroll-management'
+          ? {
+              ...row,
+              payrollEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim(),
+            }
         : { ...row }
     );
     setFormError('');
@@ -5030,183 +5286,93 @@ function App() {
                   </div>
                 </div>
               ) : (
-                <div className="form-grid">
-                {visibleFormFields.map((field) => (
-                  <label key={field.key}>
-                    <span>
-                      {getFieldLabel(field)}
-                      {field.required ? ' *' : ''}
-                    </span>
-                    {field.type === 'select' ? (
-                      <select
-                        className="filter-select"
-                        value={formValues[field.key] || ''}
-                        onChange={(event) =>
-                          setFormValues((prev) => ({
-                            ...prev,
-                            [field.key]: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="">Select {getFieldLabel(field)}</option>
-                        {(
-                          field.key === 'department' && activeModuleId === 'employee-management'
-                            ? currentDepartmentOptions
-                            : field.key === 'employmentState' && activeModuleId === 'employee-management'
-                              ? currentEmploymentStageOptions
-                              : field.options || []
-                        ).map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    ) : field.type === 'textarea' ? (
-                      <textarea
-                        className="form-textarea"
-                        value={formValues[field.key] || ''}
-                        onChange={(event) =>
-                          setFormValues((prev) => ({
-                            ...prev,
-                            [field.key]: event.target.value,
-                          }))
-                        }
-                      />
-                    ) : field.type === 'file' ? (
-                      <>
-                        <input
-                          type="file"
-                          multiple={field.multiple}
-                          onChange={(event) => {
-                            const selectedFiles = Array.from(event.target.files || []);
-                            const selectedFilesMeta = selectedFiles.map((file) => ({
-                              name: file.name,
-                              url: URL.createObjectURL(file),
-                              isImage: file.type.startsWith('image/'),
-                              note: '',
-                            }));
-                            setFormValues((prev) => {
-                              const previousFiles = Array.isArray(prev[`${field.key}Files`])
-                                ? prev[`${field.key}Files`]
-                                : [];
-                              const mergedFiles = field.multiple
-                                ? [...previousFiles, ...selectedFilesMeta]
-                                : selectedFilesMeta;
-                              const mergedImagePreviews = mergedFiles
-                                .filter((file) => file.isImage)
-                                .map((file) => file.url);
-                              return {
+                <>
+                  {activeModuleId === 'payroll-management' ? (
+                    <>
+                      <div className="form-grid">
+                        <label>
+                          <span>Employee Search *</span>
+                          <input
+                            value={formValues.payrollEmployeeSearch || ''}
+                            placeholder="Search by name or ID"
+                            onChange={(event) =>
+                              setFormValues((prev) => ({
                                 ...prev,
-                                [field.key]: mergedFiles.map((file) => file.name).join(', '),
-                                [`${field.key}Preview`]: field.multiple
-                                  ? mergedImagePreviews
-                                  : mergedImagePreviews[0] || '',
-                                [`${field.key}Files`]: mergedFiles,
-                              };
-                            });
-                          }}
-                        />
-                        {formValues[field.key] ? <span className="file-name">{formValues[field.key]}</span> : null}
-                        {Array.isArray(formValues[`${field.key}Files`]) &&
-                        formValues[`${field.key}Files`].length > 0 ? (
-                          <div className="file-link-list">
-                            {formValues[`${field.key}Files`].map((fileItem, index) => (
-                              <div className="file-entry-card" key={`${field.key}-${fileItem.name}-${index}`}>
-                                <div className="file-link-row">
-                                  <a
-                                    className="file-link"
-                                    href={fileItem.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    {fileItem.name}
-                                  </a>
-                                  <div className="file-inline-actions">
-                                    <a className="file-download" href={fileItem.url} download={fileItem.name}>
-                                      Download
-                                    </a>
-                                    <button
-                                      type="button"
-                                      className="file-remove-btn"
-                                      onClick={() =>
-                                        setFormValues((prev) => {
-                                          const previousFiles = Array.isArray(prev[`${field.key}Files`])
-                                            ? prev[`${field.key}Files`]
-                                            : [];
-                                          const updatedFiles = previousFiles.filter((_, itemIndex) => itemIndex !== index);
-                                          const updatedPreviews = updatedFiles
-                                            .filter((file) => file.isImage)
-                                            .map((file) => file.url);
-                                          return {
-                                            ...prev,
-                                            [field.key]: updatedFiles.map((file) => file.name).join(', '),
-                                            [`${field.key}Preview`]: field.multiple
-                                              ? updatedPreviews
-                                              : updatedPreviews[0] || '',
-                                            [`${field.key}Files`]: updatedFiles,
-                                          };
-                                        })
-                                      }
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                </div>
-                                <input
-                                  className="file-note-input"
-                                  placeholder="Document note (e.g. School Certificate, Contract)"
-                                  value={fileItem.note || ''}
-                                  onChange={(event) =>
-                                    setFormValues((prev) => {
-                                      const previousFiles = Array.isArray(prev[`${field.key}Files`])
-                                        ? prev[`${field.key}Files`]
-                                        : [];
-                                      const updatedFiles = previousFiles.map((item, itemIndex) =>
-                                        itemIndex === index ? { ...item, note: event.target.value } : item
-                                      );
-                                      return {
-                                        ...prev,
-                                        [`${field.key}Files`]: updatedFiles,
-                                      };
-                                    })
-                                  }
-                                />
-                              </div>
+                                payrollEmployeeSearch: event.target.value,
+                              }))
+                            }
+                          />
+                        </label>
+                        {payrollFormEmployeeMatches.length > 0 ? (
+                          <div className="row-actions">
+                            {payrollFormEmployeeMatches.map((employee) => (
+                              <button
+                                key={employee.id}
+                                type="button"
+                                className="mini-btn"
+                                onClick={() =>
+                                  setFormValues((prev) => ({
+                                    ...prev,
+                                    payrollEmployeeSearch: `${employee.fullName} (${employee.id})`,
+                                    employee: employee.fullName,
+                                    employeeId: employee.id,
+                                    taxId: employee.taxId || '',
+                                    pensionId: employee.pensionId || '',
+                                    nhimaNumber: employee.nhimaNumber || '',
+                                    accessAccount: employee.accessAccount || '',
+                                    mobileMoneyNumber: employee.mobileMoneyNumber || '',
+                                    mobileMoneyNetwork: employee.mobileMoneyNetwork || '',
+                                    bankName: employee.bankName || '',
+                                    bankAccountName: employee.bankAccountName || '',
+                                    bankAccountNumber: employee.bankAccountNumber || '',
+                                  }))
+                                }
+                              >
+                                {employee.fullName} ({employee.id})
+                              </button>
                             ))}
                           </div>
                         ) : null}
-                        {!field.multiple && formValues[`${field.key}Preview`] ? (
-                          <img
-                            src={formValues[`${field.key}Preview`]}
-                              alt={`${getFieldLabel(field)} preview`}
-                            className="upload-preview"
-                          />
-                        ) : null}
-                      </>
-                    ) : (
-                      <input
-                        type={field.type || 'text'}
-                        value={formValues[field.key] || ''}
-                        onChange={(event) =>
-                          setFormValues((prev) => ({
-                            ...prev,
-                            [field.key]: event.target.value,
-                          }))
-                        }
-                      />
-                    )}
-                  </label>
-                ))}
-                {formError ? <p className="form-error">{formError}</p> : null}
-                <div className="form-actions">
-                  <button type="button" className="primary-btn" onClick={handleSave}>
-                    Save
-                  </button>
-                  <button type="button" className="neutral-btn" onClick={closeModal}>
-                    Cancel
-                  </button>
-                </div>
-                </div>
+                      </div>
+                      <div className="form-grid">
+                        {visibleFormFields.map((field) => renderFormFieldControl(field))}
+                      </div>
+                    </>
+                  ) : isEmployeeModule ? (
+                    <div className="form-section-grid">
+                      {employeeFormSections
+                        .map((section) => ({
+                          id: section.id,
+                          title: section.title,
+                          fields: section.fields
+                            .map((key) => employeeFormFieldMap[key])
+                            .filter(Boolean),
+                        }))
+                        .filter((section) => section.fields.length > 0)
+                        .map((section) => (
+                          <div key={section.id} className="form-section">
+                            <p className="form-section-title">{section.title}</p>
+                            <div className="form-grid">
+                              {section.fields.map((field) => renderFormFieldControl(field))}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="form-grid">
+                      {visibleFormFields.map((field) => renderFormFieldControl(field))}
+                    </div>
+                  )}
+                  {formError ? <p className="form-error">{formError}</p> : null}
+                  <div className="form-actions">
+                    <button type="button" className="primary-btn" onClick={handleSave}>
+                      Save
+                    </button>
+                    <button type="button" className="neutral-btn" onClick={closeModal}>
+                      Cancel
+                    </button>
+                  </div>
+                </>
               )
             ) : (
               <div className="details-card">
