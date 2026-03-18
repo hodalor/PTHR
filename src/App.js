@@ -539,6 +539,7 @@ function App() {
       nhimaValue: 1,
       taxMode: 'percent-basic',
       taxValue: 10,
+      taxMinAmount: 0,
     },
     loanRules: {
       minTakeHomePercent: 45,
@@ -2925,10 +2926,12 @@ function App() {
         statutoryRules.nhimaMode || 'percent-basic',
         statutoryRules.nhimaValue ?? 0
       );
-      const taxDeduction = calcStatutory(
-        statutoryRules.taxMode || 'percent-basic',
-        statutoryRules.taxValue ?? 0
-      );
+      const taxMinAmount = Math.max(0, Number(statutoryRules.taxMinAmount) || 0);
+      const taxBaseForThreshold = grossPay;
+      const taxDeduction =
+        taxBaseForThreshold >= taxMinAmount
+          ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0)
+          : 0;
       const otherDeduction = toNumberValue(formValues.otherDeduction);
       const totalDeductions =
         napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
@@ -4121,8 +4124,8 @@ function App() {
                             }))
                           }
                         >
-                          <option value="percent-basic">Percent of Basic</option>
-                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="percent-basic">Percent of Basic Pay</option>
+                          <option value="percent-gross">Percent of Gross Pay</option>
                           <option value="fixed">Fixed Amount</option>
                         </select>
                         <input
@@ -4158,8 +4161,8 @@ function App() {
                             }))
                           }
                         >
-                          <option value="percent-basic">Percent of Basic</option>
-                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="percent-basic">Percent of Basic Pay</option>
+                          <option value="percent-gross">Percent of Gross Pay</option>
                           <option value="fixed">Fixed Amount</option>
                         </select>
                         <input
@@ -4195,8 +4198,8 @@ function App() {
                             }))
                           }
                         >
-                          <option value="percent-basic">Percent of Basic</option>
-                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="percent-basic">Percent of Basic Pay</option>
+                          <option value="percent-gross">Percent of Gross Pay</option>
                           <option value="fixed">Fixed Amount</option>
                         </select>
                         <input
@@ -4215,6 +4218,24 @@ function App() {
                           }
                         />
                       </div>
+                    </label>
+                    <label>
+                      <span>Tax Minimum Amount (start threshold)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={appSettings.statutoryRules.taxMinAmount}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            statutoryRules: {
+                              ...prev.statutoryRules,
+                              taxMinAmount: Math.max(0, Number(event.target.value) || 0),
+                            },
+                          }))
+                        }
+                      />
                     </label>
                     <h4 className="settings-subtitle">Loan Rules</h4>
                     <label>
