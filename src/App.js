@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
 
@@ -215,6 +215,44 @@ const blendHexToBlack = (hex, blackRatio) => {
     return blended.toString(16).padStart(2, '0');
   };
   return `#${toChannel(1)}${toChannel(3)}${toChannel(5)}`;
+};
+
+const parseCsvLine = (line) => {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      const nextChar = line[i + 1];
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result.map((value) => value.trim());
+};
+
+const parseCsv = (text) => {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (!lines.length) {
+    return { headers: [], rows: [] };
+  }
+  const headers = parseCsvLine(lines[0]);
+  const rows = lines.slice(1).map((line) => parseCsvLine(line));
+  return { headers, rows };
 };
 
 const defaultIdentifierPresets = [
@@ -494,6 +532,19 @@ function App() {
     attendanceFixedScope: 'all',
     attendanceFixedDepartment: '',
     attendanceFixedEmployeeId: '',
+    statutoryRules: {
+      napsaMode: 'percent-basic',
+      napsaValue: 5,
+      nhimaMode: 'percent-basic',
+      nhimaValue: 1,
+      taxMode: 'percent-basic',
+      taxValue: 10,
+    },
+    loanRules: {
+      minTakeHomePercent: 45,
+      maxLoanDeductionPercentOfGross: 35,
+      defaultInterestPercentPerMonth: 5,
+    },
     idCardDesign: {
       companyName: 'PTHR',
       orientation: 'landscape',
@@ -515,6 +566,7 @@ function App() {
       { name: 'Operations', code: 'OP' },
     ],
   });
+  const payrollUploadInputRef = useRef(null);
   const [moduleRowsState, setModuleRowsState] = useState(() => {
     const initialRows = Object.fromEntries(Object.entries(moduleUiData).map(([moduleId, value]) => [moduleId, value.rows]));
     if (!initialRows['loan-records']) {
@@ -540,6 +592,7 @@ function App() {
     const attendanceTimeRows = moduleRowsState['attendance-time'] || [];
     const leaveRows = moduleRowsState['leave-management'] || [];
     const penaltyAdjustmentRows = moduleRowsState['attendance-penalty-adjustments'] || [];
+    const loanRows = moduleRowsState['loan-records'] || [];
     const lateMinutesByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
       const employeeId = String(attendanceRow.employeeId || '').trim();
       const employeeName = String(attendanceRow.employee || '').trim();
@@ -628,7 +681,39 @@ function App() {
       acc[key] = (acc[key] || 0) + toNumberValue(row.clearedAmount);
       return acc;
     }, {});
-    const scheduledMinutes = Math.max(1, getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd));
+    const loanSummaryByEmployee = loanRows.reduce((acc, loanRow) => {
+      const employeeId = String(loanRow.employeeId || '').trim();
+      const employeeName = String(loanRow.employee || '').trim();
+      if (!employeeId && !employeeName) {
+        return acc;
+      }
+      const matchedEmployee =
+        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
+        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
+      const key = String(matchedEmployee?.id || employeeId || employeeName);
+      if (!key) {
+        return acc;
+      }
+      const status = String(loanRow.status || '').toLowerCase();
+      const isActive = status !== 'closed' && status !== 'settled';
+      const balance = toNumberValue(loanRow.balance || loanRow.amount);
+      const current = acc[key] || {
+        totalBalance: 0,
+        activeCount: 0,
+        totalCount: 0,
+      };
+      const next = {
+        totalBalance: current.totalBalance + (isActive ? balance : 0),
+        activeCount: current.activeCount + (isActive ? 1 : 0),
+        totalCount: current.totalCount + 1,
+      };
+      acc[key] = next;
+      return acc;
+    }, {});
+    const scheduledMinutes = Math.max(
+      1,
+      getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd)
+    );
     return baseRows.map((payrollRow) => {
       const payrollEmployeeId = String(payrollRow.employeeId || '').trim();
       const payrollEmployeeName = String(payrollRow.employee || '').trim();
@@ -662,6 +747,15 @@ function App() {
       const netNoClockOutPenalty = Math.max(0, noClockOutPenalty - noClockOutClearance);
       const netAbsentPenalty = Math.max(0, absentPenalty - absentClearance);
       const totalAttendancePenalty = netLateDeduction + netNoClockInPenalty + netNoClockOutPenalty + netAbsentPenalty;
+      const loanSummary = loanSummaryByEmployee[key] || {
+        totalBalance: 0,
+        activeCount: 0,
+        totalCount: 0,
+      };
+      const loanSummaryLabel =
+        loanSummary.activeCount > 0
+          ? `${loanSummary.activeCount} loan(s) • bal ${loanSummary.totalBalance.toFixed(2)}`
+          : '';
       return {
         ...payrollRow,
         lateMinutes: String(lateMinutes),
@@ -672,6 +766,9 @@ function App() {
         absentPenalty: netAbsentPenalty.toFixed(2),
         totalAttendancePenalty: totalAttendancePenalty.toFixed(2),
         payableAfterLate: Math.max(0, basicPay - totalAttendancePenalty).toFixed(2),
+        loanSummary: loanSummaryLabel,
+        loanCount: String(loanSummary.activeCount || 0),
+        loanBalance: loanSummary.totalBalance ? loanSummary.totalBalance.toFixed(2) : '',
       };
     });
   }, [activeModuleConfig, activeModuleId, appSettings, moduleRowsState]);
@@ -702,16 +799,35 @@ function App() {
     if (!activeModuleConfig) {
       return [];
     }
-    if (activeModuleId !== 'employee-management') {
-      return activeModuleConfig.columns;
+    let columns = activeModuleConfig.columns || [];
+    if (activeModuleId === 'employee-management') {
+      if (columns.some((column) => column.key === 'contractAlert')) {
+        return columns;
+      }
+      return [
+        ...columns,
+        { key: 'contractAlert', label: 'Contract Alert' },
+      ];
     }
-    if (activeModuleConfig.columns.some((column) => column.key === 'contractAlert')) {
-      return activeModuleConfig.columns;
+    if (activeModuleId === 'payroll-management') {
+      if (!columns.some((column) => column.key === 'loanSummary')) {
+        const statusIndex = columns.findIndex((column) => column.key === 'status');
+        if (statusIndex === -1) {
+          columns = [
+            ...columns,
+            { key: 'loanSummary', label: 'Loans' },
+          ];
+        } else {
+          columns = [
+            ...columns.slice(0, statusIndex),
+            { key: 'loanSummary', label: 'Loans' },
+            ...columns.slice(statusIndex),
+          ];
+        }
+      }
+      return columns;
     }
-    return [
-      ...activeModuleConfig.columns,
-      { key: 'contractAlert', label: 'Contract Alert' },
-    ];
+    return columns;
   }, [activeModuleConfig, activeModuleId]);
   const modalContractCountdown = useMemo(() => {
     if (activeModuleId !== 'employee-management' || !modalRow) {
@@ -1008,6 +1124,90 @@ function App() {
       .filter((loanRow) => String(loanRow.employee) === String(modalRow.fullName))
       .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
   }, [isEmployeeModule, loanRows, modalRow]);
+  const loanInstallmentPreview = useMemo(() => {
+    if (activeModuleId !== 'loan-records') {
+      return null;
+    }
+    const principal = toNumberValue(formValues.amount);
+    const rawInterestPercent =
+      formValues.interestPercent !== undefined && formValues.interestPercent !== null
+        ? Number(formValues.interestPercent)
+        : appSettings.loanRules.defaultInterestPercentPerMonth;
+    const interestPercent = Math.max(0, Number(rawInterestPercent) || 0);
+    const tenorMonths = Math.max(1, toNumberValue(formValues.tenorMonths) || 1);
+    if (!principal || !tenorMonths || !interestPercent) {
+      return null;
+    }
+    const totalInterest = (principal * interestPercent * tenorMonths) / 100;
+    const totalRepay = principal + totalInterest;
+    const monthlyInstallment = totalRepay / tenorMonths;
+    return {
+      principal,
+      interestPercent,
+      tenorMonths,
+      totalInterest,
+      totalRepay,
+      monthlyInstallment,
+    };
+  }, [
+    activeModuleId,
+    appSettings.loanRules.defaultInterestPercentPerMonth,
+    formValues.amount,
+    formValues.interestPercent,
+    formValues.tenorMonths,
+  ]);
+  const payrollFormLoans = useMemo(() => {
+    if (activeModuleId !== 'payroll-management') {
+      return [];
+    }
+    const employeeId = String(formValues.employeeId || '').trim();
+    const employeeName = String(formValues.employee || '').trim();
+    if (!employeeId && !employeeName) {
+      return [];
+    }
+    return loanRows
+      .filter((loanRow) => {
+        const loanEmployeeId = String(loanRow.employeeId || '').trim();
+        const loanEmployeeName = String(loanRow.employee || '').trim();
+        if (employeeId && loanEmployeeId) {
+          return loanEmployeeId === employeeId;
+        }
+        if (employeeId && !loanEmployeeId) {
+          return loanEmployeeName === employeeName;
+        }
+        if (!employeeId && employeeName) {
+          return loanEmployeeName === employeeName;
+        }
+        return false;
+      })
+      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
+  }, [activeModuleId, formValues.employee, formValues.employeeId, loanRows]);
+  const payrollLoansForModal = useMemo(() => {
+    if (activeModuleId !== 'payroll-management' || !modalRow) {
+      return [];
+    }
+    const employeeId = String(modalRow.employeeId || '').trim();
+    const employeeName = String(modalRow.employee || '').trim();
+    if (!employeeId && !employeeName) {
+      return [];
+    }
+    return loanRows
+      .filter((loanRow) => {
+        const loanEmployeeId = String(loanRow.employeeId || '').trim();
+        const loanEmployeeName = String(loanRow.employee || '').trim();
+        if (employeeId && loanEmployeeId) {
+          return loanEmployeeId === employeeId;
+        }
+        if (employeeId && !loanEmployeeId) {
+          return loanEmployeeName === employeeName;
+        }
+        if (!employeeId && employeeName) {
+          return loanEmployeeName === employeeName;
+        }
+        return false;
+      })
+      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
+  }, [activeModuleId, loanRows, modalRow]);
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
   const payrollFormEmployeeMatches = useMemo(() => {
     const query = String(formValues.payrollEmployeeSearch || '').trim().toLowerCase();
@@ -2086,6 +2286,139 @@ function App() {
     }, 3200);
   };
 
+  const handleDownloadPayrollTemplate = () => {
+    const payrollConfig = moduleUiData['payroll-management'];
+    if (!payrollConfig || !payrollConfig.columns) {
+      showToast('Payroll template is not available.', 'error');
+      return;
+    }
+    const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
+    if (!columns.length) {
+      showToast('Payroll template has no columns to export.', 'error');
+      return;
+    }
+    const header = columns
+      .map((column) => `"${String(column.label || '').replace(/"/g, '""')}"`)
+      .join(',');
+    const csv = `${header}\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'payroll_template.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Payroll template downloaded.', 'success');
+  };
+
+  const handleOpenPayrollUpload = () => {
+    if (!payrollUploadInputRef.current) {
+      return;
+    }
+    payrollUploadInputRef.current.value = '';
+    payrollUploadInputRef.current.click();
+  };
+
+  const handlePayrollBulkUpload = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (loadEvent) => {
+      try {
+        const text = String(loadEvent.target?.result || '');
+        const { headers, rows: csvRows } = parseCsv(text);
+        if (!headers.length || !csvRows.length) {
+          showToast('Payroll file is empty.', 'error');
+          return;
+        }
+        const payrollConfig = moduleUiData['payroll-management'];
+        if (!payrollConfig || !payrollConfig.columns) {
+          showToast('Payroll configuration not found.', 'error');
+          return;
+        }
+        const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
+        const labelToKey = columns.reduce((acc, column) => {
+          const labelKey = String(column.label || '').trim().toLowerCase();
+          acc[labelKey] = column.key;
+          return acc;
+        }, {});
+        const headerKeys = headers.map((header) => {
+          const normalized = String(header || '').trim().toLowerCase();
+          return labelToKey[normalized] || null;
+        });
+        if (!headerKeys.some((key) => key === 'employee') || !headerKeys.some((key) => key === 'month')) {
+          showToast('Payroll file headers do not match the template.', 'error');
+          return;
+        }
+        const now = Date.now();
+        const importedRows = csvRows
+          .map((cells, rowIndex) => {
+            if (!Array.isArray(cells) || cells.length === 0) {
+              return null;
+            }
+            const rowPayload = {};
+            headerKeys.forEach((key, columnIndex) => {
+              if (!key) {
+                return;
+              }
+              const value = cells[columnIndex] ?? '';
+              rowPayload[key] = value;
+            });
+            if (!rowPayload.employee && !rowPayload.employeeId) {
+              return null;
+            }
+            const basicPay = toNumberValue(rowPayload.basicPay);
+            const monthlyBonuses = toNumberValue(rowPayload.monthlyBonuses);
+            const transportAllowance = toNumberValue(rowPayload.transportAllowance);
+            const housingAllowance = toNumberValue(rowPayload.housingAllowance);
+            const foodAllowance = toNumberValue(rowPayload.foodAllowance);
+            const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
+            const lateDeduction = toNumberValue(rowPayload.lateDeduction);
+            const noClockInPenalty = toNumberValue(rowPayload.noClockInPenalty);
+            const noClockOutPenalty = toNumberValue(rowPayload.noClockOutPenalty);
+            const absentPenalty = toNumberValue(rowPayload.absentPenalty);
+            const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
+            const napsaDeduction = toNumberValue(rowPayload.napsaDeduction);
+            const nhimaDeduction = toNumberValue(rowPayload.nhimaDeduction);
+            const taxDeduction = toNumberValue(rowPayload.taxDeduction);
+            const otherDeduction = toNumberValue(rowPayload.otherDeduction);
+            const totalDeductions =
+              napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
+            const netPayable = grossPay - totalDeductions;
+            return {
+              ...rowPayload,
+              id: `PAY-${now}-${rowIndex + 1}`,
+              grossPay: grossPay ? grossPay.toFixed(2) : rowPayload.grossPay || '',
+              totalAttendancePenalty: totalAttendancePenalty
+                ? totalAttendancePenalty.toFixed(2)
+                : rowPayload.totalAttendancePenalty || '',
+              totalDeductions: totalDeductions
+                ? totalDeductions.toFixed(2)
+                : rowPayload.totalDeductions || '',
+              netPayable: netPayable ? netPayable.toFixed(2) : rowPayload.netPayable || '',
+            };
+          })
+          .filter(Boolean);
+        if (!importedRows.length) {
+          showToast('No valid payroll rows found in file.', 'error');
+          return;
+        }
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'payroll-management': [...importedRows, ...(prev['payroll-management'] || [])],
+        }));
+        showToast(`Imported ${importedRows.length} payroll row(s).`, 'success');
+      } catch (error) {
+        showToast('Failed to import payroll file.', 'error');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleModuleChange = (moduleId) => {
     setActiveModuleId(moduleId);
     setLeaveMenuExpanded(moduleId === 'leave-management');
@@ -2496,7 +2829,11 @@ function App() {
               employeeId: '',
               month: '',
             }
-        : {}
+        : activeModuleId === 'loan-records'
+          ? {
+              interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+            }
+          : {}
     );
     setFormError('');
     setModalState({ mode: 'form', rowId: null });
@@ -2556,6 +2893,7 @@ function App() {
       return;
     }
     let computedPayrollValues = {};
+    let computedLoanValues = {};
     if (activeModuleId === 'payroll-management') {
       const basicPay = toNumberValue(formValues.basicPay);
       const monthlyBonuses = toNumberValue(formValues.monthlyBonuses);
@@ -2568,18 +2906,87 @@ function App() {
       const noClockOutPenalty = toNumberValue(formValues.noClockOutPenalty);
       const absentPenalty = toNumberValue(formValues.absentPenalty);
       const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-      const napsaDeduction = toNumberValue(formValues.napsaDeduction);
-      const nhimaDeduction = toNumberValue(formValues.nhimaDeduction);
-      const taxDeduction = toNumberValue(formValues.taxDeduction);
+      const statutoryRules = appSettings.statutoryRules || {};
+      const calcStatutory = (mode, value) => {
+        const numeric = Math.max(0, Number(value) || 0);
+        if (mode === 'percent-gross') {
+          return (grossPay * numeric) / 100;
+        }
+        if (mode === 'percent-basic') {
+          return (basicPay * numeric) / 100;
+        }
+        return numeric;
+      };
+      const napsaDeduction = calcStatutory(
+        statutoryRules.napsaMode || 'percent-basic',
+        statutoryRules.napsaValue ?? 0
+      );
+      const nhimaDeduction = calcStatutory(
+        statutoryRules.nhimaMode || 'percent-basic',
+        statutoryRules.nhimaValue ?? 0
+      );
+      const taxDeduction = calcStatutory(
+        statutoryRules.taxMode || 'percent-basic',
+        statutoryRules.taxValue ?? 0
+      );
       const otherDeduction = toNumberValue(formValues.otherDeduction);
       const totalDeductions =
         napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
       const netPayable = grossPay - totalDeductions;
+      const loanRules = appSettings.loanRules || {};
+      const minTakeHomePercent = Math.max(1, Math.min(100, Number(loanRules.minTakeHomePercent) || 45));
+      const maxLoanDeductionPercentOfGross = Math.max(
+        0,
+        Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 35)
+      );
+      const grossPositive = grossPay > 0;
+      const effectiveLoanPercentOfGross = grossPositive ? (otherDeduction / grossPay) * 100 : 0;
+      const takeHomePercent = grossPositive ? (netPayable / grossPay) * 100 : 0;
+      if (grossPositive && effectiveLoanPercentOfGross > maxLoanDeductionPercentOfGross) {
+        const message = `Loan and other deductions exceed allowed ${maxLoanDeductionPercentOfGross.toFixed(
+          1
+        )}% of gross pay.`;
+        setFormError(message);
+        showToast(message, 'error');
+        return;
+      }
+      if (grossPositive && takeHomePercent < minTakeHomePercent) {
+        const message = `Net pay (${takeHomePercent.toFixed(
+          1
+        )}%) is below minimum take-home of ${minTakeHomePercent.toFixed(1)}%.`;
+        setFormError(message);
+        showToast(message, 'error');
+        return;
+      }
       computedPayrollValues = {
         grossPay: grossPay ? grossPay.toFixed(2) : '',
         totalAttendancePenalty: totalAttendancePenalty ? totalAttendancePenalty.toFixed(2) : '',
         totalDeductions: totalDeductions ? totalDeductions.toFixed(2) : '',
         netPayable: netPayable ? netPayable.toFixed(2) : '',
+        napsaDeduction: napsaDeduction ? napsaDeduction.toFixed(2) : '',
+        nhimaDeduction: nhimaDeduction ? nhimaDeduction.toFixed(2) : '',
+        taxDeduction: taxDeduction ? taxDeduction.toFixed(2) : '',
+      };
+    }
+    if (activeModuleId === 'loan-records') {
+      const principal = toNumberValue(formValues.amount);
+      const rawInterestPercent =
+        formValues.interestPercent !== undefined && formValues.interestPercent !== null
+          ? Number(formValues.interestPercent)
+          : appSettings.loanRules.defaultInterestPercentPerMonth;
+      const interestPercent = Math.max(0, Number(rawInterestPercent) || 0);
+      const tenorMonths = Math.max(1, toNumberValue(formValues.tenorMonths) || 1);
+      let monthlyInstallment = toNumberValue(formValues.monthlyInstallment);
+      if (principal > 0 && tenorMonths > 0 && monthlyInstallment === 0) {
+        const totalInterest = (principal * interestPercent * tenorMonths) / 100;
+        const totalRepay = principal + totalInterest;
+        monthlyInstallment = totalRepay / tenorMonths;
+      }
+      computedLoanValues = {
+        interestPercent: interestPercent || '',
+        tenorMonths: tenorMonths || '',
+        monthlyInstallment: monthlyInstallment ? monthlyInstallment.toFixed(2) : '',
+        balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
       };
     }
     if (activeModuleId === 'leave-management') {
@@ -2675,16 +3082,24 @@ function App() {
       return;
     }
 
-    const payload = activeModuleConfig.formFields.reduce(
-      (acc, field) => ({
+    const payload = activeModuleConfig.formFields.reduce((acc, field) => {
+      if (computedPayrollValues[field.key] !== undefined) {
+        return {
+          ...acc,
+          [field.key]: computedPayrollValues[field.key],
+        };
+      }
+      if (computedLoanValues[field.key] !== undefined) {
+        return {
+          ...acc,
+          [field.key]: computedLoanValues[field.key],
+        };
+      }
+      return {
         ...acc,
-        [field.key]:
-          computedPayrollValues[field.key] !== undefined
-            ? computedPayrollValues[field.key]
-            : formValues[field.key] || '',
-      }),
-      {}
-    );
+        [field.key]: formValues[field.key] || '',
+      };
+    }, {});
     const employeeImagePreviewsPayload =
       activeModuleId === 'employee-management'
         ? employeeImageFields.reduce(
@@ -3441,6 +3856,7 @@ function App() {
                 {[
                   { id: 'general', label: 'General' },
                   { id: 'attendance', label: 'Attendance Rules' },
+                  { id: 'payroll', label: 'Payroll & Loans' },
                   { id: 'fingerprint', label: 'Fingerprint' },
                   { id: 'labels', label: 'Employee Labels' },
                   { id: 'currency', label: 'Currency' },
@@ -3669,6 +4085,198 @@ function App() {
                         </select>
                       </label>
                     ) : null}
+                  </>
+                ) : null}
+                {settingsTab === 'payroll' ? (
+                  <>
+                    <h4 className="settings-subtitle">Payroll Rules</h4>
+                    <label>
+                      <span>Payroll Working Days</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={appSettings.payrollWorkingDays}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            payrollWorkingDays: Math.max(1, Number(event.target.value) || 1),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>NAPSA Rule</span>
+                      <div className="inline-field">
+                        <select
+                          className="filter-select"
+                          value={appSettings.statutoryRules.napsaMode}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                napsaMode: event.target.value,
+                              },
+                            }))
+                          }
+                        >
+                          <option value="percent-basic">Percent of Basic</option>
+                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="fixed">Fixed Amount</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={appSettings.statutoryRules.napsaValue}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                napsaValue: Math.max(0, Number(event.target.value) || 0),
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label>
+                      <span>NHIMA Rule</span>
+                      <div className="inline-field">
+                        <select
+                          className="filter-select"
+                          value={appSettings.statutoryRules.nhimaMode}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                nhimaMode: event.target.value,
+                              },
+                            }))
+                          }
+                        >
+                          <option value="percent-basic">Percent of Basic</option>
+                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="fixed">Fixed Amount</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={appSettings.statutoryRules.nhimaValue}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                nhimaValue: Math.max(0, Number(event.target.value) || 0),
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label>
+                      <span>Tax Rule</span>
+                      <div className="inline-field">
+                        <select
+                          className="filter-select"
+                          value={appSettings.statutoryRules.taxMode}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                taxMode: event.target.value,
+                              },
+                            }))
+                          }
+                        >
+                          <option value="percent-basic">Percent of Basic</option>
+                          <option value="percent-gross">Percent of Gross</option>
+                          <option value="fixed">Fixed Amount</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={appSettings.statutoryRules.taxValue}
+                          onChange={(event) =>
+                            setAppSettings((prev) => ({
+                              ...prev,
+                              statutoryRules: {
+                                ...prev.statutoryRules,
+                                taxValue: Math.max(0, Number(event.target.value) || 0),
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </label>
+                    <h4 className="settings-subtitle">Loan Rules</h4>
+                    <label>
+                      <span>Minimum Take-Home %</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={appSettings.loanRules.minTakeHomePercent}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            loanRules: {
+                              ...prev.loanRules,
+                              minTakeHomePercent: Math.max(1, Math.min(100, Number(event.target.value) || 1)),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Max Loan Deduction % of Gross</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={appSettings.loanRules.maxLoanDeductionPercentOfGross}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            loanRules: {
+                              ...prev.loanRules,
+                              maxLoanDeductionPercentOfGross: Math.max(
+                                0,
+                                Math.min(100, Number(event.target.value) || 0)
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Default Loan Interest % / Month</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={appSettings.loanRules.defaultInterestPercentPerMonth}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            loanRules: {
+                              ...prev.loanRules,
+                              defaultInterestPercentPerMonth: Math.max(
+                                0,
+                                Number(event.target.value) || 0
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
                   </>
                 ) : null}
                 {settingsTab === 'fingerprint' ? (
@@ -4082,9 +4690,28 @@ function App() {
                   <p>{activeModuleConfig.entityLabel} registry and operations table</p>
                 </div>
                 {activeModuleId !== 'attendance-time' ? (
-                  <button type="button" className="primary-btn" onClick={startCreate}>
-                    + Add {activeModuleConfig.entityLabel}
-                  </button>
+                  <div className="panel-title-actions">
+                    {activeModuleId === 'payroll-management' ? (
+                      <>
+                        <input
+                          ref={payrollUploadInputRef}
+                          type="file"
+                          accept=".csv"
+                          style={{ display: 'none' }}
+                          onChange={handlePayrollBulkUpload}
+                        />
+                        <button type="button" className="neutral-btn" onClick={handleDownloadPayrollTemplate}>
+                          Download Template
+                        </button>
+                        <button type="button" className="neutral-btn" onClick={handleOpenPayrollUpload}>
+                          Bulk Upload
+                        </button>
+                      </>
+                    ) : null}
+                    <button type="button" className="primary-btn" onClick={startCreate}>
+                      + Add {activeModuleConfig.entityLabel}
+                    </button>
+                  </div>
                 ) : null}
               </div>
               {activeModuleId === 'attendance-time' ? (
@@ -4836,7 +5463,7 @@ function App() {
                   ) : null}
                 </div>
               ) : null}
-              {activeModuleId === 'leave-management' ? (
+                  {activeModuleId === 'leave-management' ? (
                 <div className="attendance-ops-card">
                   <div className="attendance-ops-head">
                     <h4>Leave System</h4>
@@ -5543,6 +6170,23 @@ function App() {
                             </div>
                           </div>
                         ))}
+                      {payrollFormLoans.length > 0 ? (
+                        <div className="form-section">
+                          <p className="form-section-title">Employee Loans</p>
+                          <div className="form-grid">
+                            {payrollFormLoans.map((loanRow) => (
+                              <div key={loanRow.id} className="detail-cell">
+                                <span>
+                                  {loanRow.type || 'Loan'} • {loanRow.issuedOn || '—'}
+                                </span>
+                                <strong>
+                                  {loanRow.amount || '—'} {loanRow.balance ? `• Balance: ${loanRow.balance}` : ''}
+                                </strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </>
                 ) : isEmployeeModule ? (
@@ -5566,36 +6210,53 @@ function App() {
                         ))}
                     </div>
                   ) : (
-                    <div className="form-section-grid">
-                      {(genericFormSections.length > 0
-                        ? genericFormSections
-                        : [
-                            {
-                              id: 'generic-details',
-                              title: activeModuleConfig
-                                ? `${activeModuleConfig.entityLabel} Details`
-                                : 'Details',
-                              fields: visibleFormFields.map((field) => field.key),
-                            },
-                          ]
-                      )
-                        .map((section) => ({
-                          id: section.id,
-                          title: section.title,
-                          fields: section.fields
-                            .map((key) => visibleFormFields.find((field) => field.key === key))
-                            .filter(Boolean),
-                        }))
-                        .filter((section) => section.fields.length > 0)
-                        .map((section) => (
-                          <div key={section.id} className="form-section">
-                            <p className="form-section-title">{section.title}</p>
-                            <div className="form-grid">
-                              {section.fields.map((field) => renderFormFieldControl(field))}
+                    <>
+                      <div className="form-section-grid">
+                        {(genericFormSections.length > 0
+                          ? genericFormSections
+                          : [
+                              {
+                                id: 'generic-details',
+                                title: activeModuleConfig
+                                  ? `${activeModuleConfig.entityLabel} Details`
+                                  : 'Details',
+                                fields: visibleFormFields.map((field) => field.key),
+                              },
+                            ]
+                        )
+                          .map((section) => ({
+                            id: section.id,
+                            title: section.title,
+                            fields: section.fields
+                              .map((key) => visibleFormFields.find((field) => field.key === key))
+                              .filter(Boolean),
+                          }))
+                          .filter((section) => section.fields.length > 0)
+                          .map((section) => (
+                            <div key={section.id} className="form-section">
+                              <p className="form-section-title">{section.title}</p>
+                              <div className="form-grid">
+                                {section.fields.map((field) => renderFormFieldControl(field))}
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                    </div>
+                          ))}
+                      </div>
+                      {activeModuleId === 'loan-records' && loanInstallmentPreview ? (
+                        <div className="penalty-action-card">
+                          <strong>Installment Preview</strong>
+                          <span>
+                            Amount {loanInstallmentPreview.principal.toFixed(2)} with interest{' '}
+                            {loanInstallmentPreview.interestPercent.toFixed(2)}% over{' '}
+                            {loanInstallmentPreview.tenorMonths} month(s)
+                          </span>
+                          <span>
+                            Monthly installment{' '}
+                            {loanInstallmentPreview.monthlyInstallment.toFixed(2)} • Total repay{' '}
+                            {loanInstallmentPreview.totalRepay.toFixed(2)}
+                          </span>
+                        </div>
+                      ) : null}
+                    </>
                   )}
                   {formError ? <p className="form-error">{formError}</p> : null}
                   <div className="form-actions">
@@ -5662,6 +6323,30 @@ function App() {
                             </div>
                           );
                         })}
+                      </div>
+                    ) : null}
+                    {activeModuleId === 'payroll-management' && payrollLoansForModal.length > 0 ? (
+                      <div className="employee-ops-card">
+                        <div className="employee-ops-header">
+                          <h5>Employee Loans</h5>
+                          <span>{`${payrollLoansForModal.length} loan(s)`}</span>
+                        </div>
+                        <div className="employee-ops-list">
+                          {payrollLoansForModal.map((loanRow) => (
+                            <div className="employee-ops-row" key={loanRow.id}>
+                              <div>
+                                <p>{loanRow.type || 'Loan Record'}</p>
+                                <span>
+                                  {loanRow.issuedOn || '—'} • {loanRow.amount || '—'}
+                                </span>
+                              </div>
+                              <div className="employee-ops-actions">
+                                <strong>{loanRow.status || 'Active'}</strong>
+                                <span>{loanRow.balance ? `Balance: ${loanRow.balance}` : 'Balance: —'}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                     {activeModuleId === 'leave-management' && selectedLeaveDetailRow ? (

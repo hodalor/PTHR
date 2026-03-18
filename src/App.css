@@ -248,6 +248,12 @@ body {
   margin-bottom: 12px;
 }
 
+.panel-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panel-title-row h2 {
   margin: 0;
   color: #1f3670;
