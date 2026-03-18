@@ -781,6 +781,7 @@ function App() {
     return field.label;
   };
   const isEmployeeModule = activeModuleId === 'employee-management';
+  const isPayrollModule = activeModuleId === 'payroll-management';
   const employeeFormSections = useMemo(
     () =>
       isEmployeeModule
@@ -797,10 +798,17 @@ function App() {
                 'taxId',
                 'nhimaNumber',
                 'mobileMoneyNumber',
+                'mobileMoneyNetwork',
                 'mobileMoneyName',
                 'bankName',
                 'bankAccountNumber',
                 'bankAccountName',
+                'accessAccount',
+                'basicPay',
+                'monthlyBonuses',
+                'transportAllowance',
+                'housingAllowance',
+                'foodAllowance',
                 'bankBranchName',
                 'bankBranchCode',
                 'department',
@@ -843,6 +851,72 @@ function App() {
         : [],
     [isEmployeeModule]
   );
+  const payrollDetailSections = useMemo(
+    () =>
+      isPayrollModule
+        ? [
+            {
+              id: 'employee-period',
+              title: 'Employee & Period',
+              fields: ['month', 'employee', 'employeeId', 'status'],
+            },
+            {
+              id: 'statutory',
+              title: 'Statutory IDs',
+              fields: ['taxId', 'pensionId', 'nhimaNumber'],
+            },
+            {
+              id: 'wallet-bank',
+              title: 'Wallet & Bank',
+              fields: [
+                'accessAccount',
+                'mobileMoneyNumber',
+                'mobileMoneyNetwork',
+                'bankName',
+                'bankAccountName',
+                'bankAccountNumber',
+              ],
+            },
+            {
+              id: 'pay-allowances',
+              title: 'Pay & Allowances',
+              fields: [
+                'basicPay',
+                'monthlyBonuses',
+                'transportAllowance',
+                'housingAllowance',
+                'foodAllowance',
+                'grossPay',
+                'workingDays',
+              ],
+            },
+            {
+              id: 'deductions-penalties',
+              title: 'Deductions & Penalties',
+              fields: [
+                'napsaDeduction',
+                'nhimaDeduction',
+                'taxDeduction',
+                'otherDeduction',
+                'totalAttendancePenalty',
+                'lateMinutes',
+                'deductionRatePerMinute',
+                'lateDeduction',
+                'noClockInPenalty',
+                'noClockOutPenalty',
+                'absentPenalty',
+                'totalDeductions',
+              ],
+            },
+            {
+              id: 'summary',
+              title: 'Summary',
+              fields: ['netPayable'],
+            },
+          ]
+        : [],
+    [isPayrollModule]
+  );
   const employeeFormFieldMap = useMemo(() => {
     if (!isEmployeeModule) {
       return {};
@@ -853,6 +927,16 @@ function App() {
     });
     return map;
   }, [isEmployeeModule, visibleFormFields]);
+  const payrollFormFieldMap = useMemo(() => {
+    if (!isPayrollModule || !activeModuleConfig) {
+      return {};
+    }
+    const map = {};
+    activeModuleConfig.formFields.forEach((field) => {
+      map[field.key] = field;
+    });
+    return map;
+  }, [activeModuleConfig, isPayrollModule]);
   const employeeStatusOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
@@ -1167,6 +1251,37 @@ function App() {
       return 'is-rejected';
     }
     return 'is-pending';
+  };
+  const renderDetailFieldCell = (field) => {
+    if (!field || employeeImageFields.includes(field.key)) {
+      return null;
+    }
+    return (
+      <div className="detail-cell" key={field.key}>
+        <span>{getFieldLabel(field)}</span>
+        {field.type === 'file' &&
+        Array.isArray(modalRow[`${field.key}Files`]) &&
+        modalRow[`${field.key}Files`].length > 0 ? (
+          <div className="file-link-list details-file-list">
+            {modalRow[`${field.key}Files`].map((fileItem, index) => (
+              <div className="file-entry-card" key={`${field.key}-details-${fileItem.name}-${index}`}>
+                <div className="file-link-row details-file-row">
+                  <a className="file-link details-file-link" href={fileItem.url} target="_blank" rel="noreferrer">
+                    {fileItem.name}
+                  </a>
+                  <a className="file-download" href={fileItem.url} download={fileItem.name}>
+                    Download
+                  </a>
+                </div>
+                {fileItem.note ? <span className="file-note-text">{fileItem.note}</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <strong>{field.key === 'password' ? '••••••••' : modalRow[field.key] || '—'}</strong>
+        )}
+      </div>
+    );
   };
   const renderFormFieldControl = (field) => {
     if (!field) {
@@ -2399,6 +2514,33 @@ function App() {
       setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
       return;
     }
+    let computedPayrollValues = {};
+    if (activeModuleId === 'payroll-management') {
+      const basicPay = toNumberValue(formValues.basicPay);
+      const monthlyBonuses = toNumberValue(formValues.monthlyBonuses);
+      const transportAllowance = toNumberValue(formValues.transportAllowance);
+      const housingAllowance = toNumberValue(formValues.housingAllowance);
+      const foodAllowance = toNumberValue(formValues.foodAllowance);
+      const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
+      const lateDeduction = toNumberValue(formValues.lateDeduction);
+      const noClockInPenalty = toNumberValue(formValues.noClockInPenalty);
+      const noClockOutPenalty = toNumberValue(formValues.noClockOutPenalty);
+      const absentPenalty = toNumberValue(formValues.absentPenalty);
+      const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
+      const napsaDeduction = toNumberValue(formValues.napsaDeduction);
+      const nhimaDeduction = toNumberValue(formValues.nhimaDeduction);
+      const taxDeduction = toNumberValue(formValues.taxDeduction);
+      const otherDeduction = toNumberValue(formValues.otherDeduction);
+      const totalDeductions =
+        napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
+      const netPayable = grossPay - totalDeductions;
+      computedPayrollValues = {
+        grossPay: grossPay ? grossPay.toFixed(2) : '',
+        totalAttendancePenalty: totalAttendancePenalty ? totalAttendancePenalty.toFixed(2) : '',
+        totalDeductions: totalDeductions ? totalDeductions.toFixed(2) : '',
+        netPayable: netPayable ? netPayable.toFixed(2) : '',
+      };
+    }
     if (activeModuleId === 'leave-management') {
       if (!selectedLeaveFormEmployee) {
         setFormError('Select a valid employee from search.');
@@ -2495,7 +2637,10 @@ function App() {
     const payload = activeModuleConfig.formFields.reduce(
       (acc, field) => ({
         ...acc,
-        [field.key]: formValues[field.key] || '',
+        [field.key]:
+          computedPayrollValues[field.key] !== undefined
+            ? computedPayrollValues[field.key]
+            : formValues[field.key] || '',
       }),
       {}
     );
@@ -5325,6 +5470,11 @@ function App() {
                                     bankName: employee.bankName || '',
                                     bankAccountName: employee.bankAccountName || '',
                                     bankAccountNumber: employee.bankAccountNumber || '',
+                                    basicPay: employee.basicPay || '',
+                                    monthlyBonuses: employee.monthlyBonuses || '',
+                                    transportAllowance: employee.transportAllowance || '',
+                                    housingAllowance: employee.housingAllowance || '',
+                                    foodAllowance: employee.foodAllowance || '',
                                   }))
                                 }
                               >
@@ -5603,34 +5753,45 @@ function App() {
                         <span>{activeModuleConfig.entityLabel} ID</span>
                         <strong>{modalRow.id}</strong>
                       </div>
-                      {activeModuleConfig.formFields
-                        .filter((field) => !employeeImageFields.includes(field.key))
-                        .map((field) => (
-                          <div className="detail-cell" key={field.key}>
-                            <span>{getFieldLabel(field)}</span>
-                            {field.type === 'file' &&
-                            Array.isArray(modalRow[`${field.key}Files`]) &&
-                            modalRow[`${field.key}Files`].length > 0 ? (
-                              <div className="file-link-list details-file-list">
-                                {modalRow[`${field.key}Files`].map((fileItem, index) => (
-                                  <div className="file-entry-card" key={`${field.key}-details-${fileItem.name}-${index}`}>
-                                    <div className="file-link-row details-file-row">
-                                      <a className="file-link details-file-link" href={fileItem.url} target="_blank" rel="noreferrer">
-                                        {fileItem.name}
-                                      </a>
-                                      <a className="file-download" href={fileItem.url} download={fileItem.name}>
-                                        Download
-                                      </a>
-                                    </div>
-                                    {fileItem.note ? <span className="file-note-text">{fileItem.note}</span> : null}
+                      {isEmployeeModule
+                        ? employeeFormSections
+                            .map((section) => ({
+                              id: section.id,
+                              title: section.title,
+                              fields: section.fields
+                                .map((key) => employeeFormFieldMap[key])
+                                .filter(Boolean),
+                            }))
+                            .filter((section) => section.fields.length > 0)
+                            .map((section) => (
+                              <React.Fragment key={section.id}>
+                                <div className="detail-section-header">
+                                  <span>{section.title}</span>
+                                </div>
+                                {section.fields.map((field) => renderDetailFieldCell(field))}
+                              </React.Fragment>
+                            ))
+                        : isPayrollModule
+                          ? payrollDetailSections
+                              .map((section) => ({
+                                id: section.id,
+                                title: section.title,
+                                fields: section.fields
+                                  .map((key) => payrollFormFieldMap[key])
+                                  .filter(Boolean),
+                              }))
+                              .filter((section) => section.fields.length > 0)
+                              .map((section) => (
+                                <React.Fragment key={section.id}>
+                                  <div className="detail-section-header">
+                                    <span>{section.title}</span>
                                   </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <strong>{field.key === 'password' ? '••••••••' : modalRow[field.key] || '—'}</strong>
-                            )}
-                          </div>
-                        ))}
+                                  {section.fields.map((field) => renderDetailFieldCell(field))}
+                                </React.Fragment>
+                              ))
+                          : activeModuleConfig.formFields
+                              .filter((field) => !employeeImageFields.includes(field.key))
+                              .map((field) => renderDetailFieldCell(field))}
                     </div>
                     {activeModuleId === 'employee-management' ? (
                       <div className="employee-ops-card">

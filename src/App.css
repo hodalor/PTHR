@@ -686,6 +686,18 @@ tbody tr:hover {
   border-right: none;
 }
 
+.details-grid-table .detail-section-header {
+  grid-column: 1 / -1;
+  padding: 7px 10px;
+  background: #e0f5d6;
+  border-bottom: 1px solid #d0def8;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #265b32;
+}
+
 .employee-ops-card {
   margin-top: 12px;
   border: 1px solid #d3e2fb;
