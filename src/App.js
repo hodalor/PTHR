@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
 
@@ -787,16 +787,25 @@ function App() {
       isEmployeeModule
         ? [
             {
-              id: 'information',
-              title: 'Information',
+              id: 'personal-ids',
+              title: 'Personal & IDs',
               fields: [
                 'fullName',
+                'dob',
                 'idCardType',
                 'idCardNumber',
-                'password',
+                'nhimaNumber',
                 'pensionId',
                 'taxId',
-                'nhimaNumber',
+                'password',
+                'status',
+                'employmentState',
+              ],
+            },
+            {
+              id: 'wallet-bank',
+              title: 'Wallet & Bank',
+              fields: [
                 'mobileMoneyNumber',
                 'mobileMoneyNetwork',
                 'mobileMoneyName',
@@ -804,31 +813,18 @@ function App() {
                 'bankAccountNumber',
                 'bankAccountName',
                 'accessAccount',
+                'bankBranchName',
+                'bankBranchCode',
                 'basicPay',
                 'monthlyBonuses',
                 'transportAllowance',
                 'housingAllowance',
                 'foodAllowance',
-                'bankBranchName',
-                'bankBranchCode',
-                'department',
-                'position',
-                'lineManager',
-                'leaveBalanceDays',
-                'contractType',
-                'contractTypeOther',
-                'passportPhoto',
-                'idFront',
-                'idBack',
-                'otherDocuments',
-                'otherDocumentsNote',
-                'status',
-                'employmentState',
               ],
             },
             {
               id: 'contacts',
-              title: 'Contacts',
+              title: 'Contacts & Emergency',
               fields: [
                 'phonePrimary',
                 'phoneSecondary',
@@ -843,9 +839,23 @@ function App() {
               ],
             },
             {
-              id: 'dates',
-              title: 'Dates',
-              fields: ['dob', 'contractStartDate', 'contractEndDate'],
+              id: 'employment-docs',
+              title: 'Employment & Documents',
+              fields: [
+                'department',
+                'position',
+                'lineManager',
+                'leaveBalanceDays',
+                'contractType',
+                'contractTypeOther',
+                'contractStartDate',
+                'contractEndDate',
+                'passportPhoto',
+                'idFront',
+                'idBack',
+                'otherDocuments',
+                'otherDocumentsNote',
+              ],
             },
           ]
         : [],
@@ -937,6 +947,37 @@ function App() {
     });
     return map;
   }, [activeModuleConfig, isPayrollModule]);
+  const genericFormSections = useMemo(() => {
+    if (isEmployeeModule || isPayrollModule || !activeModuleConfig) {
+      return [];
+    }
+    const fields = visibleFormFields;
+    if (!fields || fields.length === 0) {
+      return [];
+    }
+    if (fields.length <= 8) {
+      return [
+        {
+          id: 'main-details',
+          title: `${activeModuleConfig.entityLabel} Details`,
+          fields: fields.map((field) => field.key),
+        },
+      ];
+    }
+    const midpoint = Math.ceil(fields.length / 2);
+    return [
+      {
+        id: 'main-details',
+        title: `${activeModuleConfig.entityLabel} Details`,
+        fields: fields.slice(0, midpoint).map((field) => field.key),
+      },
+      {
+        id: 'more-details',
+        title: 'More Details',
+        fields: fields.slice(midpoint).map((field) => field.key),
+      },
+    ];
+  }, [activeModuleConfig, isEmployeeModule, isPayrollModule, visibleFormFields]);
   const employeeStatusOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
@@ -5484,11 +5525,27 @@ function App() {
                           </div>
                         ) : null}
                       </div>
-                      <div className="form-grid">
-                        {visibleFormFields.map((field) => renderFormFieldControl(field))}
-                      </div>
-                    </>
-                  ) : isEmployeeModule ? (
+                    <div className="form-section-grid">
+                      {payrollDetailSections
+                        .map((section) => ({
+                          id: section.id,
+                          title: section.title,
+                          fields: section.fields
+                            .map((key) => payrollFormFieldMap[key])
+                            .filter(Boolean),
+                        }))
+                        .filter((section) => section.fields.length > 0)
+                        .map((section) => (
+                          <div key={section.id} className="form-section">
+                            <p className="form-section-title">{section.title}</p>
+                            <div className="form-grid">
+                              {section.fields.map((field) => renderFormFieldControl(field))}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </>
+                ) : isEmployeeModule ? (
                     <div className="form-section-grid">
                       {employeeFormSections
                         .map((section) => ({
@@ -5509,8 +5566,35 @@ function App() {
                         ))}
                     </div>
                   ) : (
-                    <div className="form-grid">
-                      {visibleFormFields.map((field) => renderFormFieldControl(field))}
+                    <div className="form-section-grid">
+                      {(genericFormSections.length > 0
+                        ? genericFormSections
+                        : [
+                            {
+                              id: 'generic-details',
+                              title: activeModuleConfig
+                                ? `${activeModuleConfig.entityLabel} Details`
+                                : 'Details',
+                              fields: visibleFormFields.map((field) => field.key),
+                            },
+                          ]
+                      )
+                        .map((section) => ({
+                          id: section.id,
+                          title: section.title,
+                          fields: section.fields
+                            .map((key) => visibleFormFields.find((field) => field.key === key))
+                            .filter(Boolean),
+                        }))
+                        .filter((section) => section.fields.length > 0)
+                        .map((section) => (
+                          <div key={section.id} className="form-section">
+                            <p className="form-section-title">{section.title}</p>
+                            <div className="form-grid">
+                              {section.fields.map((field) => renderFormFieldControl(field))}
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   )}
                   {formError ? <p className="form-error">{formError}</p> : null}
@@ -5764,12 +5848,12 @@ function App() {
                             }))
                             .filter((section) => section.fields.length > 0)
                             .map((section) => (
-                              <React.Fragment key={section.id}>
+                              <Fragment key={section.id}>
                                 <div className="detail-section-header">
                                   <span>{section.title}</span>
                                 </div>
                                 {section.fields.map((field) => renderDetailFieldCell(field))}
-                              </React.Fragment>
+                              </Fragment>
                             ))
                         : isPayrollModule
                           ? payrollDetailSections
@@ -5782,12 +5866,12 @@ function App() {
                               }))
                               .filter((section) => section.fields.length > 0)
                               .map((section) => (
-                                <React.Fragment key={section.id}>
+                                <Fragment key={section.id}>
                                   <div className="detail-section-header">
                                     <span>{section.title}</span>
                                   </div>
                                   {section.fields.map((field) => renderDetailFieldCell(field))}
-                                </React.Fragment>
+                                </Fragment>
                               ))
                           : activeModuleConfig.formFields
                               .filter((field) => !employeeImageFields.includes(field.key))
