@@ -1467,6 +1467,22 @@ function App({ initialModuleId }) {
       })
       .slice(0, 6);
   }, [employeeBaseRows, formValues.leaveEmployeeSearch]);
+  const loanFormEmployeeMatches = useMemo(() => {
+    if (activeModuleId !== 'loan-records') {
+      return [];
+    }
+    const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    return employeeBaseRows
+      .filter((employee) => {
+        const employeeId = String(employee.id || '').toLowerCase();
+        const employeeName = String(employee.fullName || '').toLowerCase();
+        return employeeId.includes(query) || employeeName.includes(query);
+      })
+      .slice(0, 6);
+  }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch]);
   const selectedLeaveFormEmployee = useMemo(
     () =>
       employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
@@ -2837,7 +2853,12 @@ function App({ initialModuleId }) {
             }
         : activeModuleId === 'loan-records'
           ? {
+              loanEmployeeSearch: '',
+              employee: '',
+              employeeId: '',
+              amount: '',
               interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+              balance: '',
             }
           : {}
     );
@@ -5282,39 +5303,47 @@ function App({ initialModuleId }) {
                     </div>
                   ) : (
                     <>
-                      <div className="form-section-grid">
-                        {(genericFormSections.length > 0
-                          ? genericFormSections
-                          : [
-                              {
-                                id: 'generic-details',
-                                title: activeModuleConfig
-                                  ? `${activeModuleConfig.entityLabel} Details`
-                                  : 'Details',
-                                fields: visibleFormFields.map((field) => field.key),
-                              },
-                            ]
-                        )
-                          .map((section) => ({
-                            id: section.id,
-                            title: section.title,
-                            fields: section.fields
-                              .map((key) => visibleFormFields.find((field) => field.key === key))
-                              .filter(Boolean),
-                          }))
-                          .filter((section) => section.fields.length > 0)
-                          .map((section) => (
-                            <div key={section.id} className="form-section">
-                              <p className="form-section-title">{section.title}</p>
-                              <div className="form-grid">
-                                {section.fields.map((field) => renderFormFieldControl(field))}
+                      {activeModuleId === 'loan-records' ? (
+                        <LoanRecordsPage
+                          formValues={formValues}
+                          setFormValues={setFormValues}
+                          visibleFormFields={visibleFormFields}
+                          loanInstallmentPreview={loanInstallmentPreview}
+                          renderFormFieldControl={renderFormFieldControl}
+                          employeeBaseRows={employeeBaseRows}
+                        />
+                      ) : (
+                        <div className="form-section-grid">
+                          {(genericFormSections.length > 0
+                            ? genericFormSections
+                            : [
+                                {
+                                  id: 'generic-details',
+                                  title: activeModuleConfig
+                                    ? `${activeModuleConfig.entityLabel} Details`
+                                    : 'Details',
+                                  fields: visibleFormFields.map((field) => field.key),
+                                },
+                              ]
+                          )
+                            .map((section) => ({
+                              id: section.id,
+                              title: section.title,
+                              fields: section.fields
+                                .map((key) => visibleFormFields.find((field) => field.key === key))
+                                .filter(Boolean),
+                            }))
+                            .filter((section) => section.fields.length > 0)
+                            .map((section) => (
+                              <div key={section.id} className="form-section">
+                                <p className="form-section-title">{section.title}</p>
+                                <div className="form-grid">
+                                  {section.fields.map((field) => renderFormFieldControl(field))}
+                                </div>
                               </div>
-                            </div>
-                          ))}
-                      </div>
-                      {activeModuleId === 'loan-records' && loanInstallmentPreview ? (
-                        <LoanRecordsPage loanInstallmentPreview={loanInstallmentPreview} />
-                      ) : null}
+                            ))}
+                        </div>
+                      )}
                     </>
                   )}
                   {formError ? <p className="form-error">{formError}</p> : null}

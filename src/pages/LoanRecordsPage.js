@@ -1,29 +1,106 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 
-export default function LoanRecordsPage({ loanInstallmentPreview }) {
-  if (!loanInstallmentPreview) {
-    return null;
-  }
+export default function LoanRecordsPage({
+  formValues,
+  setFormValues,
+  visibleFormFields,
+  loanInstallmentPreview,
+  renderFormFieldControl,
+  employeeBaseRows,
+}) {
+  const loanFormEmployeeMatches = useMemo(() => {
+    const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    return employeeBaseRows
+      .filter((employee) => {
+        const employeeId = String(employee.id || '').toLowerCase();
+        const employeeName = String(employee.fullName || '').toLowerCase();
+        return employeeId.includes(query) || employeeName.includes(query);
+      })
+      .slice(0, 6);
+  }, [employeeBaseRows, formValues.loanEmployeeSearch]);
+
+  const getFieldByKey = (key) => visibleFormFields.find((field) => field.key === key);
+
+  const leftFieldKeys = ['employee', 'employeeId', 'type', 'amount', 'interestPercent'];
+  const rightFieldKeys = ['tenorMonths', 'monthlyInstallment', 'issuedOn', 'balance', 'status'];
+
+  const leftFields = leftFieldKeys.map(getFieldByKey).filter(Boolean);
+  const rightFields = rightFieldKeys.map(getFieldByKey).filter(Boolean);
 
   return (
-    <div className="employee-ops-card">
-      <div className="employee-ops-header">
-        <h5>Loan Installment Preview</h5>
-        <span>
-          {loanInstallmentPreview.employee} ({loanInstallmentPreview.employeeId})
-        </span>
-      </div>
-      <div className="employee-ops-list">
-        <div className="employee-ops-row">
-          <div>
-            <p>Total Amount</p>
-            <span>{loanInstallmentPreview.totalAmount || '—'}</span>
-          </div>
-          <div className="employee-ops-actions">
-            <strong>{loanInstallmentPreview.installmentCount || 0} installments</strong>
-          </div>
+    <div className="form-section-grid">
+      <div className="form-section">
+        <p className="form-section-title">Loan Record Details</p>
+        <div className="form-grid">
+          <label>
+            <span>Employee Search *</span>
+            <input
+              value={formValues.loanEmployeeSearch || ''}
+              placeholder="Search by name or ID"
+              onChange={(event) =>
+                setFormValues((prev) => ({
+                  ...prev,
+                  loanEmployeeSearch: event.target.value,
+                  employee: '',
+                  employeeId: '',
+                }))
+              }
+            />
+          </label>
+          {loanFormEmployeeMatches.length > 0 ? (
+            <div className="row-actions">
+              {loanFormEmployeeMatches.map((employee) => (
+                <button
+                  key={employee.id}
+                  type="button"
+                  className="mini-btn"
+                  onClick={() =>
+                    setFormValues((prev) => ({
+                      ...prev,
+                      loanEmployeeSearch: `${employee.fullName} (${employee.id})`,
+                      employee: employee.fullName,
+                      employeeId: employee.id,
+                    }))
+                  }
+                >
+                  {employee.fullName} ({employee.id})
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {leftFields.map((field) => renderFormFieldControl(field))}
         </div>
       </div>
+      <div className="form-section">
+        <p className="form-section-title">More Details</p>
+        <div className="form-grid">
+          {rightFields.map((field) => renderFormFieldControl(field))}
+        </div>
+      </div>
+      {loanInstallmentPreview ? (
+        <div className="employee-ops-card">
+          <div className="employee-ops-header">
+            <h5>Loan Installment Preview</h5>
+            <span>
+              {loanInstallmentPreview.employee} ({loanInstallmentPreview.employeeId})
+            </span>
+          </div>
+          <div className="employee-ops-list">
+            <div className="employee-ops-row">
+              <div>
+                <p>Total Amount</p>
+                <span>{loanInstallmentPreview.totalAmount || '—'}</span>
+              </div>
+              <div className="employee-ops-actions">
+                <strong>{loanInstallmentPreview.installmentCount || 0} installments</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
