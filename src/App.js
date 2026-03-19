@@ -1,6 +1,11 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
+import FingerprintPage from './pages/FingerprintPage';
+import AttendanceTimePage from './pages/AttendanceTimePage';
+import LeaveManagementPage from './pages/LeaveManagementPage';
+import PayrollPage from './pages/PayrollPage';
+import LoanRecordsPage from './pages/LoanRecordsPage';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -445,9 +450,9 @@ const createBarcodeDataUrl = (value, width = 360, height = 56, color = '#132d63'
   return canvas.toDataURL('image/png');
 };
 
-function App() {
+function App({ initialModuleId }) {
   const firstModuleId = sidebarSections[0].items[0].id;
-  const [activeModuleId, setActiveModuleId] = useState(firstModuleId);
+  const [activeModuleId, setActiveModuleId] = useState(initialModuleId || firstModuleId);
   const [searchText, setSearchText] = useState('');
   const [filterValue, setFilterValue] = useState('All');
   const [statusFilterValue, setStatusFilterValue] = useState('All');
@@ -4713,1076 +4718,121 @@ function App() {
                 {activeModuleId !== 'attendance-time' ? (
                   <div className="panel-title-actions">
                     {activeModuleId === 'payroll-management' ? (
-                      <>
-                        <input
-                          ref={payrollUploadInputRef}
-                          type="file"
-                          accept=".csv"
-                          style={{ display: 'none' }}
-                          onChange={handlePayrollBulkUpload}
-                        />
-                        <button type="button" className="neutral-btn" onClick={handleDownloadPayrollTemplate}>
-                          Download Template
-                        </button>
-                        <button type="button" className="neutral-btn" onClick={handleOpenPayrollUpload}>
-                          Bulk Upload
-                        </button>
-                      </>
-                    ) : null}
-                    <button type="button" className="primary-btn" onClick={startCreate}>
-                      + Add {activeModuleConfig.entityLabel}
-                    </button>
+                      <PayrollPage
+                        appSettings={appSettings}
+                        payrollUploadInputRef={payrollUploadInputRef}
+                        handlePayrollBulkUpload={handlePayrollBulkUpload}
+                        handleDownloadPayrollTemplate={handleDownloadPayrollTemplate}
+                        handleOpenPayrollUpload={handleOpenPayrollUpload}
+                        payrollLoansForModal={payrollLoansForModal}
+                      />
+                    ) : (
+                      <button type="button" className="primary-btn" onClick={startCreate}>
+                        + Add {activeModuleConfig.entityLabel}
+                      </button>
+                    )}
                   </div>
                 ) : null}
               </div>
               {activeModuleId === 'attendance-time' ? (
-                <div className="attendance-ops-card">
-                  <div className="attendance-ops-head">
-                    <h4>Attendance</h4>
-                    <span>
-                      Report {appSettings.attendanceReportTime} • Grace until {appSettings.attendanceLateAfter}
-                    </span>
-                  </div>
-                  <div className="attendance-subtabs">
-                    <button
-                      type="button"
-                      className={`settings-tab-btn ${attendanceViewTab === 'clock' ? 'active' : ''}`}
-                      onClick={() => setAttendanceViewTab('clock')}
-                    >
-                      Clock
-                    </button>
-                    <button
-                      type="button"
-                      className={`settings-tab-btn ${attendanceViewTab === 'compliance' ? 'active' : ''}`}
-                      onClick={() => setAttendanceViewTab('compliance')}
-                    >
-                      Daily Compliance
-                    </button>
-                    <button
-                      type="button"
-                      className={`settings-tab-btn ${attendanceViewTab === 'penalties' ? 'active' : ''}`}
-                      onClick={() => setAttendanceViewTab('penalties')}
-                    >
-                      Penalty Clearance
-                    </button>
-                    <button
-                      type="button"
-                      className={`settings-tab-btn ${attendanceViewTab === 'performance' ? 'active' : ''}`}
-                      onClick={() => setAttendanceViewTab('performance')}
-                    >
-                      Performance
-                    </button>
-                  </div>
-                  {attendanceViewTab === 'clock' ? (
-                    <>
-                      <div className="attendance-ops-form">
-                        <label>
-                          <span>Search Employee (Name or ID)</span>
-                          <input
-                            placeholder="Type employee name or ID"
-                            value={attendanceSearchText}
-                            onChange={(event) => {
-                              const query = event.target.value;
-                              const normalizedQuery = query.trim().toLowerCase();
-                              const matchedEmployee = normalizedQuery
-                                ? employeeBaseRows.find((employee) => {
-                                    const employeeId = String(employee.id || '').toLowerCase();
-                                    const employeeName = String(employee.fullName || '').toLowerCase();
-                                    return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
-                                  }) || null
-                                : null;
-                              setAttendanceSearchText(query);
-                              setAttendanceClockDraft((prev) => ({
-                                ...prev,
-                                employeeId: matchedEmployee?.id || '',
-                              }));
-                            }}
-                          />
-                          {attendanceSearchText.trim() ? (
-                            <div className="attendance-search-dropdown">
-                              {attendanceSearchMatches.length > 0 ? (
-                                attendanceSearchMatches.map((employee) => (
-                                  <button
-                                    key={employee.id}
-                                    type="button"
-                                    className="attendance-search-item"
-                                    onClick={() => {
-                                      setAttendanceClockDraft((prev) => ({
-                                        ...prev,
-                                        employeeId: employee.id,
-                                      }));
-                                      setAttendanceSearchText('');
-                                    }}
-                                  >
-                                    {employee.fullName} ({employee.id})
-                                  </button>
-                                ))
-                              ) : (
-                                <span className="attendance-search-empty">No matching employee</span>
-                              )}
-                            </div>
-                          ) : null}
-                          <span className="field-title">
-                            {selectedAttendanceEmployee
-                              ? `Selected: ${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                              : 'No matching employee selected'}
-                          </span>
-                        </label>
-                        <label>
-                          <span>Shift</span>
-                          <select
-                            className="filter-select"
-                            value={attendanceClockDraft.shift}
-                            onChange={(event) =>
-                              setAttendanceClockDraft((prev) => ({
-                                ...prev,
-                                shift: event.target.value,
-                              }))
-                            }
-                          >
-                            <option value="Morning">Morning</option>
-                            <option value="Evening">Evening</option>
-                            <option value="Night">Night</option>
-                            <option value="Remote">Remote</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Punch Time</span>
-                          <input value={getCurrentClockValue()} readOnly />
-                        </label>
-                        <div className="attendance-ops-actions">
-                          <button type="button" className="primary-btn" onClick={handleClockIn}>
-                            Clock In
-                          </button>
-                          <button type="button" className="neutral-btn" onClick={handleClockOut}>
-                            Clock Out
-                          </button>
-                        </div>
-                      </div>
-                      <div className="attendance-stats-grid">
-                        <article className="attendance-stat">
-                          <strong>{attendanceTodayRows.length}</strong>
-                          <span>Today Logs</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>{attendanceLateCount}</strong>
-                          <span>Late Today</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>{Math.max(0, attendanceTodayRows.length - attendanceLateCount)}</strong>
-                          <span>On Time Today</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>
-                            {attendanceTodayRows
-                              .reduce((total, row) => total + (Number(row.deductionAmount) || 0), 0)
-                              .toFixed(2)}
-                          </strong>
-                          <span>Late Deduction Today</span>
-                        </article>
-                      </div>
-                      <div className="attendance-export-actions">
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadCsv(
-                              `attendance-clock-${todayIsoDate}.csv`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'date', label: 'Date' },
-                                { key: 'shift', label: 'Shift' },
-                                { key: 'checkIn', label: 'Check In' },
-                                { key: 'checkOut', label: 'Check Out' },
-                                { key: 'lateMinutes', label: 'Late Minutes' },
-                                { key: 'deductionAmount', label: 'Deduction Amount' },
-                                { key: 'status', label: 'Status' },
-                              ],
-                              attendanceTodayRows
-                            )
-                          }
-                        >
-                          Export CSV
-                        </button>
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadPdf(
-                              `Attendance Clock - ${todayIsoDate}`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'date', label: 'Date' },
-                                { key: 'shift', label: 'Shift' },
-                                { key: 'checkIn', label: 'Check In' },
-                                { key: 'checkOut', label: 'Check Out' },
-                                { key: 'lateMinutes', label: 'Late Minutes' },
-                                { key: 'deductionAmount', label: 'Deduction Amount' },
-                                { key: 'status', label: 'Status' },
-                              ],
-                              attendanceTodayRows
-                            )
-                          }
-                        >
-                          Export PDF
-                        </button>
-                      </div>
-                      <div className="attendance-log-list">
-                        {attendanceTodayRows.length > 0 ? (
-                          attendanceTodayRows.map((attendanceRow) => (
-                            <div className="attendance-log-row" key={attendanceRow.id}>
-                              <div>
-                                <p>{attendanceRow.employee}</p>
-                                <span>
-                                  {attendanceRow.checkIn || '—'} → {attendanceRow.checkOut || '—'} •{' '}
-                                  {attendanceRow.shift || 'Shift'}
-                                </span>
-                              </div>
-                              <div className="attendance-log-badges">
-                                <strong className={String(attendanceRow.status).toLowerCase() === 'late' ? 'danger-text' : ''}>
-                                  {attendanceRow.status || 'Incomplete'}
-                                </strong>
-                                <span>{attendanceRow.lateMinutes || '0'} min late</span>
-                                <span>Deduction: {attendanceRow.deductionAmount || '0.00'}</span>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <p className="employee-ops-empty">No attendance logged today.</p>
-                        )}
-                      </div>
-                    </>
-                  ) : null}
-                  {attendanceViewTab === 'compliance' ? (
-                    <div className="attendance-audit-wrap">
-                      <div className="attendance-audit-filters">
-                        <label>
-                          <span>Date</span>
-                          <input
-                            type="date"
-                            value={attendanceAuditDate}
-                            onChange={(event) => setAttendanceAuditDate(event.target.value || getTodayIsoDate())}
-                          />
-                        </label>
-                        <label>
-                          <span>Status Filter</span>
-                          <select
-                            className="filter-select"
-                            value={attendanceAuditFilter}
-                            onChange={(event) => setAttendanceAuditFilter(event.target.value)}
-                          >
-                            {['All', 'On Time', 'Late', 'Clocked In Once', 'Absent', 'Left Early', 'On Leave', 'Off Duty'].map(
-                              (option) => (
-                                <option key={option} value={option}>
-                                  {option}
-                                </option>
-                              )
-                            )}
-                          </select>
-                        </label>
-                        <label>
-                          <span>Search</span>
-                          <input
-                            placeholder="Name, ID, or department"
-                            value={attendanceAuditSearchText}
-                            onChange={(event) => setAttendanceAuditSearchText(event.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <div className="attendance-export-actions">
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadCsv(
-                              `attendance-compliance-${attendanceAuditDate}.csv`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'department', label: 'Department' },
-                                { key: 'date', label: 'Date' },
-                                { key: 'checkIn', label: 'Check In' },
-                                { key: 'checkOut', label: 'Check Out' },
-                                { key: 'dailyStatus', label: 'Status' },
-                                { key: 'penaltyTotal', label: 'Penalty' },
-                              ],
-                              attendanceComplianceFilteredRows.map((row) => ({
-                                ...row,
-                                penaltyTotal:
-                                  row.penalties.length > 0
-                                    ? row.penalties.map((penalty) => penalty.amount.toFixed(2)).join(' + ')
-                                    : '0.00',
-                              }))
-                            )
-                          }
-                        >
-                          Export CSV
-                        </button>
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadPdf(
-                              `Attendance Compliance - ${attendanceAuditDate}`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'department', label: 'Department' },
-                                { key: 'date', label: 'Date' },
-                                { key: 'checkIn', label: 'Check In' },
-                                { key: 'checkOut', label: 'Check Out' },
-                                { key: 'dailyStatus', label: 'Status' },
-                                { key: 'penaltyTotal', label: 'Penalty' },
-                              ],
-                              attendanceComplianceFilteredRows.map((row) => ({
-                                ...row,
-                                penaltyTotal:
-                                  row.penalties.length > 0
-                                    ? row.penalties.map((penalty) => penalty.amount.toFixed(2)).join(' + ')
-                                    : '0.00',
-                              }))
-                            )
-                          }
-                        >
-                          Export PDF
-                        </button>
-                      </div>
-                      <div className="attendance-log-list">
-                        {attendanceComplianceFilteredRows.length > 0 ? (
-                          attendanceComplianceFilteredRows.map((row) => {
-                            const key = `${row.employeeId}-${row.date}`;
-                            const totalPenalty = row.penalties.reduce((total, penalty) => total + penalty.amount, 0);
-                            return (
-                              <button
-                                key={key}
-                                type="button"
-                                className={`attendance-log-row action-row ${selectedComplianceKey === key ? 'selected-row' : ''}`}
-                                onClick={() => {
-                                  setSelectedComplianceKey(key);
-                                  setAttendanceDetailModal({ type: 'compliance', key });
-                                }}
-                              >
-                                <div>
-                                  <p>
-                                    {row.employee} ({row.employeeId})
-                                  </p>
-                                  <span>
-                                    {row.department} • {row.date} • {row.checkIn || '—'} → {row.checkOut || '—'}
-                                  </span>
-                                </div>
-                                <div className="attendance-log-badges">
-                                  <strong>{row.dailyStatus}</strong>
-                                  <span>Penalty: {totalPenalty.toFixed(2)}</span>
-                                </div>
-                              </button>
-                            );
-                          })
-                        ) : (
-                          <p className="employee-ops-empty">No compliance records for the selected filters.</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-                  {attendanceViewTab === 'penalties' ? (
-                    <div className="attendance-audit-wrap">
-                      <div className="attendance-audit-filters">
-                        <label>
-                          <span>Date</span>
-                          <input
-                            type="date"
-                            value={attendanceAuditDate}
-                            onChange={(event) => setAttendanceAuditDate(event.target.value || getTodayIsoDate())}
-                          />
-                        </label>
-                        <label>
-                          <span>Penalty Status</span>
-                          <select
-                            className="filter-select"
-                            value={attendancePenaltyStatusFilter}
-                            onChange={(event) => setAttendancePenaltyStatusFilter(event.target.value)}
-                          >
-                            <option value="Outstanding">Outstanding</option>
-                            <option value="Cleared">Cleared</option>
-                            <option value="All">All</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Search</span>
-                          <input
-                            placeholder="Name, ID, or department"
-                            value={attendanceAuditSearchText}
-                            onChange={(event) => setAttendanceAuditSearchText(event.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <div className="attendance-export-actions">
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadCsv(
-                              `attendance-penalties-${attendanceAuditDate}.csv`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'penaltyLabel', label: 'Penalty' },
-                                { key: 'baseAmount', label: 'Base' },
-                                { key: 'clearedAmount', label: 'Cleared' },
-                                { key: 'outstandingAmount', label: 'Outstanding' },
-                              ],
-                              attendancePenaltyFilteredRows.map((row) => ({
-                                ...row,
-                                baseAmount: row.baseAmount.toFixed(2),
-                                clearedAmount: row.clearedAmount.toFixed(2),
-                                outstandingAmount: row.outstandingAmount.toFixed(2),
-                              }))
-                            )
-                          }
-                        >
-                          Export CSV
-                        </button>
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadPdf(
-                              `Attendance Penalties - ${attendanceAuditDate}`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'penaltyLabel', label: 'Penalty' },
-                                { key: 'baseAmount', label: 'Base' },
-                                { key: 'clearedAmount', label: 'Cleared' },
-                                { key: 'outstandingAmount', label: 'Outstanding' },
-                              ],
-                              attendancePenaltyFilteredRows.map((row) => ({
-                                ...row,
-                                baseAmount: row.baseAmount.toFixed(2),
-                                clearedAmount: row.clearedAmount.toFixed(2),
-                                outstandingAmount: row.outstandingAmount.toFixed(2),
-                              }))
-                            )
-                          }
-                        >
-                          Export PDF
-                        </button>
-                      </div>
-                      <div className="attendance-log-list">
-                        {attendancePenaltyFilteredRows.length > 0 ? (
-                          attendancePenaltyFilteredRows.map((row) => (
-                            <button
-                              key={row.key}
-                              type="button"
-                              className={`attendance-log-row action-row ${selectedPenaltyKey === row.key ? 'selected-row' : ''}`}
-                              onClick={() => {
-                                setSelectedPenaltyKey(row.key);
-                                setAttendanceDetailModal({ type: 'penalties', key: row.key });
-                              }}
-                            >
-                              <div>
-                                <p>
-                                  {row.employee} ({row.employeeId})
-                                </p>
-                                <span>{row.penaltyLabel}</span>
-                              </div>
-                              <div className="attendance-log-badges">
-                                <span>Base: {row.baseAmount.toFixed(2)}</span>
-                                <span>Cleared: {row.clearedAmount.toFixed(2)}</span>
-                                <strong>Outstanding: {row.outstandingAmount.toFixed(2)}</strong>
-                              </div>
-                            </button>
-                          ))
-                        ) : (
-                          <p className="employee-ops-empty">No penalty rows for the selected filters.</p>
-                        )}
-                      </div>
-                      {selectedPenaltyRow ? (
-                        <div className="penalty-action-card">
-                          <strong>
-                            {selectedPenaltyRow.employee} • {selectedPenaltyRow.penaltyLabel}
-                          </strong>
-                          <span>Outstanding: {selectedPenaltyRow.outstandingAmount.toFixed(2)}</span>
-                          <div className="attendance-audit-filters">
-                            <label>
-                              <span>Clearance Mode</span>
-                              <select
-                                className="filter-select"
-                                value={penaltyActionDraft.mode}
-                                onChange={(event) =>
-                                  setPenaltyActionDraft((prev) => ({
-                                    ...prev,
-                                    mode: event.target.value === 'full' ? 'full' : 'partial',
-                                  }))
-                                }
-                              >
-                                <option value="partial">Partial</option>
-                                <option value="full">Full</option>
-                              </select>
-                            </label>
-                            <label>
-                              <span>Clearance Amount</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                disabled={penaltyActionDraft.mode === 'full'}
-                                value={penaltyActionDraft.amount}
-                                onChange={(event) =>
-                                  setPenaltyActionDraft((prev) => ({
-                                    ...prev,
-                                    amount: event.target.value,
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Remark</span>
-                              <input
-                                placeholder="Reason for clearance"
-                                value={penaltyActionDraft.remark}
-                                onChange={(event) =>
-                                  setPenaltyActionDraft((prev) => ({
-                                    ...prev,
-                                    remark: event.target.value,
-                                  }))
-                                }
-                              />
-                            </label>
-                          </div>
-                          <button type="button" className="primary-btn" onClick={handlePenaltyActionSave}>
-                            Save Clearance Action
-                          </button>
-                          <div className="attendance-log-list">
-                            {selectedPenaltyRow.adjustments.length > 0 ? (
-                              selectedPenaltyRow.adjustments.map((row) => (
-                                <div key={row.id} className="attendance-log-row">
-                                  <div>
-                                    <p>{row.clearanceMode === 'full' ? 'Full Clearance' : 'Partial Clearance'}</p>
-                                    <span>
-                                      By {row.actorUsername} • {row.actedOn}
-                                    </span>
-                                  </div>
-                                  <div className="attendance-log-badges">
-                                    <strong>{toNumberValue(row.clearedAmount).toFixed(2)}</strong>
-                                    <span>{row.remark}</span>
-                                  </div>
-                                </div>
-                              ))
-                            ) : (
-                              <p className="employee-ops-empty">No clearance actions yet.</p>
-                            )}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {attendanceViewTab === 'performance' ? (
-                    <div className="attendance-audit-wrap">
-                      <div className="attendance-audit-filters">
-                        <label>
-                          <span>Period</span>
-                          <select
-                            className="filter-select"
-                            value={attendancePerformancePeriod}
-                            onChange={(event) => setAttendancePerformancePeriod(event.target.value)}
-                          >
-                            <option value="weekly">Weekly</option>
-                            <option value="monthly">Monthly</option>
-                            <option value="yearly">Yearly</option>
-                            <option value="custom">Custom Range</option>
-                          </select>
-                        </label>
-                        {attendancePerformancePeriod === 'custom' ? (
-                          <>
-                            <label>
-                              <span>Start Date</span>
-                              <input
-                                type="date"
-                                value={attendancePerformanceStartDate}
-                                onChange={(event) => setAttendancePerformanceStartDate(event.target.value)}
-                              />
-                            </label>
-                            <label>
-                              <span>End Date</span>
-                              <input
-                                type="date"
-                                value={attendancePerformanceEndDate}
-                                onChange={(event) => setAttendancePerformanceEndDate(event.target.value)}
-                              />
-                            </label>
-                          </>
-                        ) : null}
-                        <label>
-                          <span>Ranking Filter</span>
-                          <select
-                            className="filter-select"
-                            value={attendancePerformanceRankMetric}
-                            onChange={(event) => setAttendancePerformanceRankMetric(event.target.value)}
-                          >
-                            <option value="perfect-attendance">Perfect Attendance Rank</option>
-                            <option value="least-leave-applications">Least Leave Applications</option>
-                            <option value="most-leave-applications">Most Leave Applications</option>
-                            <option value="least-absent">Least Absent</option>
-                            <option value="most-absent">Most Absent</option>
-                            <option value="least-late">Least Late</option>
-                            <option value="most-late">Most Late</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Department</span>
-                          <select
-                            className="filter-select"
-                            value={attendancePerformanceDepartmentFilter}
-                            onChange={(event) => setAttendancePerformanceDepartmentFilter(event.target.value)}
-                          >
-                            {attendancePerformanceDepartmentOptions.map((departmentOption) => (
-                              <option key={departmentOption} value={departmentOption}>
-                                {departmentOption}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          <span>Search</span>
-                          <input
-                            placeholder="Name, ID, or department"
-                            value={attendancePerformanceSearchText}
-                            onChange={(event) => setAttendancePerformanceSearchText(event.target.value)}
-                          />
-                        </label>
-                      </div>
-                      <div className="attendance-stats-grid">
-                        <article className="attendance-stat">
-                          <strong>{attendancePerformanceRange.startDate}</strong>
-                          <span>Period Start</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>{attendancePerformanceRange.endDate}</strong>
-                          <span>Period End</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>{attendancePerformanceRows.filter((row) => row.perfectAttendance).length}</strong>
-                          <span>Perfect Attendance</span>
-                        </article>
-                        <article className="attendance-stat">
-                          <strong>{attendancePerformanceRows.length}</strong>
-                          <span>Employees Ranked</span>
-                        </article>
-                      </div>
-                      <div className="attendance-export-actions">
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadCsv(
-                              `attendance-performance-${attendancePerformanceRange.startDate}-${attendancePerformanceRange.endDate}.csv`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'department', label: 'Department' },
-                                { key: 'expectedWorkDays', label: 'Expected Days' },
-                                { key: 'onTimeCompleteDays', label: 'On Time Days' },
-                                { key: 'lateDays', label: 'Late Days' },
-                                { key: 'absentDays', label: 'Absent Days' },
-                                { key: 'leaveApplications', label: 'Leave Applications' },
-                                { key: 'leaveDays', label: 'Leave Days' },
-                                { key: 'attendanceScore', label: 'Score (%)' },
-                                { key: 'perfectAttendance', label: 'Perfect Attendance' },
-                              ],
-                              attendancePerformanceRows.map((row) => ({
-                                ...row,
-                                attendanceScore: row.attendanceScore.toFixed(2),
-                                perfectAttendance: row.perfectAttendance ? 'Yes' : 'No',
-                              }))
-                            )
-                          }
-                        >
-                          Export CSV
-                        </button>
-                        <button
-                          type="button"
-                          className="neutral-btn"
-                          onClick={() =>
-                            downloadPdf(
-                              `Attendance Performance ${attendancePerformanceRange.startDate} to ${attendancePerformanceRange.endDate}`,
-                              [
-                                { key: 'employee', label: 'Employee' },
-                                { key: 'employeeId', label: 'Employee ID' },
-                                { key: 'department', label: 'Department' },
-                                { key: 'expectedWorkDays', label: 'Expected Days' },
-                                { key: 'onTimeCompleteDays', label: 'On Time Days' },
-                                { key: 'lateDays', label: 'Late Days' },
-                                { key: 'absentDays', label: 'Absent Days' },
-                                { key: 'leaveApplications', label: 'Leave Applications' },
-                                { key: 'leaveDays', label: 'Leave Days' },
-                                { key: 'attendanceScore', label: 'Score (%)' },
-                                { key: 'perfectAttendance', label: 'Perfect Attendance' },
-                              ],
-                              attendancePerformanceRows.map((row) => ({
-                                ...row,
-                                attendanceScore: row.attendanceScore.toFixed(2),
-                                perfectAttendance: row.perfectAttendance ? 'Yes' : 'No',
-                              }))
-                            )
-                          }
-                        >
-                          Export PDF
-                        </button>
-                      </div>
-                      <div className="attendance-audit-table">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Rank</th>
-                              <th>Employee</th>
-                              <th>Department</th>
-                              <th>On Time</th>
-                              <th>Absent</th>
-                              <th>Late</th>
-                              <th>Leave Apps</th>
-                              <th>Perfect</th>
-                              <th>Score</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {attendancePerformanceRows.length > 0 ? (
-                              attendancePerformanceRows.map((row, index) => (
-                                <tr
-                                  key={row.employeeId}
-                                  className={selectedPerformanceEmployeeId === row.employeeId ? 'selected-row' : ''}
-                                  onClick={() => {
-                                    setSelectedPerformanceEmployeeId(row.employeeId);
-                                    setAttendanceDetailModal({ type: 'performance', key: row.employeeId });
-                                  }}
-                                >
-                                  <td>{index + 1}</td>
-                                  <td>
-                                    {row.employee} ({row.employeeId})
-                                  </td>
-                                  <td>{row.department}</td>
-                                  <td>
-                                    {row.onTimeCompleteDays}/{row.expectedWorkDays}
-                                  </td>
-                                  <td>{row.absentDays}</td>
-                                  <td>{row.lateDays}</td>
-                                  <td>{row.leaveApplications}</td>
-                                  <td>{row.perfectAttendance ? 'Yes' : 'No'}</td>
-                                  <td>{row.attendanceScore.toFixed(1)}%</td>
-                                </tr>
-                              ))
-                            ) : (
-                              <tr>
-                                <td colSpan={9}>No performance records for the selected filters.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                <AttendanceTimePage
+                  appSettings={appSettings}
+                  attendanceViewTab={attendanceViewTab}
+                  setAttendanceViewTab={setAttendanceViewTab}
+                  attendanceSearchText={attendanceSearchText}
+                  setAttendanceSearchText={setAttendanceSearchText}
+                  attendanceSearchMatches={attendanceSearchMatches}
+                  employeeBaseRows={employeeBaseRows}
+                  attendanceClockDraft={attendanceClockDraft}
+                  setAttendanceClockDraft={setAttendanceClockDraft}
+                  selectedAttendanceEmployee={selectedAttendanceEmployee}
+                  handleClockIn={handleClockIn}
+                  handleClockOut={handleClockOut}
+                  attendanceTodayRows={attendanceTodayRows}
+                  attendanceLateCount={attendanceLateCount}
+                  downloadCsv={downloadCsv}
+                  downloadPdf={downloadPdf}
+                  todayIsoDate={todayIsoDate}
+                  getTodayIsoDate={getTodayIsoDate}
+                  attendanceAuditDate={attendanceAuditDate}
+                  setAttendanceAuditDate={setAttendanceAuditDate}
+                  attendanceAuditFilter={attendanceAuditFilter}
+                  setAttendanceAuditFilter={setAttendanceAuditFilter}
+                  attendanceAuditSearchText={attendanceAuditSearchText}
+                  setAttendanceAuditSearchText={setAttendanceAuditSearchText}
+                  attendanceComplianceFilteredRows={attendanceComplianceFilteredRows}
+                  setAttendanceDetailModal={setAttendanceDetailModal}
+                  selectedComplianceKey={selectedComplianceKey}
+                  setSelectedComplianceKey={setSelectedComplianceKey}
+                  attendancePenaltyStatusFilter={attendancePenaltyStatusFilter}
+                  setAttendancePenaltyStatusFilter={setAttendancePenaltyStatusFilter}
+                  attendancePenaltyFilteredRows={attendancePenaltyFilteredRows}
+                  selectedPenaltyKey={selectedPenaltyKey}
+                  setSelectedPenaltyKey={setSelectedPenaltyKey}
+                  selectedPenaltyRow={selectedPenaltyRow}
+                  penaltyActionDraft={penaltyActionDraft}
+                  setPenaltyActionDraft={setPenaltyActionDraft}
+                  handlePenaltyActionSave={handlePenaltyActionSave}
+                  toNumberValue={toNumberValue}
+                  attendancePerformancePeriod={attendancePerformancePeriod}
+                  setAttendancePerformancePeriod={setAttendancePerformancePeriod}
+                  attendancePerformanceStartDate={attendancePerformanceStartDate}
+                  setAttendancePerformanceStartDate={setAttendancePerformanceStartDate}
+                  attendancePerformanceEndDate={attendancePerformanceEndDate}
+                  setAttendancePerformanceEndDate={setAttendancePerformanceEndDate}
+                  attendancePerformanceRankMetric={attendancePerformanceRankMetric}
+                  setAttendancePerformanceRankMetric={setAttendancePerformanceRankMetric}
+                  attendancePerformanceDepartmentFilter={attendancePerformanceDepartmentFilter}
+                  setAttendancePerformanceDepartmentFilter={setAttendancePerformanceDepartmentFilter}
+                  attendancePerformanceDepartmentOptions={attendancePerformanceDepartmentOptions}
+                  attendancePerformanceSearchText={attendancePerformanceSearchText}
+                  setAttendancePerformanceSearchText={setAttendancePerformanceSearchText}
+                  attendancePerformanceRange={attendancePerformanceRange}
+                  attendancePerformanceRows={attendancePerformanceRows}
+                  selectedPerformanceEmployeeId={selectedPerformanceEmployeeId}
+                  setSelectedPerformanceEmployeeId={setSelectedPerformanceEmployeeId}
+                  getCurrentClockValue={getCurrentClockValue}
+                />
               ) : null}
-                  {activeModuleId === 'leave-management' ? (
-                <div className="attendance-ops-card">
-                  <div className="attendance-ops-head">
-                    <h4>Leave System</h4>
-                    <span>Request list • Department approval • HR approval • Manager approval</span>
-                  </div>
-                  <div className="attendance-audit-filters">
-                    <label>
-                      <span>Department</span>
-                      <select
-                        className="filter-select"
-                        value={leaveDepartmentFilter}
-                        onChange={(event) => setLeaveDepartmentFilter(event.target.value)}
-                      >
-                        {leaveDepartmentOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Status</span>
-                      <select
-                        className="filter-select"
-                        value={leaveStatusFilter}
-                        onChange={(event) => setLeaveStatusFilter(event.target.value)}
-                      >
-                        {leaveStatusOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Sort</span>
-                      <select className="filter-select" value={leaveSortBy} onChange={(event) => setLeaveSortBy(event.target.value)}>
-                        <option value="date-desc">Date (Newest)</option>
-                        <option value="date-asc">Date (Oldest)</option>
-                        <option value="employee-asc">Employee (A-Z)</option>
-                        <option value="employee-desc">Employee (Z-A)</option>
-                        <option value="days-desc">Days (High-Low)</option>
-                        <option value="days-asc">Days (Low-High)</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Search</span>
-                      <input
-                        placeholder="Name, ID, type, department"
-                        value={leaveSearchText}
-                        onChange={(event) => setLeaveSearchText(event.target.value)}
-                      />
-                    </label>
-                  </div>
-                  <div className="attendance-stats-grid">
-                    <article className="attendance-stat">
-                      <strong>{leaveRequestFilteredRows.length}</strong>
-                      <span>Total Requests</span>
-                    </article>
-                    <article className="attendance-stat">
-                      <strong>
-                        {leaveRequestFilteredRows.filter((row) =>
-                          String(getLeaveViewStatus(row)).toLowerCase().includes('pending')
-                        ).length}
-                      </strong>
-                      <span>Pending Requests</span>
-                    </article>
-                    <article className="attendance-stat">
-                      <strong>{leaveRequestFilteredRows.filter((row) => String(getLeaveViewStatus(row)) === 'Approved').length}</strong>
-                      <span>Approved Requests</span>
-                    </article>
-                    <article className="attendance-stat">
-                      <strong>{leaveRequestFilteredRows.filter((row) => String(getLeaveViewStatus(row)) === 'Rejected').length}</strong>
-                      <span>Rejected Requests</span>
-                    </article>
-                  </div>
-                  {leaveActionMessage ? <p className="field-title">{leaveActionMessage}</p> : null}
-                  {leaveViewTab === 'requests' ? (
-                    <div className="settings-tab-strip leave-request-page-tabs">
-                      <button
-                        type="button"
-                        className={`settings-tab-btn ${leaveRequestPageTab === 'requests' ? 'active' : ''}`}
-                        onClick={() => setLeaveRequestPageTab('requests')}
-                      >
-                        Request List
-                      </button>
-                      <button
-                        type="button"
-                        className={`settings-tab-btn ${leaveRequestPageTab === 'balances' ? 'active' : ''}`}
-                        onClick={() => setLeaveRequestPageTab('balances')}
-                      >
-                        Leave Balance
-                      </button>
-                    </div>
-                  ) : null}
-                  <div className="attendance-audit-wrap">
-                    {leaveViewTab !== 'requests' || leaveRequestPageTab === 'requests' ? (
-                      <div className="attendance-audit-table">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Request</th>
-                              <th>Employee</th>
-                              <th>Dates</th>
-                              <th>Days</th>
-                              <th>Type</th>
-                              <th>Department</th>
-                              <th>HR</th>
-                              <th>Manager</th>
-                              <th>Approval Trail</th>
-                              <th>Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {leaveRequestFilteredRows.length > 0 ? (
-                              leaveRequestFilteredRows.map((row) => {
-                                return (
-                                  <tr
-                                    key={row.id}
-                                    className={selectedRowId === row.id ? 'selected-row' : ''}
-                                    onClick={() => openDetails(row.id)}
-                                  >
-                                    <td>{row.id}</td>
-                                    <td>
-                                      {row.employee} ({row.employeeId})
-                                    </td>
-                                    <td>
-                                      {row.startDate} → {row.endDate}
-                                    </td>
-                                    <td>{row.daysRequested}</td>
-                                    <td>{row.type}</td>
-                                    <td>
-                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.departmentApproval)}`}>
-                                        {row.departmentApproval}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.hrApproval)}`}>
-                                        {row.hrApproval}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(row.managerApproval)}`}>
-                                        {row.managerApproval}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      {[
-                                        row.departmentApprover
-                                          ? `Department: ${row.departmentApprover} (${row.departmentComment || 'No comment'})`
-                                          : '',
-                                        row.hrApprover ? `HR: ${row.hrApprover} (${row.hrComment || 'No comment'})` : '',
-                                        row.managerApprover
-                                          ? `Manager: ${row.managerApprover} (${row.managerComment || 'No comment'})`
-                                          : '',
-                                      ]
-                                        .filter(Boolean)
-                                        .join(' | ') || 'No approvals yet'}
-                                    </td>
-                                    <td>
-                                      <span className={`approval-stage-badge ${getApprovalBadgeClass(getLeaveViewStatus(row))}`}>
-                                        {getLeaveViewStatus(row)}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                );
-                              })
-                            ) : (
-                              <tr>
-                                <td colSpan={10}>No leave requests for the selected filters.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-                    {leaveViewTab === 'requests' && leaveRequestPageTab === 'balances' ? (
-                      <div className="attendance-audit-table">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Employee</th>
-                              <th>Department</th>
-                              <th>Contract End</th>
-                              <th>Opening Balance</th>
-                              <th>Approved Days</th>
-                              <th>Pending Days</th>
-                              <th>Available Balance</th>
-                              <th>Daily Basic Pay</th>
-                              <th>Unused Leave Days</th>
-                              <th>Leave Payout</th>
-                              <th>Payout Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {leaveBalanceFilteredRows.length > 0 ? (
-                              leaveBalanceFilteredRows.map((row) => (
-                                <tr key={row.employeeId}>
-                                  <td>
-                                    {row.employee} ({row.employeeId})
-                                  </td>
-                                  <td>{row.department}</td>
-                                  <td>{row.contractEndDate}</td>
-                                  <td>{row.openingBalance.toFixed(1)}</td>
-                                  <td>{row.approvedDays.toFixed(1)}</td>
-                                  <td>{row.pendingDays.toFixed(1)}</td>
-                                  <td>{row.availableBalance.toFixed(1)}</td>
-                                  <td>
-                                    {appSettings.defaultCurrency} {row.dailyBasicPay.toFixed(2)}
-                                  </td>
-                                  <td>{row.unusedLeaveDays.toFixed(1)}</td>
-                                  <td>
-                                    {appSettings.defaultCurrency} {row.leavePayoutAmount.toFixed(2)}
-                                  </td>
-                                  <td>{row.payoutStatus}</td>
-                                </tr>
-                              ))
-                            ) : (
-                              <tr>
-                                <td colSpan={11}>No leave balance rows for the selected filters.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
+              {activeModuleId === 'leave-management' ? (
+                <LeaveManagementPage
+                  appSettings={appSettings}
+                  selectedRowId={selectedRowId}
+                  leaveDepartmentFilter={leaveDepartmentFilter}
+                  setLeaveDepartmentFilter={setLeaveDepartmentFilter}
+                  leaveDepartmentOptions={leaveDepartmentOptions}
+                  leaveStatusFilter={leaveStatusFilter}
+                  setLeaveStatusFilter={setLeaveStatusFilter}
+                  leaveStatusOptions={leaveStatusOptions}
+                  leaveSortBy={leaveSortBy}
+                  setLeaveSortBy={setLeaveSortBy}
+                  leaveSearchText={leaveSearchText}
+                  setLeaveSearchText={setLeaveSearchText}
+                  leaveRequestFilteredRows={leaveRequestFilteredRows}
+                  getLeaveViewStatus={getLeaveViewStatus}
+                  leaveActionMessage={leaveActionMessage}
+                  leaveViewTab={leaveViewTab}
+                  leaveRequestPageTab={leaveRequestPageTab}
+                  setLeaveRequestPageTab={setLeaveRequestPageTab}
+                  openDetails={openDetails}
+                  getApprovalBadgeClass={getApprovalBadgeClass}
+                  leaveBalanceFilteredRows={leaveBalanceFilteredRows}
+                  leaveApprovalDrafts={leaveApprovalDrafts}
+                  setLeaveApprovalDrafts={setLeaveApprovalDrafts}
+                />
               ) : null}
               {activeModuleId === 'fingerprint' ? (
-                <div className="fingerprint-ops-card">
-                  <div className="attendance-ops-head">
-                    <h4>Fingerprint Enrollment Console</h4>
-                    <span>{fingerprintConnectionState}</span>
-                  </div>
-                  <div className="attendance-ops-form">
-                    <label>
-                      <span>Employee</span>
-                      <select
-                        className="filter-select"
-                        value={fingerprintDraft.employeeId}
-                        onChange={(event) =>
-                          setFingerprintDraft((prev) => ({
-                            ...prev,
-                            employeeId: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="">Select employee</option>
-                        {employeeBaseRows.map((employee) => (
-                          <option key={employee.id} value={employee.id}>
-                            {employee.fullName} ({employee.id})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Device User ID</span>
-                      <input
-                        placeholder="e.g. BIO-3042"
-                        value={fingerprintDraft.deviceUserId}
-                        onChange={(event) =>
-                          setFingerprintDraft((prev) => ({
-                            ...prev,
-                            deviceUserId: event.target.value,
-                          }))
-                        }
-                      />
-                    </label>
-                    <div className="attendance-ops-actions">
-                      <button type="button" className="primary-btn" onClick={handleEnrollFingerprint}>
-                        Enroll Employee
-                      </button>
-                      <button type="button" className="neutral-btn" onClick={handleQueueFingerprintSync}>
-                        Queue Device Sync
-                      </button>
-                    </div>
-                  </div>
-                  <div className="fingerprint-meta-grid">
-                    <article className="attendance-stat">
-                      <strong>{fingerprintRows.length}</strong>
-                      <span>Total Enrolled</span>
-                    </article>
-                    <article className="attendance-stat">
-                      <strong>{appSettings.fingerprintIntegration.mode}</strong>
-                      <span>Integration Mode</span>
-                    </article>
-                    <article className="attendance-stat">
-                      <strong>{appSettings.fingerprintIntegration.apiVersion}</strong>
-                      <span>API Version</span>
-                    </article>
-                  </div>
-                  <p className="fingerprint-hint">
-                    Current endpoint: {appSettings.fingerprintIntegration.gatewayUrl || 'Not set'} • Heartbeat every{' '}
-                    {appSettings.fingerprintIntegration.heartbeatSeconds}s
-                    {selectedFingerprintEmployee ? ` • Employee: ${selectedFingerprintEmployee.fullName}` : ''}
-                  </p>
-                </div>
+                <FingerprintPage
+                  fingerprintConnectionState={fingerprintConnectionState}
+                  fingerprintDraft={fingerprintDraft}
+                  setFingerprintDraft={setFingerprintDraft}
+                  employeeBaseRows={employeeBaseRows}
+                  handleEnrollFingerprint={handleEnrollFingerprint}
+                  handleQueueFingerprintSync={handleQueueFingerprintSync}
+                  fingerprintRows={fingerprintRows}
+                  appSettings={appSettings}
+                  selectedFingerprintEmployee={selectedFingerprintEmployee}
+                />
               ) : null}
 
               {showMainModuleTable ? (
@@ -6263,19 +5313,7 @@ function App() {
                           ))}
                       </div>
                       {activeModuleId === 'loan-records' && loanInstallmentPreview ? (
-                        <div className="penalty-action-card">
-                          <strong>Installment Preview</strong>
-                          <span>
-                            Amount {loanInstallmentPreview.principal.toFixed(2)} with interest{' '}
-                            {loanInstallmentPreview.interestPercent.toFixed(2)}% over{' '}
-                            {loanInstallmentPreview.tenorMonths} month(s)
-                          </span>
-                          <span>
-                            Monthly installment{' '}
-                            {loanInstallmentPreview.monthlyInstallment.toFixed(2)} • Total repay{' '}
-                            {loanInstallmentPreview.totalRepay.toFixed(2)}
-                          </span>
-                        </div>
+                        <LoanRecordsPage loanInstallmentPreview={loanInstallmentPreview} />
                       ) : null}
                     </>
                   )}
