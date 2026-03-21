@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 export default function AttendanceTimePage({
   appSettings,
@@ -58,6 +58,51 @@ export default function AttendanceTimePage({
   setSelectedPerformanceEmployeeId,
   getCurrentClockValue,
 }) {
+  const [trackingEmployees, setTrackingEmployees] = useState([]);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingError, setTrackingError] = useState('');
+
+  useEffect(() => {
+    if (attendanceViewTab !== 'tracking') {
+      return undefined;
+    }
+    let cancelled = false;
+    let intervalId;
+    const fetchTracking = async () => {
+      try {
+        if (cancelled) {
+          return;
+        }
+        setTrackingLoading(true);
+        const response = await fetch('http://localhost:8000/api/tracking/employees');
+        if (!response.ok) {
+          throw new Error('Failed to load tracking data');
+        }
+        const data = await response.json();
+        if (!cancelled) {
+          setTrackingEmployees(Array.isArray(data.employees) ? data.employees : []);
+          setTrackingError('');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setTrackingError('Unable to load tracking data');
+        }
+      } finally {
+        if (!cancelled) {
+          setTrackingLoading(false);
+        }
+      }
+    };
+    fetchTracking();
+    intervalId = setInterval(fetchTracking, 10000);
+    return () => {
+      cancelled = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [attendanceViewTab]);
+
   return (
     <div className="attendance-ops-card">
       <div className="attendance-ops-head">
@@ -94,6 +139,13 @@ export default function AttendanceTimePage({
           onClick={() => setAttendanceViewTab('performance')}
         >
           Performance
+        </button>
+        <button
+          type="button"
+          className={`settings-tab-btn ${attendanceViewTab === 'tracking' ? 'active' : ''}`}
+          onClick={() => setAttendanceViewTab('tracking')}
+        >
+          Live Tracking
         </button>
       </div>
       {attendanceViewTab === 'clock' ? (
@@ -577,6 +629,69 @@ export default function AttendanceTimePage({
                 ) : (
                   <tr>
                     <td colSpan={7}>No performance records for the selected filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'tracking' ? (
+        <div className="attendance-audit-wrap">
+          <div className="attendance-audit-head">
+            <h4>Live Presence Monitor</h4>
+            <div className="attendance-audit-filters">
+              <p>
+                Status values: INSIDE, OUTSIDE, OFFLINE. Distance uses office GPS settings and Haversine distance.
+              </p>
+            </div>
+          </div>
+          {trackingError ? <p className="form-error">{trackingError}</p> : null}
+          <div className="attendance-audit-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Status</th>
+                  <th>Distance (m)</th>
+                  <th>Last Seen</th>
+                  <th>WiFi</th>
+                  <th>Flags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trackingLoading ? (
+                  <tr>
+                    <td colSpan={6}>Loading tracking data...</td>
+                  </tr>
+                ) : trackingEmployees.length > 0 ? (
+                  trackingEmployees.map((employee) => (
+                    <tr key={employee.employeeId}>
+                      <td>
+                        {employee.fullName} ({employee.employeeId})
+                      </td>
+                      <td>{employee.status || 'OFFLINE'}</td>
+                      <td>
+                        {typeof employee.distanceMeters === 'number'
+                          ? Math.round(employee.distanceMeters)
+                          : '—'}
+                      </td>
+                      <td>{employee.lastSeen || '—'}</td>
+                      <td>{employee.wifiSsid || '—'}</td>
+                      <td>
+                        {employee.outsidePremises ? 'OUTSIDE PREMISES' : ''}
+                        {employee.offline ? (employee.outsidePremises ? ' • OFFLINE' : 'OFFLINE') : ''}
+                        {!employee.wifiValid ? (employee.outsidePremises || employee.offline ? ' • ' : '') + 'WiFi Mismatch' : ''}
+                        {employee.gpsSpoofSuspected
+                          ? (employee.outsidePremises || employee.offline || !employee.wifiValid ? ' • ' : '') +
+                            'GPS Suspicious'
+                          : ''}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6}>No tracking data available.</td>
                   </tr>
                 )}
               </tbody>

@@ -1,8 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders pthr workspace heading', () => {
+test('renders login screen when not authenticated', () => {
   render(<App />);
-  const headingElement = screen.getByText(/pthr hr management workspace/i);
-  expect(headingElement).toBeInTheDocument();
+  expect(screen.getByText(/sign in to continue/i)).toBeInTheDocument();
 });

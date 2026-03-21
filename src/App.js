@@ -1,11 +1,14 @@
-import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
+import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
 import LeaveManagementPage from './pages/LeaveManagementPage';
 import PayrollPage from './pages/PayrollPage';
 import LoanRecordsPage from './pages/LoanRecordsPage';
+import AdminTrackingPage from './pages/AdminTrackingPage';
+import UserManagementPage from './pages/UserManagementPage';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -452,7 +455,12 @@ const createBarcodeDataUrl = (value, width = 360, height = 56, color = '#132d63'
 
 function App({ initialModuleId }) {
   const firstModuleId = sidebarSections[0].items[0].id;
-  const [activeModuleId, setActiveModuleId] = useState(initialModuleId || firstModuleId);
+  const storedAuth = typeof window !== 'undefined' ? getStoredAuth() : null;
+  const [currentUser, setCurrentUser] = useState(storedAuth?.user || null);
+  const [authToken, setAuthToken] = useState(storedAuth?.token || '');
+  const [activeModuleId, setActiveModuleId] = useState(
+    initialModuleId || storedAuth?.lastModuleId || firstModuleId
+  );
   const [searchText, setSearchText] = useState('');
   const [filterValue, setFilterValue] = useState('All');
   const [statusFilterValue, setStatusFilterValue] = useState('All');
@@ -505,6 +513,9 @@ function App({ initialModuleId }) {
   const [leaveActionMessage, setLeaveActionMessage] = useState('');
   const [leaveApprovalDrafts, setLeaveApprovalDrafts] = useState({});
   const [toasts, setToasts] = useState([]);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
     mode: 'partial',
     amount: '',
@@ -517,6 +528,10 @@ function App({ initialModuleId }) {
   const [settingsTab, setSettingsTab] = useState('general');
   const [modalState, setModalState] = useState({ mode: null, rowId: null });
   const [currencyInput, setCurrencyInput] = useState('');
+  const [trackingSettingsLoading, setTrackingSettingsLoading] = useState(false);
+  const [trackingSettingsError, setTrackingSettingsError] = useState('');
+  const [trackingSettingsSaving, setTrackingSettingsSaving] = useState(false);
+  const [trackingSettingsSavedMessage, setTrackingSettingsSavedMessage] = useState('');
   const [appSettings, setAppSettings] = useState({
     appName: 'PTHR',
     sidebarColor: '#0a73d9',
@@ -565,6 +580,21 @@ function App({ initialModuleId }) {
       apiVersion: 'v1',
       heartbeatSeconds: 30,
     },
+    trackingRules: {
+      officeLat: null,
+      officeLng: null,
+      geofenceRadiusMeters: 100,
+      geofenceEnabled: true,
+      wifiValidationEnabled: false,
+      activityMonitoringEnabled: false,
+      randomSelfieEnabled: false,
+      antiGpsSpoofingEnabled: false,
+      whatsappAlertsEnabled: false,
+      officeWifiSsids: [],
+      officeWifiBssids: [],
+      officeIpRanges: [],
+      offlineMinutesThreshold: 15,
+    },
     departments: [
       { name: 'Human Resources', code: 'HR' },
       { name: 'Engineering', code: 'EN' },
@@ -573,19 +603,312 @@ function App({ initialModuleId }) {
     ],
   });
   const payrollUploadInputRef = useRef(null);
-  const [moduleRowsState, setModuleRowsState] = useState(() => {
-    const initialRows = Object.fromEntries(Object.entries(moduleUiData).map(([moduleId, value]) => [moduleId, value.rows]));
-    if (!initialRows['loan-records']) {
-      initialRows['loan-records'] = defaultEmployeeLoanRows;
-    }
-    if (!initialRows['attendance-penalty-adjustments']) {
-      initialRows['attendance-penalty-adjustments'] = [];
-    }
-    return initialRows;
+  const [moduleRowsState, setModuleRowsState] = useState(() => ({
+    'attendance-penalty-adjustments': [],
+  }));
+  const [backendHealth, setBackendHealth] = useState({
+    status: 'unknown',
+    mongo: 'unknown',
   });
 
   const isSettingsPage = activeModuleId === 'settings';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
+
+  const isSuperAdmin = currentUser?.role === 'superadmin';
+
+  const allowedModulesByRole = useMemo(() => {
+    if (!currentUser) {
+      return new Set();
+    }
+    if (isSuperAdmin) {
+      return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
+    }
+    if (currentUser.role === 'employee') {
+      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
+    }
+    if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
+      return new Set(currentUser.allowedModules);
+    }
+    return new Set(['employee-management', 'attendance-time', 'leave-management']);
+  }, [currentUser, isSuperAdmin]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const checkHealth = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/health');
+        if (!response.ok) {
+          throw new Error('Health check failed');
+        }
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        setBackendHealth({
+          status: data.status || 'error',
+          mongo: data.mongo || 'unavailable',
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setBackendHealth({
+            status: 'error',
+            mongo: 'unavailable',
+          });
+        }
+      }
+    };
+    checkHealth();
+    const intervalId = setInterval(checkHealth, 60000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  const handleLoginSubmit = async (event) => {
+    event.preventDefault();
+    setLoginError('');
+    setLoginLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: loginForm.username.trim(),
+          password: loginForm.password,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        if (response.status === 401 || response.status === 400) {
+          setLoginError(data?.error || 'Invalid username or password');
+        } else {
+          setLoginError(data?.error || 'Login failed');
+        }
+        return;
+      }
+      const data = await response.json();
+      if (!data || !data.token || !data.user) {
+        setLoginError('Unexpected login response');
+        return;
+      }
+      setCurrentUser(data.user);
+      setAuthToken(data.token);
+      const payload = {
+        token: data.token,
+        user: data.user,
+        lastModuleId: activeModuleId,
+      };
+      storeAuth(payload);
+      setLoginForm({ username: '', password: '' });
+      const firstAllowed = sidebarSections
+        .flatMap((section) => section.items)
+        .find((item) => allowedModulesByRole.has(item.id));
+      if (firstAllowed) {
+        setActiveModuleId(firstAllowed.id);
+      }
+    } catch (error) {
+      setLoginError('Unable to reach server');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setAuthToken('');
+    clearAuth();
+  };
+
+  useEffect(() => {
+    if (!activeModuleId || isSettingsPage || activeModuleId === 'monitoring-tracking') {
+      return;
+    }
+    let cancelled = false;
+    const loadModuleRows = async () => {
+      try {
+        const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`);
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        const records = Array.isArray(data.records) ? data.records : [];
+        setModuleRowsState((prev) => ({
+          ...prev,
+          [activeModuleId]: records,
+        }));
+      } catch (error) {
+      }
+    };
+    loadModuleRows();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeModuleId, isSettingsPage]);
+
+  useEffect(() => {
+    const fetchTrackingSettings = async () => {
+      try {
+        setTrackingSettingsLoading(true);
+        const response = await fetch('http://localhost:8000/api/tracking/settings');
+        if (!response.ok) {
+          throw new Error('Failed to load tracking settings');
+        }
+        const data = await response.json();
+        setAppSettings((prev) => ({
+          ...prev,
+          trackingRules: {
+            ...prev.trackingRules,
+            officeLat:
+              data.officeLat === null || data.officeLat === undefined
+                ? prev.trackingRules.officeLat
+                : data.officeLat,
+            officeLng:
+              data.officeLng === null || data.officeLng === undefined
+                ? prev.trackingRules.officeLng
+                : data.officeLng,
+            geofenceRadiusMeters:
+              data.geofenceRadiusMeters === null || data.geofenceRadiusMeters === undefined
+                ? prev.trackingRules.geofenceRadiusMeters
+                : data.geofenceRadiusMeters,
+            geofenceEnabled:
+              data.geofenceEnabled === undefined
+                ? prev.trackingRules.geofenceEnabled
+                : Boolean(data.geofenceEnabled),
+            wifiValidationEnabled:
+              data.wifiValidationEnabled === undefined
+                ? prev.trackingRules.wifiValidationEnabled
+                : Boolean(data.wifiValidationEnabled),
+            activityMonitoringEnabled:
+              data.activityMonitoringEnabled === undefined
+                ? prev.trackingRules.activityMonitoringEnabled
+                : Boolean(data.activityMonitoringEnabled),
+            randomSelfieEnabled:
+              data.randomSelfieEnabled === undefined
+                ? prev.trackingRules.randomSelfieEnabled
+                : Boolean(data.randomSelfieEnabled),
+            antiGpsSpoofingEnabled:
+              data.antiGpsSpoofingEnabled === undefined
+                ? prev.trackingRules.antiGpsSpoofingEnabled
+                : Boolean(data.antiGpsSpoofingEnabled),
+            whatsappAlertsEnabled:
+              data.whatsappAlertsEnabled === undefined
+                ? prev.trackingRules.whatsappAlertsEnabled
+                : Boolean(data.whatsappAlertsEnabled),
+            officeWifiSsids: Array.isArray(data.officeWifiSsids)
+              ? data.officeWifiSsids
+              : prev.trackingRules.officeWifiSsids,
+            officeWifiBssids: Array.isArray(data.officeWifiBssids)
+              ? data.officeWifiBssids
+              : prev.trackingRules.officeWifiBssids,
+            officeIpRanges: Array.isArray(data.officeIpRanges)
+              ? data.officeIpRanges
+              : prev.trackingRules.officeIpRanges,
+            offlineMinutesThreshold:
+              data.offlineMinutesThreshold === null || data.offlineMinutesThreshold === undefined
+                ? prev.trackingRules.offlineMinutesThreshold
+                : data.offlineMinutesThreshold,
+          },
+        }));
+        setTrackingSettingsError('');
+      } catch (error) {
+        setTrackingSettingsError('Unable to load tracking settings from backend');
+      } finally {
+        setTrackingSettingsLoading(false);
+      }
+    };
+
+    fetchTrackingSettings();
+  }, []);
+
+  const handleSaveTrackingSettings = async () => {
+    try {
+      setTrackingSettingsSaving(true);
+      setTrackingSettingsSavedMessage('');
+      setTrackingSettingsError('');
+      const response = await fetch('http://localhost:8000/api/tracking/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(appSettings.trackingRules),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save tracking settings');
+      }
+      const data = await response.json();
+      if (data && data.settings) {
+        setAppSettings((prev) => ({
+          ...prev,
+          trackingRules: {
+            ...prev.trackingRules,
+            officeLat:
+              data.settings.officeLat === null || data.settings.officeLat === undefined
+                ? prev.trackingRules.officeLat
+                : data.settings.officeLat,
+            officeLng:
+              data.settings.officeLng === null || data.settings.officeLng === undefined
+                ? prev.trackingRules.officeLng
+                : data.settings.officeLng,
+            geofenceRadiusMeters:
+              data.settings.geofenceRadiusMeters === null ||
+              data.settings.geofenceRadiusMeters === undefined
+                ? prev.trackingRules.geofenceRadiusMeters
+                : data.settings.geofenceRadiusMeters,
+            geofenceEnabled:
+              data.settings.geofenceEnabled === undefined
+                ? prev.trackingRules.geofenceEnabled
+                : Boolean(data.settings.geofenceEnabled),
+            wifiValidationEnabled:
+              data.settings.wifiValidationEnabled === undefined
+                ? prev.trackingRules.wifiValidationEnabled
+                : Boolean(data.settings.wifiValidationEnabled),
+            activityMonitoringEnabled:
+              data.settings.activityMonitoringEnabled === undefined
+                ? prev.trackingRules.activityMonitoringEnabled
+                : Boolean(data.settings.activityMonitoringEnabled),
+            randomSelfieEnabled:
+              data.settings.randomSelfieEnabled === undefined
+                ? prev.trackingRules.randomSelfieEnabled
+                : Boolean(data.settings.randomSelfieEnabled),
+            antiGpsSpoofingEnabled:
+              data.settings.antiGpsSpoofingEnabled === undefined
+                ? prev.trackingRules.antiGpsSpoofingEnabled
+                : Boolean(data.settings.antiGpsSpoofingEnabled),
+            whatsappAlertsEnabled:
+              data.settings.whatsappAlertsEnabled === undefined
+                ? prev.trackingRules.whatsappAlertsEnabled
+                : Boolean(data.settings.whatsappAlertsEnabled),
+            officeWifiSsids: Array.isArray(data.settings.officeWifiSsids)
+              ? data.settings.officeWifiSsids
+              : prev.trackingRules.officeWifiSsids,
+            officeWifiBssids: Array.isArray(data.settings.officeWifiBssids)
+              ? data.settings.officeWifiBssids
+              : prev.trackingRules.officeWifiBssids,
+            officeIpRanges: Array.isArray(data.settings.officeIpRanges)
+              ? data.settings.officeIpRanges
+              : prev.trackingRules.officeIpRanges,
+            offlineMinutesThreshold:
+              data.settings.offlineMinutesThreshold === null ||
+              data.settings.offlineMinutesThreshold === undefined
+                ? prev.trackingRules.offlineMinutesThreshold
+                : data.settings.offlineMinutesThreshold,
+          },
+        }));
+      }
+      setTrackingSettingsSavedMessage('Tracking settings saved to backend');
+    } catch (error) {
+      setTrackingSettingsError('Unable to save tracking settings to backend');
+    } finally {
+      setTrackingSettingsSaving(false);
+    }
+  };
+
   const rows = useMemo(() => {
     if (!activeModuleConfig) {
       return [];
@@ -2213,7 +2536,9 @@ function App({ initialModuleId }) {
     printWindow.print();
   };
   const showMainModuleTable =
-    (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') && activeModuleId !== 'leave-management';
+    (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
+    activeModuleId !== 'leave-management' &&
+    activeModuleId !== 'monitoring-tracking';
   const fingerprintConnectionState = useMemo(() => {
     if (appSettings.fingerprintIntegration.mode === 'simulation') {
       return 'Simulation Ready';
@@ -2883,10 +3208,21 @@ function App({ initialModuleId }) {
   };
 
   const handleDelete = (rowId) => {
-    setModuleRowsState((prev) => ({
-      ...prev,
-      [activeModuleId]: prev[activeModuleId].filter((row) => row.id !== rowId),
-    }));
+    if (!activeModuleId || !rowId) {
+      return;
+    }
+    if (activeModuleId !== 'attendance-penalty-adjustments') {
+      fetch(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+    }
+    setModuleRowsState((prev) => {
+      const currentRows = prev[activeModuleId] || [];
+      return {
+        ...prev,
+        [activeModuleId]: currentRows.filter((row) => row.id !== rowId),
+      };
+    });
     if (selectedRowId === rowId) {
       setSelectedRowId(null);
     }
@@ -2895,7 +3231,7 @@ function App({ initialModuleId }) {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!activeModuleConfig) {
       return;
     }
@@ -3088,13 +3424,30 @@ function App({ initialModuleId }) {
                 : 'Pending HR'
               : 'Pending Department'),
       };
-      setModuleRowsState((prev) => ({
-        ...prev,
-        'leave-management':
+      try {
+        const url =
           editRowId === 'new'
-            ? [requestPayload, ...(prev['leave-management'] || [])]
-            : (prev['leave-management'] || []).map((row) => (row.id === editRowId ? requestPayload : row)),
-      }));
+            ? 'http://localhost:8000/api/modules/leave-management'
+            : `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`;
+        const method = editRowId === 'new' ? 'POST' : 'PUT';
+        const response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestPayload),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const saved = data.record || requestPayload;
+          setModuleRowsState((prev) => ({
+            ...prev,
+            'leave-management':
+              editRowId === 'new'
+                ? [saved, ...(prev['leave-management'] || [])]
+                : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
+          }));
+        }
+      } catch (error) {
+      }
       setLeaveActionMessage(
         editRowId === 'new'
           ? 'Leave request submitted to department approval.'
@@ -3182,18 +3535,79 @@ function App({ initialModuleId }) {
           : formValues.id || editRowId,
     };
 
-    setModuleRowsState((prev) => {
-      if (editRowId === 'new') {
+    if (activeModuleId !== 'attendance-penalty-adjustments') {
+      try {
+        const url =
+          editRowId === 'new'
+            ? `http://localhost:8000/api/modules/${activeModuleId}`
+            : `http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`;
+        const method = editRowId === 'new' ? 'POST' : 'PUT';
+        const response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(rowWithId),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const saved = data.record || rowWithId;
+          setModuleRowsState((prev) => {
+            const currentRows = prev[activeModuleId] || [];
+            if (editRowId === 'new') {
+              return {
+                ...prev,
+                [activeModuleId]: [saved, ...currentRows],
+              };
+            }
+            return {
+              ...prev,
+              [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? saved : row)),
+            };
+          });
+        } else {
+          setModuleRowsState((prev) => {
+            const currentRows = prev[activeModuleId] || [];
+            if (editRowId === 'new') {
+              return {
+                ...prev,
+                [activeModuleId]: [rowWithId, ...currentRows],
+              };
+            }
+            return {
+              ...prev,
+              [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? rowWithId : row)),
+            };
+          });
+        }
+      } catch (error) {
+        setModuleRowsState((prev) => {
+          const currentRows = prev[activeModuleId] || [];
+          if (editRowId === 'new') {
+            return {
+              ...prev,
+              [activeModuleId]: [rowWithId, ...currentRows],
+            };
+          }
+          return {
+            ...prev,
+            [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? rowWithId : row)),
+          };
+        });
+      }
+    } else {
+      setModuleRowsState((prev) => {
+        const currentRows = prev[activeModuleId] || [];
+        if (editRowId === 'new') {
+          return {
+            ...prev,
+            [activeModuleId]: [rowWithId, ...currentRows],
+          };
+        }
         return {
           ...prev,
-          [activeModuleId]: [rowWithId, ...prev[activeModuleId]],
+          [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? rowWithId : row)),
         };
-      }
-      return {
-        ...prev,
-        [activeModuleId]: prev[activeModuleId].map((row) => (row.id === editRowId ? rowWithId : row)),
-      };
-    });
+      });
+    }
     setSelectedRowId(rowWithId.id);
     closeModal();
   };
@@ -3772,6 +4186,51 @@ function App({ initialModuleId }) {
     await handleDownloadEmployeeId(employeeRow, 'back');
   };
 
+  if (!currentUser) {
+    return (
+      <div className="App login-mode">
+        <div className="login-shell">
+          <div className="login-panel">
+            <h1>{appSettings.appName || 'PTHR'} HR Workspace</h1>
+            <p>Sign in to continue.</p>
+            <form onSubmit={handleLoginSubmit} className="login-form">
+              <label>
+                <span>Username</span>
+                <input
+                autoComplete="username"
+                  value={loginForm.username}
+                  onChange={(event) =>
+                    setLoginForm((prev) => ({ ...prev, username: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  type="password"
+                autoComplete="current-password"
+                  value={loginForm.password}
+                  onChange={(event) =>
+                    setLoginForm((prev) => ({ ...prev, password: event.target.value }))
+                  }
+                />
+              </label>
+              {loginError ? <div className="form-error">{loginError}</div> : null}
+            <button type="submit" className="primary-btn" disabled={loginLoading}>
+              {loginLoading ? 'Signing In...' : 'Sign In'}
+              </button>
+              {backendHealth.mongo !== 'connected' ? (
+                <div className="login-hint">
+                  Backend or database is not connected. Check the server before logging in.
+                </div>
+              ) : null}
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="App">
       <aside className="sidebar-shell" style={sidebarStyle}>
@@ -3782,11 +4241,31 @@ function App({ initialModuleId }) {
             <p>HR Command Center</p>
           </div>
         </div>
+        <div className="user-block">
+          <div className="user-main">
+            <div className="user-name">{currentUser.fullName || currentUser.username}</div>
+            <div className="user-role">{currentUser.role || 'user'}</div>
+          </div>
+          <button type="button" className="secondary-btn small" onClick={handleLogout}>
+            Sign out
+          </button>
+        </div>
         {sidebarSections.map((section) => (
           <div className="sidebar-section" key={section.title}>
             <h2>{section.title}</h2>
             <nav>
               {section.items.map((item) => {
+                if (!allowedModulesByRole.has(item.id)) {
+                  return null;
+                }
+                if (activeModuleId && !allowedModulesByRole.has(activeModuleId)) {
+                  const firstAllowed = sidebarSections
+                    .flatMap((s) => s.items)
+                    .find((candidate) => allowedModulesByRole.has(candidate.id));
+                  if (firstAllowed && firstAllowed.id !== activeModuleId) {
+                    setActiveModuleId(firstAllowed.id);
+                  }
+                }
                 if (item.id === 'leave-management') {
                   return (
                     <div key={item.id} className="menu-group">
@@ -3856,19 +4335,54 @@ function App({ initialModuleId }) {
             <h1>{appSettings.appName || 'PTHR'} HR Management Workspace</h1>
             <p>Complete UI implementation with CRUD actions, enterprise data tables, and smart filters.</p>
           </div>
-          <div className="stats">
-            <article className="stat-card">
-              <span className="stat-value">{totalModules}</span>
-              <span className="stat-label">Modules</span>
-            </article>
-            <article className="stat-card">
-              <span className="stat-value">{totalRows}</span>
-              <span className="stat-label">Data Rows</span>
-            </article>
-            <article className="stat-card">
-              <span className="stat-value">{activeStatusCount}</span>
-              <span className="stat-label">Active Records</span>
-            </article>
+          <div>
+            <div className="stats">
+              <article className="stat-card">
+                <span className="stat-value">{totalModules}</span>
+                <span className="stat-label">Modules</span>
+              </article>
+              <article className="stat-card">
+                <span className="stat-value">{totalRows}</span>
+                <span className="stat-label">Data Rows</span>
+              </article>
+              <article className="stat-card">
+                <span className="stat-value">{activeStatusCount}</span>
+                <span className="stat-label">Active Records</span>
+              </article>
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                textAlign: 'right',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '3px 10px',
+                  borderRadius: 999,
+                  fontSize: 12,
+                  backgroundColor:
+                    backendHealth.mongo === 'connected' ? '#e6f4ea' : '#fdecea',
+                  color: backendHealth.mongo === 'connected' ? '#1e8e3e' : '#b00020',
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    backgroundColor:
+                      backendHealth.mongo === 'connected' ? '#1e8e3e' : '#b00020',
+                  }}
+                />
+                {backendHealth.mongo === 'connected'
+                  ? 'Connected to MongoDB Atlas'
+                  : 'Not connected to MongoDB Atlas'}
+              </span>
+            </div>
           </div>
         </header>
 
@@ -3885,6 +4399,7 @@ function App({ initialModuleId }) {
                 {[
                   { id: 'general', label: 'General' },
                   { id: 'attendance', label: 'Attendance Rules' },
+                  { id: 'tracking', label: 'Presence Tracking' },
                   { id: 'payroll', label: 'Payroll & Loans' },
                   { id: 'fingerprint', label: 'Fingerprint' },
                   { id: 'labels', label: 'Employee Labels' },
@@ -4114,6 +4629,252 @@ function App({ initialModuleId }) {
                         </select>
                       </label>
                     ) : null}
+                  </>
+                ) : null}
+                {settingsTab === 'tracking' ? (
+                  <>
+                    <h4 className="settings-subtitle">Presence Tracking Rules</h4>
+                    {trackingSettingsLoading ? <p>Loading tracking settings from backend...</p> : null}
+                    {trackingSettingsError ? <p className="form-error">{trackingSettingsError}</p> : null}
+                    <label>
+                      <span>Office Latitude</span>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        value={appSettings.trackingRules.officeLat ?? ''}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              officeLat:
+                                event.target.value === '' ? null : Number(event.target.value),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Office Longitude</span>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        value={appSettings.trackingRules.officeLng ?? ''}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              officeLng:
+                                event.target.value === '' ? null : Number(event.target.value),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Geofence Radius (meters)</span>
+                      <input
+                        type="number"
+                        min="10"
+                        step="1"
+                        value={appSettings.trackingRules.geofenceRadiusMeters}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              geofenceRadiusMeters: Math.max(
+                                10,
+                                Number(event.target.value) || 10
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Enforce GPS Geofence</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.geofenceEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              geofenceEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Require Office WiFi</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.wifiValidationEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              wifiValidationEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Allowed WiFi SSIDs (comma-separated)</span>
+                      <input
+                        value={appSettings.trackingRules.officeWifiSsids.join(', ')}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              officeWifiSsids: event.target.value
+                                .split(',')
+                                .map((value) => value.trim())
+                                .filter((value) => value.length > 0),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Allowed WiFi BSSIDs (comma-separated)</span>
+                      <input
+                        value={appSettings.trackingRules.officeWifiBssids.join(', ')}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              officeWifiBssids: event.target.value
+                                .split(',')
+                                .map((value) => value.trim())
+                                .filter((value) => value.length > 0),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Office IP ranges (comma-separated)</span>
+                      <input
+                        value={appSettings.trackingRules.officeIpRanges.join(', ')}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              officeIpRanges: event.target.value
+                                .split(',')
+                                .map((value) => value.trim())
+                                .filter((value) => value.length > 0),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Monitor Activity</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.activityMonitoringEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              activityMonitoringEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Random Selfie Verification</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.randomSelfieEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              randomSelfieEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Anti-GPS Spoofing</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.antiGpsSpoofingEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              antiGpsSpoofingEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>WhatsApp Alerts to Managers</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.whatsappAlertsEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              whatsappAlertsEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Offline After (minutes)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={appSettings.trackingRules.offlineMinutesThreshold}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              offlineMinutesThreshold: Math.max(
+                                1,
+                                Number(event.target.value) || 1
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="attendance-ops-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={handleSaveTrackingSettings}
+                        disabled={trackingSettingsSaving}
+                      >
+                        {trackingSettingsSaving ? 'Saving...' : 'Save Tracking Settings'}
+                      </button>
+                    </div>
+                    {trackingSettingsSavedMessage ? <p>{trackingSettingsSavedMessage}</p> : null}
                   </>
                 ) : null}
                 {settingsTab === 'payroll' ? (
@@ -4815,6 +5576,8 @@ function App({ initialModuleId }) {
                   getCurrentClockValue={getCurrentClockValue}
                 />
               ) : null}
+              {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}
+              {activeModuleId === 'user-management' ? <UserManagementPage authToken={authToken} /> : null}
               {activeModuleId === 'leave-management' ? (
                 <LeaveManagementPage
                   appSettings={appSettings}

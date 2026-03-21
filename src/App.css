@@ -18,6 +18,13 @@ body {
   overflow: hidden;
 }
 
+.App.login-mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  grid-template-columns: none;
+}
+
 .sidebar-shell {
   background:
     radial-gradient(150% 100% at 100% 0%, var(--sidebar-glow, #8ec5ff) 0%, rgba(63, 105, 168, 0) 55%),
@@ -541,6 +548,73 @@ tbody tr:hover {
   color: #b23b52;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+.login-shell {
+  min-height: 100vh;
+  width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, #e0ebff 0%, #f7f9ff 45%, #ffffff 100%);
+}
+
+.login-panel {
+  border-radius: 16px;
+  padding: 32px 28px;
+  background: #ffffff;
+  box-shadow:
+    0 18px 45px rgba(15, 40, 90, 0.18),
+    0 0 0 1px rgba(140, 160, 210, 0.25);
+  width: 100%;
+  max-width: 380px;
+  display: grid;
+  gap: 18px;
+}
+
+.login-panel h1 {
+  margin: 0 0 4px;
+  font-size: 1.4rem;
+  color: #122852;
+}
+
+.login-panel p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #576a93;
+}
+
+.login-form {
+  display: grid;
+  gap: 12px;
+}
+
+.login-form label span {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #455681;
+}
+
+.login-form input {
+  margin-top: 3px;
+  width: 100%;
+  border: 1px solid #c7d4ea;
+  border-radius: 9px;
+  padding: 9px 10px;
+  font-size: 0.9rem;
+  outline: none;
+  background: #fdfefe;
+}
+
+.login-form input:focus {
+  border-color: #3363da;
+  box-shadow: 0 0 0 2px rgba(51, 99, 218, 0.16);
+}
+
+.login-hint {
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: #8a6000;
 }
 
 .details-card {
@@ -1530,7 +1604,9 @@ tbody tr:hover {
 
 .settings-grid {
   display: grid;
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px 20px;
+  max-width: 980px;
 }
 
 .settings-tab-strip {
