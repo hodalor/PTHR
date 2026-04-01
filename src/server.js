@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { MongoClient, ObjectId } = require('mongodb');
+const bcrypt = require('bcryptjs');
 
 dotenv.config();
 
@@ -44,6 +45,53 @@ async function connectToMongo() {
   mongoClient = new MongoClient(MONGO_URI);
   await mongoClient.connect();
   return mongoClient.db(MONGO_DB_NAME);
+}
+
+async function syncEmployeeUser(db, employee) {
+  try {
+    const employeeId = String(employee.id || '').trim();
+    const portalPassword = String(employee.password || '').trim();
+    if (!employeeId || !portalPassword) {
+      return;
+    }
+    const users = db.collection('users');
+    const username = employeeId;
+    const existing = await users.findOne({
+      $or: [{ username }, { employeeId }],
+    });
+    const passwordHash = await bcrypt.hash(portalPassword, 10);
+    const now = new Date().toISOString();
+    if (existing) {
+      await users.updateOne(
+        { _id: existing._id },
+        {
+          $set: {
+            username,
+            fullName: employee.fullName || username,
+            employeeId,
+            passwordHash,
+            role: existing.role || 'employee',
+            isActive: existing.isActive !== false,
+            updatedAt: now,
+          },
+        }
+      );
+    } else {
+      await users.insertOne({
+        username,
+        fullName: employee.fullName || username,
+        employeeId,
+        passwordHash,
+        role: 'employee',
+        allowedModules: [],
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  } catch (error) {
+    console.error('Failed to sync employee user', error);
+  }
 }
 
 function getModuleCollection(db, moduleId) {
@@ -108,6 +156,9 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     };
     const result = await collection.insertOne(payload);
     const inserted = await collection.findOne({ _id: result.insertedId });
+    if (moduleId === 'employee-management' && inserted) {
+      await syncEmployeeUser(req.db, inserted);
+    }
     res.status(201).json({ record: inserted });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create record' });
@@ -135,6 +186,9 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     if (!result.value) {
       res.status(404).json({ error: 'Record not found' });
       return;
+    }
+    if (moduleId === 'employee-management') {
+      await syncEmployeeUser(req.db, result.value);
     }
     res.json({ record: result.value });
   } catch (error) {

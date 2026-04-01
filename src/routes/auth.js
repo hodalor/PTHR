@@ -115,16 +115,43 @@ router.post('/bootstrap-superadmin', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
-    if (!username || !password) {
-      res.status(400).json({ error: 'Username and password are required' });
+    const identifier = String(username || '').trim();
+    if (!identifier || !password) {
+      res.status(400).json({ error: 'Username/Employee ID and password are required' });
       return;
     }
     const users = getUsersCollection(req.db);
-    const user = await users.findOne({ username });
+    let user = await users.findOne({
+      $or: [{ username: identifier }, { employeeId: identifier }],
+    });
+
+    if (!user) {
+      const employees = req.db.collection('employees');
+      const employee = await employees.findOne({ id: identifier });
+      if (employee && employee.password) {
+        const passwordHash = await bcrypt.hash(String(employee.password), 10);
+        const now = new Date().toISOString();
+        const doc = {
+          username: identifier,
+          fullName: employee.fullName || identifier,
+          passwordHash,
+          role: 'employee',
+          employeeId: identifier,
+          allowedModules: [],
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const result = await users.insertOne(doc);
+        user = { _id: result.insertedId, ...doc };
+      }
+    }
+
     if (!user || !user.isActive) {
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
+
     const isMatch = await bcrypt.compare(password, user.passwordHash || '');
     if (!isMatch) {
       res.status(401).json({ error: 'Invalid credentials' });
