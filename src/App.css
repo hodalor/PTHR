@@ -186,6 +186,47 @@ body {
   border-bottom: 1px solid #dde5f3;
 }
 
+.hero-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.user-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: #204b85;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.user-header-main {
+  text-align: right;
+}
+
+.user-header-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #142e67;
+}
+
+.user-header-role {
+  font-size: 0.76rem;
+  color: #5b6c8e;
+}
+
 .hero h1 {
   margin: 0;
   color: #142e67;

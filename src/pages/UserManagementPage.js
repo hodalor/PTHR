@@ -11,7 +11,7 @@ function UserManagementPage({ authToken }) {
     fullName: '',
     password: '',
     role: 'employee',
-    allowedModules: '',
+    allowedModules: [],
   });
 
   const moduleIds = useMemo(
@@ -80,7 +80,12 @@ function UserManagementPage({ authToken }) {
           fullName: formValues.fullName.trim(),
           password: formValues.password,
           role: formValues.role,
-          allowedModules: formValues.allowedModules,
+          allowedModules: Array.isArray(formValues.allowedModules)
+            ? formValues.allowedModules
+            : String(formValues.allowedModules || '')
+                .split(',')
+                .map((value) => value.trim())
+                .filter(Boolean),
         }),
       });
       if (!response.ok) {
@@ -96,7 +101,7 @@ function UserManagementPage({ authToken }) {
           fullName: '',
           password: '',
           role: 'employee',
-          allowedModules: '',
+          allowedModules: [],
         });
       }
     } catch (submitError) {
@@ -152,36 +157,75 @@ function UserManagementPage({ authToken }) {
                 <option value="superadmin">Super Admin</option>
               </select>
             </label>
-            <label>
-              <span>Allowed Modules (comma separated ids)</span>
-              <input
-                value={formValues.allowedModules}
-                onChange={(event) => handleChange('allowedModules', event.target.value)}
-                placeholder="Example: employee-management, attendance-time, leave-management"
-              />
-            </label>
+            <div>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#455681' }}>
+                Allowed Modules
+              </span>
+              <div
+                style={{
+                  marginTop: 6,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 6,
+                }}
+              >
+                {moduleIds.map((id) => {
+                  const checked =
+                    Array.isArray(formValues.allowedModules) &&
+                    formValues.allowedModules.includes(id);
+                  return (
+                    <label
+                      key={id}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        borderRadius: 999,
+                        padding: '2px 8px',
+                        background: checked ? '#21425f' : '#eef3ff',
+                        border: '1px solid #cdd8f6',
+                        color: checked ? '#ffffff' : '#1d2b45',
+                        fontSize: 12,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          const isChecked = event.target.checked;
+                          setFormValues((prev) => {
+                            const current = Array.isArray(prev.allowedModules)
+                              ? prev.allowedModules
+                              : [];
+                            if (isChecked) {
+                              if (current.includes(id)) {
+                                return prev;
+                              }
+                              return {
+                                ...prev,
+                                allowedModules: [...current, id],
+                              };
+                            }
+                            return {
+                              ...prev,
+                              allowedModules: current.filter((value) => value !== id),
+                            };
+                          });
+                        }}
+                      />
+                      <span>{id}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
             {error ? <p className="form-error">{error}</p> : null}
             <button type="submit" className="primary-btn" disabled={saving}>
               {saving ? 'Creating...' : 'Create User'}
             </button>
           </form>
           <div style={{ marginTop: 10, fontSize: 12, color: '#58688f' }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>Available module ids</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {moduleIds.map((id) => (
-                <span
-                  key={id}
-                  style={{
-                    borderRadius: 999,
-                    padding: '2px 8px',
-                    background: '#eef3ff',
-                    border: '1px solid #cdd8f6',
-                  }}
-                >
-                  {id}
-                </span>
-              ))}
-            </div>
+            You can tick and untick modules above instead of typing their names.
           </div>
         </div>
         <div className="form-section">
@@ -226,4 +270,3 @@ function UserManagementPage({ authToken }) {
 }
 
 export default UserManagementPage;
-

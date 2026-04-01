@@ -909,11 +909,34 @@ function App({ initialModuleId }) {
     }
   };
 
+  const loanRows = useMemo(() => moduleRowsState['loan-records'] || [], [moduleRowsState]);
+  const loanRowsScopedByRole = useMemo(() => {
+    if (!currentUser || currentUser.role !== 'employee') {
+      return loanRows;
+    }
+    const employeeId = String(currentUser.employeeId || '').trim();
+    const employeeName = String(currentUser.fullName || '').trim();
+    return loanRows.filter((row) => {
+      const rowEmployeeId = String(row.employeeId || '').trim();
+      const rowEmployeeName = String(row.employee || '').trim();
+      if (employeeId) {
+        return rowEmployeeId === employeeId;
+      }
+      if (employeeName) {
+        return rowEmployeeName === employeeName;
+      }
+      return false;
+    });
+  }, [currentUser, loanRows]);
+
   const rows = useMemo(() => {
     if (!activeModuleConfig) {
       return [];
     }
     const baseRows = moduleRowsState[activeModuleId] || [];
+    if (activeModuleId === 'loan-records') {
+      return loanRowsScopedByRole;
+    }
     if (activeModuleId !== 'payroll-management') {
       return baseRows;
     }
@@ -1444,7 +1467,6 @@ function App({ initialModuleId }) {
       .filter((leaveRow) => String(leaveRow.employee) === String(modalRow.fullName))
       .sort((a, b) => new Date(b.startDate || '1900-01-01').getTime() - new Date(a.startDate || '1900-01-01').getTime());
   }, [isEmployeeModule, leaveRows, modalRow]);
-  const loanRows = useMemo(() => moduleRowsState['loan-records'] || [], [moduleRowsState]);
   const employeeLoanRecords = useMemo(() => {
     if (!isEmployeeModule || !modalRow) {
       return [];
@@ -1699,7 +1721,7 @@ function App({ initialModuleId }) {
   }, [getLeaveViewStatus, leaveRequestRows, leaveViewTab]);
   const leaveRequestFilteredRows = useMemo(() => {
     const query = leaveSearchText.trim().toLowerCase();
-    const scopedRows = leaveRequestRows.filter((row) => {
+    let scopedRows = leaveRequestRows.filter((row) => {
       if (leaveViewTab === 'hr') {
         return String(row.departmentApproval || '') === 'Approved';
       }
@@ -1708,6 +1730,21 @@ function App({ initialModuleId }) {
       }
       return true;
     });
+    if (currentUser && currentUser.role === 'employee') {
+      const employeeId = String(currentUser.employeeId || '').trim();
+      const employeeName = String(currentUser.fullName || '').trim();
+      scopedRows = scopedRows.filter((row) => {
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      });
+    }
     const filteredRows = scopedRows.filter((row) => {
       const matchesDepartment =
         leaveDepartmentFilter === 'All' || String(row.department || '') === String(leaveDepartmentFilter);
@@ -1745,10 +1782,35 @@ function App({ initialModuleId }) {
       return [...filteredRows].sort((a, b) => Number(b.daysRequested || 0) - Number(a.daysRequested || 0));
     }
     return [...filteredRows].sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
-  }, [getLeaveViewStatus, leaveDepartmentFilter, leaveRequestRows, leaveSearchText, leaveSortBy, leaveStatusFilter, leaveViewTab]);
+  }, [
+    currentUser,
+    getLeaveViewStatus,
+    leaveDepartmentFilter,
+    leaveRequestRows,
+    leaveSearchText,
+    leaveSortBy,
+    leaveStatusFilter,
+    leaveViewTab,
+  ]);
   const leaveBalanceFilteredRows = useMemo(() => {
     const query = leaveSearchText.trim().toLowerCase();
-    const filteredRows = leaveBalanceRows.filter((row) => {
+    const scopedRows = leaveBalanceRows.filter((row) => {
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      }
+      return true;
+    });
+    const filteredRows = scopedRows.filter((row) => {
       const matchesDepartment =
         leaveDepartmentFilter === 'All' || String(row.department || '') === String(leaveDepartmentFilter);
       if (!matchesDepartment) {
@@ -1776,7 +1838,7 @@ function App({ initialModuleId }) {
       return [...filteredRows].sort((a, b) => Number(b.availableBalance || 0) - Number(a.availableBalance || 0));
     }
     return filteredRows;
-  }, [leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
+  }, [currentUser, leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
   const leaveFormEmployeeMatches = useMemo(() => {
     const query = String(formValues.leaveEmployeeSearch || '').trim().toLowerCase();
     if (!query) {
@@ -2028,22 +2090,57 @@ function App({ initialModuleId }) {
       </label>
     );
   };
-  const attendanceTodayRows = useMemo(
-    () =>
-      attendanceRows
-        .filter((row) => String(row.date || '') === todayIsoDate)
-        .sort((a, b) => toMinutesFromClock(b.checkIn) - toMinutesFromClock(a.checkIn)),
-    [attendanceRows, todayIsoDate]
-  );
+  const attendanceTodayRows = useMemo(() => {
+    const scopedRows = attendanceRows.filter((row) => {
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          if (rowEmployeeId !== employeeId) {
+            return false;
+          }
+        } else if (employeeName) {
+          if (rowEmployeeName !== employeeName) {
+            return false;
+          }
+        } else {
+          return false;
+        }
+      }
+      return String(row.date || '') === todayIsoDate;
+    });
+    return scopedRows.sort((a, b) => toMinutesFromClock(b.checkIn) - toMinutesFromClock(a.checkIn));
+  }, [attendanceRows, currentUser, todayIsoDate]);
   const attendanceLateCount = useMemo(
     () => attendanceTodayRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
     [attendanceTodayRows]
   );
-  const selectedAttendanceEmployee = useMemo(
-    () => employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null,
-    [attendanceClockDraft.employeeId, employeeBaseRows]
-  );
+  const selectedAttendanceEmployee = useMemo(() => {
+    if (currentUser && currentUser.role === 'employee') {
+      const employeeId = String(currentUser.employeeId || '').trim();
+      const employeeName = String(currentUser.fullName || '').trim();
+      return (
+        employeeBaseRows.find((employee) => {
+          const rowEmployeeId = String(employee.id || '').trim();
+          const rowEmployeeName = String(employee.fullName || '').trim();
+          if (employeeId) {
+            return rowEmployeeId === employeeId;
+          }
+          if (employeeName) {
+            return rowEmployeeName === employeeName;
+          }
+          return false;
+        }) || null
+      );
+    }
+    return employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null;
+  }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows]);
   const attendanceSearchMatches = useMemo(() => {
+    if (currentUser && currentUser.role === 'employee') {
+      return [];
+    }
     const query = attendanceSearchText.trim().toLowerCase();
     if (!query) {
       return [];
@@ -2055,7 +2152,7 @@ function App({ initialModuleId }) {
         return employeeId.includes(query) || employeeName.includes(query);
       })
       .slice(0, 6);
-  }, [attendanceSearchText, employeeBaseRows]);
+  }, [attendanceSearchText, currentUser, employeeBaseRows]);
   const selectedFingerprintEmployee = useMemo(
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
@@ -2070,7 +2167,23 @@ function App({ initialModuleId }) {
     const isClockOutDeadlineReached = isPastDate;
     const lateAfterMinutes = toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0;
     const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
-    return employeeBaseRows.map((employee) => {
+    const scopedEmployees = employeeBaseRows.filter((employee) => {
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const rowEmployeeId = String(employee.id || '').trim();
+        const rowEmployeeName = String(employee.fullName || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      }
+      return true;
+    });
+    return scopedEmployees.map((employee) => {
       const attendanceRow = attendanceRows.find(
         (row) => String(row.employeeId || '') === String(employee.id || '') && String(row.date || '') === String(targetDate)
       );
@@ -2170,6 +2283,7 @@ function App({ initialModuleId }) {
       };
     });
   }, [
+    currentUser,
     appSettings.attendanceLateAfter,
     appSettings.attendanceShiftEnd,
     attendanceAuditDate,
@@ -2192,8 +2306,24 @@ function App({ initialModuleId }) {
     });
   }, [attendanceAuditFilter, attendanceAuditSearchText, attendanceComplianceRows]);
   const attendancePenaltyLedgerRows = useMemo(() => {
+    const scopedComplianceRows = attendanceComplianceRows.filter((row) => {
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      }
+      return true;
+    });
     const ledger = [];
-    attendanceComplianceRows.forEach((row) => {
+    scopedComplianceRows.forEach((row) => {
       row.penalties.forEach((penalty) => {
         const adjustments = penaltyAdjustmentRows.filter(
           (item) =>
@@ -2219,7 +2349,7 @@ function App({ initialModuleId }) {
       });
     });
     return ledger;
-  }, [attendanceComplianceRows, penaltyAdjustmentRows]);
+  }, [attendanceComplianceRows, currentUser, penaltyAdjustmentRows]);
   const attendancePenaltyFilteredRows = useMemo(() => {
     const query = attendanceAuditSearchText.trim().toLowerCase();
     return attendancePenaltyLedgerRows.filter((row) => {
@@ -2290,7 +2420,23 @@ function App({ initialModuleId }) {
         ((parseIsoDateValue(rangeEnd)?.getTime() || 0) - (parseIsoDateValue(rangeStart)?.getTime() || 0)) / DAY_IN_MS
       ) + 1
     );
-    return employeeBaseRows
+    const scopedEmployees = employeeBaseRows.filter((employee) => {
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const rowEmployeeId = String(employee.id || '').trim();
+        const rowEmployeeName = String(employee.fullName || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      }
+      return true;
+    });
+    return scopedEmployees
       .map((employee) => {
         const employeeStatus = String(employee.status || '').toLowerCase();
         const employeeStage = String(employee.employmentState || '').toLowerCase();
@@ -2447,6 +2593,7 @@ function App({ initialModuleId }) {
         return b.attendanceScore - a.attendanceScore || Number(b.perfectAttendance) - Number(a.perfectAttendance);
       });
   }, [
+    currentUser,
     appSettings.attendanceLateAfter,
     appSettings.attendanceShiftEnd,
     attendancePerformanceRange,
@@ -2535,7 +2682,10 @@ function App({ initialModuleId }) {
     printWindow.focus();
     printWindow.print();
   };
+  const hideModuleTableForAttendanceEmployee =
+    activeModuleId === 'attendance-time' && currentUser && currentUser.role === 'employee';
   const showMainModuleTable =
+    !hideModuleTableForAttendanceEmployee &&
     (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
     activeModuleId !== 'leave-management' &&
     activeModuleId !== 'monitoring-tracking';
@@ -2619,12 +2769,18 @@ function App({ initialModuleId }) {
     setFormValues({});
     setFormError('');
   };
-  const leaveSubmenuItems = [
-    { key: 'requests', label: 'Leave Requests' },
-    { key: 'department', label: 'Department Approval' },
-    { key: 'hr', label: 'HR Approval' },
-    { key: 'manager', label: 'Manager Approval' },
-  ];
+  const leaveSubmenuItems = useMemo(() => {
+    const items = [
+      { key: 'requests', label: 'Leave Requests' },
+      { key: 'department', label: 'Department Approval' },
+      { key: 'hr', label: 'HR Approval' },
+      { key: 'manager', label: 'Manager Approval' },
+    ];
+    if (!currentUser || currentUser.role === 'employee') {
+      return items.filter((item) => item.key === 'requests');
+    }
+    return items;
+  }, [currentUser]);
   const showToast = (message, type = 'info') => {
     const toastId = `TST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     setToasts((prev) => [...prev, { id: toastId, message, type }]);
@@ -3156,6 +3312,10 @@ function App({ initialModuleId }) {
   };
 
   const startCreate = () => {
+    if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
+      showToast('Contact HR to request a new loan record.', 'error');
+      return;
+    }
     setEditRowId('new');
     setFormValues(
       activeModuleId === 'leave-management'
@@ -3192,6 +3352,10 @@ function App({ initialModuleId }) {
   };
 
   const startEdit = (row) => {
+    if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
+      showToast('Loan records are view-only in employee self-service.', 'error');
+      return;
+    }
     setEditRowId(row.id);
     setFormValues(
       activeModuleId === 'leave-management'
@@ -3208,6 +3372,10 @@ function App({ initialModuleId }) {
   };
 
   const handleDelete = (rowId) => {
+    if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
+      showToast('Loan records cannot be deleted in employee self-service.', 'error');
+      return;
+    }
     if (!activeModuleId || !rowId) {
       return;
     }
@@ -4241,15 +4409,6 @@ function App({ initialModuleId }) {
             <p>HR Command Center</p>
           </div>
         </div>
-        <div className="user-block">
-          <div className="user-main">
-            <div className="user-name">{currentUser.fullName || currentUser.username}</div>
-            <div className="user-role">{currentUser.role || 'user'}</div>
-          </div>
-          <button type="button" className="secondary-btn small" onClick={handleLogout}>
-            Sign out
-          </button>
-        </div>
         {sidebarSections.map((section) => (
           <div className="sidebar-section" key={section.title}>
             <h2>{section.title}</h2>
@@ -4335,7 +4494,23 @@ function App({ initialModuleId }) {
             <h1>{appSettings.appName || 'PTHR'} HR Management Workspace</h1>
             <p>Complete UI implementation with CRUD actions, enterprise data tables, and smart filters.</p>
           </div>
-          <div>
+          <div className="hero-right">
+            <div className="user-header">
+              <div className="user-avatar">
+                {(currentUser.fullName || currentUser.username || 'U').charAt(0).toUpperCase()}
+              </div>
+              <div className="user-header-main">
+                <div className="user-header-name">
+                  {currentUser.fullName || currentUser.username}
+                </div>
+                <div className="user-header-role">
+                  {currentUser.role || 'user'}
+                </div>
+              </div>
+              <button type="button" className="secondary-btn small" onClick={handleLogout}>
+                Sign out
+              </button>
+            </div>
             <div className="stats">
               <article className="stat-card">
                 <span className="stat-value">{totalModules}</span>
@@ -5497,7 +5672,7 @@ function App({ initialModuleId }) {
                   <h2>{activeModuleConfig.title}</h2>
                   <p>{activeModuleConfig.entityLabel} registry and operations table</p>
                 </div>
-                {activeModuleId !== 'attendance-time' ? (
+                {activeModuleId !== 'attendance-time' && activeModuleId !== 'user-management' ? (
                   <div className="panel-title-actions">
                     {activeModuleId === 'payroll-management' ? (
                       <PayrollPage
@@ -5574,6 +5749,7 @@ function App({ initialModuleId }) {
                   selectedPerformanceEmployeeId={selectedPerformanceEmployeeId}
                   setSelectedPerformanceEmployeeId={setSelectedPerformanceEmployeeId}
                   getCurrentClockValue={getCurrentClockValue}
+                  currentUser={currentUser}
                 />
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}

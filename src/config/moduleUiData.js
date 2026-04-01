@@ -673,7 +673,6 @@ export const moduleUiData = {
       { id: 'TRN-902', program: 'Compliance Basics', track: 'Policy', facilitator: 'Legal Team', participants: '84', status: 'Ongoing' },
       { id: 'TRN-903', program: 'Frontend Upskilling', track: 'Technical', facilitator: 'Engineering Guild', participants: '31', status: 'Planned' },
     ],
-    ],
   },
   'user-management': {
     title: 'User Management',

@@ -57,6 +57,7 @@ export default function AttendanceTimePage({
   selectedPerformanceEmployeeId,
   setSelectedPerformanceEmployeeId,
   getCurrentClockValue,
+  currentUser,
 }) {
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
@@ -119,90 +120,108 @@ export default function AttendanceTimePage({
         >
           Clock
         </button>
-        <button
-          type="button"
-          className={`settings-tab-btn ${attendanceViewTab === 'compliance' ? 'active' : ''}`}
-          onClick={() => setAttendanceViewTab('compliance')}
-        >
-          Daily Compliance
-        </button>
-        <button
-          type="button"
-          className={`settings-tab-btn ${attendanceViewTab === 'penalties' ? 'active' : ''}`}
-          onClick={() => setAttendanceViewTab('penalties')}
-        >
-          Penalty Clearance
-        </button>
-        <button
-          type="button"
-          className={`settings-tab-btn ${attendanceViewTab === 'performance' ? 'active' : ''}`}
-          onClick={() => setAttendanceViewTab('performance')}
-        >
-          Performance
-        </button>
-        <button
-          type="button"
-          className={`settings-tab-btn ${attendanceViewTab === 'tracking' ? 'active' : ''}`}
-          onClick={() => setAttendanceViewTab('tracking')}
-        >
-          Live Tracking
-        </button>
+        {currentUser && currentUser.role !== 'employee' ? (
+          <>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'compliance' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('compliance')}
+            >
+              Daily Compliance
+            </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'penalties' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('penalties')}
+            >
+              Penalty Clearance
+            </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'performance' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('performance')}
+            >
+              Performance
+            </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'tracking' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('tracking')}
+            >
+              Live Tracking
+            </button>
+          </>
+        ) : null}
       </div>
       {attendanceViewTab === 'clock' ? (
         <>
           <div className="attendance-ops-form">
-            <label>
-              <span>Search Employee (Name or ID)</span>
-              <input
-                placeholder="Type employee name or ID"
-                value={attendanceSearchText}
-                onChange={(event) => {
-                  const query = event.target.value;
-                  const normalizedQuery = query.trim().toLowerCase();
-                  const matchedEmployee = normalizedQuery
-                    ? employeeBaseRows.find((employee) => {
-                        const employeeId = String(employee.id || '').toLowerCase();
-                        const employeeName = String(employee.fullName || '').toLowerCase();
-                        return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
-                      }) || null
-                    : null;
-                  setAttendanceSearchText(query);
-                  setAttendanceClockDraft((prev) => ({
-                    ...prev,
-                    employeeId: matchedEmployee?.id || '',
-                  }));
-                }}
-              />
-              {attendanceSearchText.trim() ? (
-                <div className="attendance-search-dropdown">
-                  {attendanceSearchMatches.length > 0 ? (
-                    attendanceSearchMatches.map((employee) => (
-                      <button
-                        key={employee.id}
-                        type="button"
-                        className="attendance-search-item"
-                        onClick={() => {
-                          setAttendanceClockDraft((prev) => ({
-                            ...prev,
-                            employeeId: employee.id,
-                          }));
-                          setAttendanceSearchText('');
-                        }}
-                      >
-                        {employee.fullName} ({employee.id})
-                      </button>
-                    ))
-                  ) : (
-                    <span className="attendance-search-empty">No matching employee</span>
-                  )}
-                </div>
-              ) : null}
-              <span className="field-title">
-                {selectedAttendanceEmployee
-                  ? `Selected: ${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                  : 'No matching employee selected'}
-              </span>
-            </label>
+            {currentUser && currentUser.role === 'employee' ? (
+              <label>
+                <span>Employee</span>
+                <input
+                  readOnly
+                  value={
+                    selectedAttendanceEmployee
+                      ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
+                      : ''
+                  }
+                />
+              </label>
+            ) : (
+              <label>
+                <span>Search Employee (Name or ID)</span>
+                <input
+                  placeholder="Type employee name or ID"
+                  value={attendanceSearchText}
+                  onChange={(event) => {
+                    const query = event.target.value;
+                    const normalizedQuery = query.trim().toLowerCase();
+                    const matchedEmployee = normalizedQuery
+                      ? employeeBaseRows.find((employee) => {
+                          const employeeId = String(employee.id || '').toLowerCase();
+                          const employeeName = String(employee.fullName || '').toLowerCase();
+                          return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
+                        }) || null
+                      : null;
+                    setAttendanceSearchText(query);
+                    setAttendanceClockDraft((prev) => ({
+                      ...prev,
+                      employeeId: matchedEmployee?.id || '',
+                    }));
+                  }}
+                />
+                {attendanceSearchText.trim() ? (
+                  <div className="attendance-search-dropdown">
+                    {attendanceSearchMatches.length > 0 ? (
+                      attendanceSearchMatches.map((employee) => (
+                        <button
+                          key={employee.id}
+                          type="button"
+                          className="attendance-search-item"
+                          onClick={() => {
+                            setAttendanceClockDraft((prev) => ({
+                              ...prev,
+                              employeeId: employee.id,
+                            }));
+                            setAttendanceSearchText('');
+                          }}
+                        >
+                          {employee.fullName} ({employee.id})
+                        </button>
+                      ))
+                    ) : (
+                      <span className="attendance-search-empty">No matching employee</span>
+                    )}
+                  </div>
+                ) : null}
+                <span className="field-title">
+                  {selectedAttendanceEmployee
+                    ? `Selected: ${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
+                    : 'No matching employee selected'}
+                </span>
+              </label>
+            )}
             <label>
               <span>Shift</span>
               <select
@@ -586,8 +605,10 @@ export default function AttendanceTimePage({
           </div>
           <div className="attendance-stats-grid">
             <article className="attendance-stat">
-              <strong>{attendancePerformanceRange}</strong>
-              <span>Period Days</span>
+              <strong>
+                {attendancePerformanceRange.startDate} → {attendancePerformanceRange.endDate}
+              </strong>
+              <span>Period Range</span>
             </article>
             <article className="attendance-stat">
               <strong>{attendancePerformanceRows.length}</strong>
