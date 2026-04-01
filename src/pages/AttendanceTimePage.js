@@ -62,6 +62,7 @@ export default function AttendanceTimePage({
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
+  const [isClockModalOpen, setIsClockModalOpen] = useState(false);
 
   useEffect(() => {
     if (attendanceViewTab !== 'tracking') {
@@ -155,103 +156,10 @@ export default function AttendanceTimePage({
       </div>
       {attendanceViewTab === 'clock' ? (
         <>
-          <div className="attendance-ops-form">
-            {currentUser && currentUser.role === 'employee' ? (
-              <label>
-                <span>Employee</span>
-                <input
-                  readOnly
-                  value={
-                    selectedAttendanceEmployee
-                      ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                      : ''
-                  }
-                />
-              </label>
-            ) : (
-              <label>
-                <span>Search Employee (Name or ID)</span>
-                <input
-                  placeholder="Type employee name or ID"
-                  value={attendanceSearchText}
-                  onChange={(event) => {
-                    const query = event.target.value;
-                    const normalizedQuery = query.trim().toLowerCase();
-                    const matchedEmployee = normalizedQuery
-                      ? employeeBaseRows.find((employee) => {
-                          const employeeId = String(employee.id || '').toLowerCase();
-                          const employeeName = String(employee.fullName || '').toLowerCase();
-                          return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
-                        }) || null
-                      : null;
-                    setAttendanceSearchText(query);
-                    setAttendanceClockDraft((prev) => ({
-                      ...prev,
-                      employeeId: matchedEmployee?.id || '',
-                    }));
-                  }}
-                />
-                {attendanceSearchText.trim() ? (
-                  <div className="attendance-search-dropdown">
-                    {attendanceSearchMatches.length > 0 ? (
-                      attendanceSearchMatches.map((employee) => (
-                        <button
-                          key={employee.id}
-                          type="button"
-                          className="attendance-search-item"
-                          onClick={() => {
-                            setAttendanceClockDraft((prev) => ({
-                              ...prev,
-                              employeeId: employee.id,
-                            }));
-                            setAttendanceSearchText('');
-                          }}
-                        >
-                          {employee.fullName} ({employee.id})
-                        </button>
-                      ))
-                    ) : (
-                      <span className="attendance-search-empty">No matching employee</span>
-                    )}
-                  </div>
-                ) : null}
-                <span className="field-title">
-                  {selectedAttendanceEmployee
-                    ? `Selected: ${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                    : 'No matching employee selected'}
-                </span>
-              </label>
-            )}
-            <label>
-              <span>Shift</span>
-              <select
-                className="filter-select"
-                value={attendanceClockDraft.shift}
-                onChange={(event) =>
-                  setAttendanceClockDraft((prev) => ({
-                    ...prev,
-                    shift: event.target.value,
-                  }))
-                }
-              >
-                <option value="Morning">Morning</option>
-                <option value="Evening">Evening</option>
-                <option value="Night">Night</option>
-                <option value="Remote">Remote</option>
-              </select>
-            </label>
-            <label>
-              <span>Punch Time</span>
-              <input value={getCurrentClockValue()} readOnly />
-            </label>
-            <div className="attendance-ops-actions">
-              <button type="button" className="primary-btn" onClick={handleClockIn}>
-                Clock In
-              </button>
-              <button type="button" className="neutral-btn" onClick={handleClockOut}>
-                Clock Out
-              </button>
-            </div>
+          <div className="attendance-ops-actions" style={{ justifyContent: 'flex-end' }}>
+            <button type="button" className="primary-btn" onClick={() => setIsClockModalOpen(true)}>
+              Record Attendance
+            </button>
           </div>
           <div className="attendance-stats-grid">
             <article className="attendance-stat">
@@ -717,6 +625,113 @@ export default function AttendanceTimePage({
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'clock' && isClockModalOpen ? (
+        <div className="modal-backdrop" onClick={() => setIsClockModalOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Clock In / Out</h3>
+              <button type="button" className="neutral-btn" onClick={() => setIsClockModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="attendance-ops-form">
+              {currentUser && currentUser.role === 'employee' ? (
+                <label>
+                  <span>Employee</span>
+                  <input
+                    readOnly
+                    value={
+                      selectedAttendanceEmployee
+                        ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
+                        : `${currentUser.fullName || ''}${
+                            currentUser.employeeId ? ` (${currentUser.employeeId})` : ''
+                          }`
+                    }
+                  />
+                </label>
+              ) : (
+                <label>
+                  <span>Search Employee (Name or ID)</span>
+                  <input
+                    placeholder="Type employee name or ID"
+                    value={attendanceSearchText}
+                    onChange={(event) => {
+                      const query = event.target.value;
+                      const normalizedQuery = query.trim().toLowerCase();
+                      const matchedEmployee = normalizedQuery
+                        ? employeeBaseRows.find((employee) => {
+                            const employeeId = String(employee.id || '').toLowerCase();
+                            const employeeName = String(employee.fullName || '').toLowerCase();
+                            return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
+                          }) || null
+                        : null;
+                      setAttendanceSearchText(query);
+                      setAttendanceClockDraft((prev) => ({
+                        ...prev,
+                        employeeId: matchedEmployee?.id || '',
+                      }));
+                    }}
+                  />
+                  {attendanceSearchText.trim() ? (
+                    <div className="attendance-search-dropdown">
+                      {attendanceSearchMatches.length > 0 ? (
+                        attendanceSearchMatches.map((employee) => (
+                          <button
+                            key={employee.id}
+                            type="button"
+                            className="attendance-search-item"
+                            onClick={() => {
+                              setAttendanceClockDraft((prev) => ({
+                                ...prev,
+                                employeeId: employee.id,
+                              }));
+                              setAttendanceSearchText('');
+                            }}
+                          >
+                            {employee.fullName} ({employee.id})
+                          </button>
+                        ))
+                      ) : (
+                        <span className="attendance-search-empty">No matching employee</span>
+                      )}
+                    </div>
+                  ) : null}
+                </label>
+              )}
+              <label>
+                <span>Shift</span>
+                <select
+                  className="filter-select"
+                  value={attendanceClockDraft.shift}
+                  onChange={(event) =>
+                    setAttendanceClockDraft((prev) => ({
+                      ...prev,
+                      shift: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="Morning">Morning</option>
+                  <option value="Evening">Evening</option>
+                  <option value="Night">Night</option>
+                  <option value="Remote">Remote</option>
+                </select>
+              </label>
+              <label>
+                <span>Punch Time</span>
+                <input value={getCurrentClockValue()} readOnly />
+              </label>
+              <div className="attendance-ops-actions">
+                <button type="button" className="primary-btn" onClick={handleClockIn}>
+                  Clock In
+                </button>
+                <button type="button" className="neutral-btn" onClick={handleClockOut}>
+                  Clock Out
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

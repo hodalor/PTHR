@@ -11,6 +11,7 @@ function UserManagementPage({ authToken }) {
     fullName: '',
     password: '',
     role: 'employee',
+    employeeId: '',
     allowedModules: [],
   });
 
@@ -80,6 +81,7 @@ function UserManagementPage({ authToken }) {
           fullName: formValues.fullName.trim(),
           password: formValues.password,
           role: formValues.role,
+          employeeId: formValues.employeeId.trim(),
           allowedModules: Array.isArray(formValues.allowedModules)
             ? formValues.allowedModules
             : String(formValues.allowedModules || '')
@@ -101,6 +103,7 @@ function UserManagementPage({ authToken }) {
           fullName: '',
           password: '',
           role: 'employee',
+          employeeId: '',
           allowedModules: [],
         });
       }
@@ -128,6 +131,13 @@ function UserManagementPage({ authToken }) {
               <input
                 value={formValues.username}
                 onChange={(event) => handleChange('username', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Employee ID (optional)</span>
+              <input
+                value={formValues.employeeId}
+                onChange={(event) => handleChange('employeeId', event.target.value)}
               />
             </label>
             <label>

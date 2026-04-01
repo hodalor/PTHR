@@ -565,6 +565,7 @@ function App({ initialModuleId }) {
       minTakeHomePercent: 45,
       maxLoanDeductionPercentOfGross: 35,
       defaultInterestPercentPerMonth: 5,
+      overduePenaltyPercentPerDay: 2,
     },
     idCardDesign: {
       companyName: 'PTHR',
@@ -1280,7 +1281,6 @@ function App({ initialModuleId }) {
                 'bankName',
                 'bankAccountNumber',
                 'bankAccountName',
-                'accessAccount',
                 'bankBranchName',
                 'bankBranchCode',
                 'basicPay',
@@ -1303,7 +1303,11 @@ function App({ initialModuleId }) {
                 'emergencyContact2Name',
                 'emergencyContact2Phone',
                 'referee1',
+                'referee1Phone',
+                'referee1Email',
                 'referee2',
+                'referee2Phone',
+                'referee2Email',
               ],
             },
             {
@@ -1839,7 +1843,34 @@ function App({ initialModuleId }) {
     }
     return filteredRows;
   }, [currentUser, leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
+  function getCurrentEmployeeRow() {
+    if (!currentUser || currentUser.role !== 'employee') {
+      return null;
+    }
+    const employeeId = String(currentUser.employeeId || '').trim();
+    const employeeName = String(currentUser.fullName || '').trim();
+    const fromList =
+      employeeBaseRows.find((employee) => String(employee.id || '').trim() === employeeId) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '').trim() === employeeName) ||
+      null;
+    if (fromList) {
+      return fromList;
+    }
+    if (!employeeId && !employeeName) {
+      return null;
+    }
+    return {
+      id: employeeId || currentUser.username || '',
+      fullName: employeeName || currentUser.username || '',
+      department: '',
+    };
+  }
+
   const leaveFormEmployeeMatches = useMemo(() => {
+    if (currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      return row ? [row] : [];
+    }
     const query = String(formValues.leaveEmployeeSearch || '').trim().toLowerCase();
     if (!query) {
       return [];
@@ -1851,10 +1882,15 @@ function App({ initialModuleId }) {
         return employeeId.includes(query) || employeeName.includes(query);
       })
       .slice(0, 6);
-  }, [employeeBaseRows, formValues.leaveEmployeeSearch]);
+  }, [employeeBaseRows, formValues.leaveEmployeeSearch, currentUser]);
+
   const loanFormEmployeeMatches = useMemo(() => {
     if (activeModuleId !== 'loan-records') {
       return [];
+    }
+    if (currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      return row ? [row] : [];
     }
     const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
     if (!query) {
@@ -1867,7 +1903,7 @@ function App({ initialModuleId }) {
         return employeeId.includes(query) || employeeName.includes(query);
       })
       .slice(0, 6);
-  }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch]);
+  }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch, currentUser]);
   const selectedLeaveFormEmployee = useMemo(
     () =>
       employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
@@ -1934,6 +1970,24 @@ function App({ initialModuleId }) {
   const renderFormFieldControl = (field) => {
     if (!field) {
       return null;
+    }
+    const isEmployeeSelfServiceLoan =
+      activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
+    if (
+      isEmployeeSelfServiceLoan &&
+      (field.key === 'employee' ||
+        field.key === 'employeeId' ||
+        field.key === 'status' ||
+        field.key === 'balance' ||
+        field.key === 'interestPercent' ||
+        field.key === 'overduePenaltyPercentPerDay')
+    ) {
+      return (
+        <label key={field.key}>
+          <span>{getFieldLabel(field)}</span>
+          <input value={formValues[field.key] || ''} readOnly />
+        </label>
+      );
     }
     return (
       <label key={field.key}>
@@ -2119,21 +2173,7 @@ function App({ initialModuleId }) {
   );
   const selectedAttendanceEmployee = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
-      const employeeId = String(currentUser.employeeId || '').trim();
-      const employeeName = String(currentUser.fullName || '').trim();
-      return (
-        employeeBaseRows.find((employee) => {
-          const rowEmployeeId = String(employee.id || '').trim();
-          const rowEmployeeName = String(employee.fullName || '').trim();
-          if (employeeId) {
-            return rowEmployeeId === employeeId;
-          }
-          if (employeeName) {
-            return rowEmployeeName === employeeName;
-          }
-          return false;
-        }) || null
-      );
+      return getCurrentEmployeeRow();
     }
     return employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null;
   }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows]);
@@ -2967,8 +3007,9 @@ function App({ initialModuleId }) {
     closeModal();
   };
 
-  const handleClockIn = () => {
-    if (!selectedAttendanceEmployee) {
+  const handleClockIn = async () => {
+    let effectiveEmployee = selectedAttendanceEmployee || getCurrentEmployeeRow();
+    if (!effectiveEmployee || !effectiveEmployee.id) {
       showToast('Select an employee before clock in.', 'error');
       return;
     }
@@ -2982,8 +3023,8 @@ function App({ initialModuleId }) {
     const rowId = `ATT-${Date.now().toString().slice(-6)}`;
     const payrollRows = moduleRowsState['payroll-management'] || [];
     const payrollProfile =
-      payrollRows.find((row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id)) ||
-      payrollRows.find((row) => String(row.employee || '') === String(selectedAttendanceEmployee.fullName));
+      payrollRows.find((row) => String(row.employeeId || '') === String(effectiveEmployee.id)) ||
+      payrollRows.find((row) => String(row.employee || '') === String(effectiveEmployee.fullName));
     const basicPay = toNumberValue(payrollProfile?.basicPay);
     const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
     const scheduledMinutes = Math.max(
@@ -2996,44 +3037,60 @@ function App({ initialModuleId }) {
     const fixedApplies =
       fixedScope === 'all' ||
       (fixedScope === 'department' &&
-        String(selectedAttendanceEmployee.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
+        String(effectiveEmployee.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
       (fixedScope === 'individual' &&
-        String(selectedAttendanceEmployee.id || '') === String(appSettings.attendanceFixedEmployeeId || ''));
+        String(effectiveEmployee.id || '') === String(appSettings.attendanceFixedEmployeeId || ''));
     const deductionRatePerMinute =
       appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
     const deductionAmount = lateMinutes * deductionRatePerMinute;
 
+    const currentRows = moduleRowsState['attendance-time'] || [];
+    const existingRowIndex = currentRows.findIndex(
+      (row) => row.employeeId === effectiveEmployee.id && String(row.date || '') === nowDate
+    );
+    const newRow = {
+      id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
+      employee: effectiveEmployee.fullName,
+      employeeId: effectiveEmployee.id,
+      date: nowDate,
+      shift: attendanceClockDraft.shift || 'Morning',
+      checkIn: checkInTime,
+      checkOut: existingRowIndex >= 0 ? currentRows[existingRowIndex].checkOut || '' : '',
+      workedHours: existingRowIndex >= 0 ? currentRows[existingRowIndex].workedHours || '' : '',
+      lateMinutes: String(lateMinutes),
+      deductionRatePerMinute: deductionRatePerMinute.toFixed(3),
+      deductionAmount: deductionAmount.toFixed(2),
+      source: appSettings.fingerprintIntegration.mode === 'live' ? 'Fingerprint Device' : 'Manual Clock',
+      status,
+    };
+
     setModuleRowsState((prev) => {
-      const currentRows = prev['attendance-time'] || [];
-      const existingRowIndex = currentRows.findIndex(
-        (row) => row.employeeId === selectedAttendanceEmployee.id && String(row.date || '') === nowDate
-      );
-      const newRow = {
-        id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
-        employee: selectedAttendanceEmployee.fullName,
-        employeeId: selectedAttendanceEmployee.id,
-        date: nowDate,
-        shift: attendanceClockDraft.shift || 'Morning',
-        checkIn: checkInTime,
-        checkOut: existingRowIndex >= 0 ? currentRows[existingRowIndex].checkOut || '' : '',
-        workedHours: existingRowIndex >= 0 ? currentRows[existingRowIndex].workedHours || '' : '',
-        lateMinutes: String(lateMinutes),
-        deductionRatePerMinute: deductionRatePerMinute.toFixed(3),
-        deductionAmount: deductionAmount.toFixed(2),
-        source: appSettings.fingerprintIntegration.mode === 'live' ? 'Fingerprint Device' : 'Manual Clock',
-        status,
-      };
+      const prevRows = prev['attendance-time'] || [];
       if (existingRowIndex >= 0) {
-        const updatedRows = [...currentRows];
-        updatedRows[existingRowIndex] = { ...currentRows[existingRowIndex], ...newRow };
+        const updatedRows = [...prevRows];
+        updatedRows[existingRowIndex] = { ...prevRows[existingRowIndex], ...newRow };
         return { ...prev, 'attendance-time': updatedRows };
       }
-      return { ...prev, 'attendance-time': [newRow, ...currentRows] };
+      return { ...prev, 'attendance-time': [newRow, ...prevRows] };
     });
-    showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock in captured successfully.`, 'success');
+
+    try {
+      const url =
+        existingRowIndex >= 0
+          ? `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(newRow.id)}`
+          : 'http://localhost:8000/api/modules/attendance-time';
+      const method = existingRowIndex >= 0 ? 'PUT' : 'POST';
+      await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newRow),
+      });
+    } catch (error) {
+    }
+    showToast(`Thank you ${effectiveEmployee.fullName}, clock in captured successfully.`, 'success');
   };
 
-  const handleClockOut = () => {
+  const handleClockOut = async () => {
     if (!selectedAttendanceEmployee) {
       showToast('Select an employee before clock out.', 'error');
       return;
@@ -3053,27 +3110,50 @@ function App({ initialModuleId }) {
       return;
     }
 
+    const stateRows = moduleRowsState['attendance-time'] || [];
+    const existingRowIndex = stateRows.findIndex(
+      (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+    );
+    if (existingRowIndex < 0) {
+      showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
+      return;
+    }
+    const matchedRow = stateRows[existingRowIndex];
+    if (!matchedRow.checkIn || getMinutesBetweenClocks(matchedRow.checkIn, checkOutTime) <= 0) {
+      showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
+      return;
+    }
+    const workedHours = formatWorkedDuration(matchedRow.checkIn, checkOutTime);
+    const updatedRow = {
+      ...matchedRow,
+      checkOut: checkOutTime,
+      workedHours,
+    };
+
     setModuleRowsState((prev) => {
-      const stateRows = prev['attendance-time'] || [];
-      const existingRowIndex = stateRows.findIndex(
+      const prevRows = prev['attendance-time'] || [];
+      const idx = prevRows.findIndex(
         (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
       );
-      if (existingRowIndex < 0) {
+      if (idx < 0) {
         return prev;
       }
-      const matchedRow = stateRows[existingRowIndex];
-      if (!matchedRow.checkIn || getMinutesBetweenClocks(matchedRow.checkIn, checkOutTime) <= 0) {
-        return prev;
-      }
-      const workedHours = formatWorkedDuration(matchedRow.checkIn, checkOutTime);
-      const updatedRows = [...stateRows];
-      updatedRows[existingRowIndex] = {
-        ...matchedRow,
-        checkOut: checkOutTime,
-        workedHours,
-      };
-      return { ...prev, 'attendance-time': updatedRows };
+      const rowsCopy = [...prevRows];
+      rowsCopy[idx] = updatedRow;
+      return { ...prev, 'attendance-time': rowsCopy };
     });
+
+    try {
+      await fetch(
+        `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(updatedRow.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedRow),
+        }
+      );
+    } catch (error) {
+    }
     showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock out captured successfully.`, 'success');
   };
 
@@ -3312,23 +3392,31 @@ function App({ initialModuleId }) {
   };
 
   const startCreate = () => {
-    if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
-      showToast('Contact HR to request a new loan record.', 'error');
-      return;
-    }
+    const employeeRowForSelf = getCurrentEmployeeRow();
     setEditRowId('new');
     setFormValues(
       activeModuleId === 'leave-management'
-        ? {
-            leaveEmployeeSearch: '',
-            employee: '',
-            employeeId: '',
-            department: '',
-            type: 'Annual',
-            startDate: getTodayIsoDate(),
-            endDate: getTodayIsoDate(),
-            reason: '',
-          }
+        ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
+          ? {
+              leaveEmployeeSearch: `${employeeRowForSelf.fullName} (${employeeRowForSelf.id})`,
+              employee: employeeRowForSelf.fullName,
+              employeeId: employeeRowForSelf.id,
+              department: employeeRowForSelf.department || '',
+              type: 'Annual',
+              startDate: getTodayIsoDate(),
+              endDate: getTodayIsoDate(),
+              reason: '',
+            }
+          : {
+              leaveEmployeeSearch: '',
+              employee: '',
+              employeeId: '',
+              department: '',
+              type: 'Annual',
+              startDate: getTodayIsoDate(),
+              endDate: getTodayIsoDate(),
+              reason: '',
+            }
         : activeModuleId === 'payroll-management'
           ? {
               payrollEmployeeSearch: '',
@@ -3337,14 +3425,27 @@ function App({ initialModuleId }) {
               month: '',
             }
         : activeModuleId === 'loan-records'
-          ? {
-              loanEmployeeSearch: '',
-              employee: '',
-              employeeId: '',
-              amount: '',
-              interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
-              balance: '',
-            }
+          ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
+            ? {
+                loanEmployeeSearch: `${employeeRowForSelf.fullName} (${employeeRowForSelf.id})`,
+                employee: employeeRowForSelf.fullName,
+                employeeId: employeeRowForSelf.id,
+                amount: '',
+                interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+                tenorMonths: '',
+                monthlyInstallment: '',
+                issuedOn: getTodayIsoDate(),
+                balance: '',
+                status: 'Pending Approval',
+              }
+            : {
+                loanEmployeeSearch: '',
+                employee: '',
+                employeeId: '',
+                amount: '',
+                interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+                balance: '',
+              }
           : {}
     );
     setFormError('');
@@ -3503,10 +3604,13 @@ function App({ initialModuleId }) {
     }
     if (activeModuleId === 'loan-records') {
       const principal = toNumberValue(formValues.amount);
-      const rawInterestPercent =
+      let rawInterestPercent =
         formValues.interestPercent !== undefined && formValues.interestPercent !== null
           ? Number(formValues.interestPercent)
           : appSettings.loanRules.defaultInterestPercentPerMonth;
+      if (currentUser && currentUser.role === 'employee') {
+        rawInterestPercent = appSettings.loanRules.defaultInterestPercentPerMonth;
+      }
       const interestPercent = Math.max(0, Number(rawInterestPercent) || 0);
       const tenorMonths = Math.max(1, toNumberValue(formValues.tenorMonths) || 1);
       let monthlyInstallment = toNumberValue(formValues.monthlyInstallment);
@@ -3515,12 +3619,59 @@ function App({ initialModuleId }) {
         const totalRepay = principal + totalInterest;
         monthlyInstallment = totalRepay / tenorMonths;
       }
+
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const payrollRows = moduleRowsState['payroll-management'] || [];
+        const payrollProfile =
+          payrollRows.find((row) => String(row.employeeId || '').trim() === employeeId) ||
+          payrollRows.find((row) => String(row.employee || '').trim() === employeeName) ||
+          null;
+        if (!payrollProfile) {
+          const message = 'No payroll profile found. Contact HR before applying for a loan.';
+          setFormError(message);
+          showToast(message, 'error');
+          return;
+        }
+        const basicPay = toNumberValue(payrollProfile.basicPay);
+        const monthlyBonuses = toNumberValue(payrollProfile.monthlyBonuses);
+        const transportAllowance = toNumberValue(payrollProfile.transportAllowance);
+        const housingAllowance = toNumberValue(payrollProfile.housingAllowance);
+        const foodAllowance = toNumberValue(payrollProfile.foodAllowance);
+        const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
+        const loanRules = appSettings.loanRules || {};
+        const maxPercent = Math.max(
+          0,
+          Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 0)
+        );
+        const monthlyLimit = (grossPay * maxPercent) / 100;
+        if (monthlyInstallment > monthlyLimit) {
+          const message = `Requested loan exceeds your credit limit. Max monthly installment allowed is ${monthlyLimit.toFixed(
+            2
+          )}.`;
+          setFormError(message);
+          showToast(message, 'error');
+          return;
+        }
+      }
+
       computedLoanValues = {
         interestPercent: interestPercent || '',
         tenorMonths: tenorMonths || '',
         monthlyInstallment: monthlyInstallment ? monthlyInstallment.toFixed(2) : '',
         balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
+        overduePenaltyPercentPerDay: appSettings.loanRules.overduePenaltyPercentPerDay,
       };
+      if (currentUser && currentUser.role === 'employee') {
+        computedLoanValues = {
+          ...computedLoanValues,
+          employee: currentUser.fullName || '',
+          employeeId: currentUser.employeeId || '',
+          issuedOn: formValues.issuedOn || todayIsoDate,
+          status: formValues.status || 'Pending Approval',
+        };
+      }
     }
     if (activeModuleId === 'leave-management') {
       if (!selectedLeaveFormEmployee) {
@@ -4363,9 +4514,9 @@ function App({ initialModuleId }) {
             <p>Sign in to continue.</p>
             <form onSubmit={handleLoginSubmit} className="login-form">
               <label>
-                <span>Username</span>
+                <span>Username or Employee ID</span>
                 <input
-                autoComplete="username"
+                  autoComplete="username"
                   value={loginForm.username}
                   onChange={(event) =>
                     setLoginForm((prev) => ({ ...prev, username: event.target.value }))
@@ -5260,6 +5411,27 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <label>
+                      <span>Overdue Penalty % / Day</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={appSettings.loanRules.overduePenaltyPercentPerDay}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            loanRules: {
+                              ...prev.loanRules,
+                              overduePenaltyPercentPerDay: Math.max(
+                                0,
+                                Number(event.target.value) || 0
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
                   </>
                 ) : null}
                 {settingsTab === 'fingerprint' ? (
@@ -6024,6 +6196,30 @@ function App({ initialModuleId }) {
                       }
                     />
                   </label>
+                  {selectedLeaveFormBalance && currentUser && currentUser.role === 'employee' ? (
+                    <>
+                      <label>
+                        <span>Department</span>
+                        <input value={selectedLeaveFormBalance.department} readOnly />
+                      </label>
+                      <label>
+                        <span>Opening Leave Days</span>
+                        <input value={selectedLeaveFormBalance.openingBalance.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Approved Days</span>
+                        <input value={selectedLeaveFormBalance.approvedDays.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Pending Days</span>
+                        <input value={selectedLeaveFormBalance.pendingDays.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Remaining Leave Days</span>
+                        <input value={selectedLeaveFormBalance.availableBalance.toFixed(1)} readOnly />
+                      </label>
+                    </>
+                  ) : null}
                   {leaveFormEmployeeMatches.length > 0 ? (
                     <div className="row-actions">
                       {leaveFormEmployeeMatches.map((employee) => (
