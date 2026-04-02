@@ -159,6 +159,161 @@ const toIsoDateString = (date) => {
   return `${year}-${month}-${day}`;
 };
 
+const formatPayrollPeriodLabel = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  const monthInputMatch = normalized.match(/^(\d{4})-(\d{2})$/);
+  if (monthInputMatch) {
+    const [, yearPart, monthPart] = monthInputMatch;
+    const monthIndex = Number(monthPart) - 1;
+    const monthName = new Date(Number(yearPart), monthIndex, 1).toLocaleString('en-US', { month: 'long' });
+    return `${yearPart}-${monthName}`;
+  }
+  const legacyMatch = normalized.match(/^([A-Za-z]+)\s+(\d{4})$/);
+  if (legacyMatch) {
+    const [, monthName, yearPart] = legacyMatch;
+    return `${yearPart}-${monthName}`;
+  }
+  return normalized;
+};
+
+const toPayrollMonthInputValue = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  if (/^\d{4}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+  const formattedMatch = normalized.match(/^(\d{4})-([A-Za-z]+)$/);
+  if (formattedMatch) {
+    const [, yearPart, monthName] = formattedMatch;
+    const monthDate = new Date(`${monthName} 1, ${yearPart}`);
+    if (!Number.isNaN(monthDate.getTime())) {
+      return `${yearPart}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+    }
+  }
+  const legacyMatch = normalized.match(/^([A-Za-z]+)\s+(\d{4})$/);
+  if (legacyMatch) {
+    const [, monthName, yearPart] = legacyMatch;
+    const monthDate = new Date(`${monthName} 1, ${yearPart}`);
+    if (!Number.isNaN(monthDate.getTime())) {
+      return `${yearPart}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+    }
+  }
+  return '';
+};
+
+const normalizeEmployeeSearchText = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+const getEmployeeSearchCandidates = (employee) => {
+  const employeeId = String(employee?.id || '').trim();
+  const fullName = String(employee?.fullName || '').trim();
+  return [
+    employeeId,
+    fullName,
+    `${fullName} ${employeeId}`.trim(),
+    `${fullName} (${employeeId})`.trim(),
+    String(employee?.department || '').trim(),
+    String(employee?.taxId || '').trim(),
+    String(employee?.phone || employee?.contactNumber || '').trim(),
+    String(employee?.mobileMoneyNumber || '').trim(),
+    String(employee?.nhimaNumber || '').trim(),
+    String(employee?.bankName || '').trim(),
+    String(employee?.accessAccount || '').trim(),
+  ]
+    .map((item) => normalizeEmployeeSearchText(item))
+    .filter(Boolean);
+};
+
+const filterEmployeesBySearch = (employees, value, limit = 6) => {
+  const query = normalizeEmployeeSearchText(value);
+  if (!query) {
+    return [];
+  }
+  const queryTokens = query.split(' ').filter(Boolean);
+  return [...employees]
+    .filter((employee) => {
+      const candidates = getEmployeeSearchCandidates(employee);
+      const haystack = candidates.join(' ');
+      return queryTokens.every((token) => haystack.includes(token));
+    })
+    .sort((a, b) => {
+      const aId = normalizeEmployeeSearchText(a?.id);
+      const bId = normalizeEmployeeSearchText(b?.id);
+      const aName = normalizeEmployeeSearchText(a?.fullName);
+      const bName = normalizeEmployeeSearchText(b?.fullName);
+      const aStarts = aId.startsWith(query) || aName.startsWith(query) ? 1 : 0;
+      const bStarts = bId.startsWith(query) || bName.startsWith(query) ? 1 : 0;
+      if (bStarts !== aStarts) {
+        return bStarts - aStarts;
+      }
+      return aName.localeCompare(bName);
+    })
+    .slice(0, limit);
+};
+
+const findExactEmployeeBySearch = (employees, value) => {
+  const query = normalizeEmployeeSearchText(value);
+  if (!query) {
+    return null;
+  }
+  return employees.find((employee) => getEmployeeSearchCandidates(employee).some((candidate) => candidate === query)) || null;
+};
+
+const computePayrollPreviewValues = (values, appSettings) => {
+  const basicPay = toNumberValue(values.basicPay);
+  const monthlyBonuses = toNumberValue(values.monthlyBonuses);
+  const transportAllowance = toNumberValue(values.transportAllowance);
+  const housingAllowance = toNumberValue(values.housingAllowance);
+  const foodAllowance = toNumberValue(values.foodAllowance);
+  const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
+  const lateDeduction = toNumberValue(values.lateDeduction);
+  const noClockInPenalty = toNumberValue(values.noClockInPenalty);
+  const noClockOutPenalty = toNumberValue(values.noClockOutPenalty);
+  const absentPenalty = toNumberValue(values.absentPenalty);
+  const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
+  const statutoryRules = appSettings.statutoryRules || {};
+  const calcStatutory = (mode, value) => {
+    const numeric = Math.max(0, Number(value) || 0);
+    if (mode === 'percent-gross') {
+      return (grossPay * numeric) / 100;
+    }
+    if (mode === 'percent-basic') {
+      return (basicPay * numeric) / 100;
+    }
+    return numeric;
+  };
+  const napsaDeduction = calcStatutory(statutoryRules.napsaMode || 'percent-basic', statutoryRules.napsaValue ?? 0);
+  const nhimaDeduction = calcStatutory(statutoryRules.nhimaMode || 'percent-basic', statutoryRules.nhimaValue ?? 0);
+  const taxMinAmount = Math.max(0, Number(statutoryRules.taxMinAmount) || 0);
+  const taxDeduction =
+    grossPay >= taxMinAmount ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0) : 0;
+  const otherDeduction = toNumberValue(values.otherDeduction);
+  const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
+  const netPayable = grossPay - totalDeductions;
+  return {
+    grossPay,
+    totalAttendancePenalty,
+    totalDeductions,
+    netPayable,
+    napsaDeduction,
+    nhimaDeduction,
+    taxDeduction,
+    lateDeduction,
+    noClockInPenalty,
+    noClockOutPenalty,
+    absentPenalty,
+    otherDeduction,
+  };
+};
+
 const overlapDaysInclusive = (startA, endA, startB, endB) => {
   const start = parseIsoDateValue(startA);
   const end = parseIsoDateValue(endA);
@@ -1566,18 +1721,31 @@ function App({ initialModuleId }) {
   }, [activeModuleId, loanRows, modalRow]);
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
   const payrollFormEmployeeMatches = useMemo(() => {
-    const query = String(formValues.payrollEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
+    return filterEmployeesBySearch(employeeBaseRows, formValues.payrollEmployeeSearch);
   }, [employeeBaseRows, formValues.payrollEmployeeSearch]);
+  const selectedPayrollFormEmployee = useMemo(
+    () =>
+      employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '') === String(formValues.employee || '')) ||
+      findExactEmployeeBySearch(employeeBaseRows, formValues.payrollEmployeeSearch) ||
+      null,
+    [employeeBaseRows, formValues.employee, formValues.employeeId, formValues.payrollEmployeeSearch]
+  );
+  const payrollPreviewValues = useMemo(() => {
+    if (activeModuleId !== 'payroll-management') {
+      return {};
+    }
+    const preview = computePayrollPreviewValues(formValues, appSettings);
+    return {
+      grossPay: preview.grossPay ? preview.grossPay.toFixed(2) : '',
+      totalAttendancePenalty: preview.totalAttendancePenalty ? preview.totalAttendancePenalty.toFixed(2) : '',
+      totalDeductions: preview.totalDeductions ? preview.totalDeductions.toFixed(2) : '',
+      netPayable: preview.netPayable ? preview.netPayable.toFixed(2) : '',
+      napsaDeduction: preview.napsaDeduction ? preview.napsaDeduction.toFixed(2) : '',
+      nhimaDeduction: preview.nhimaDeduction ? preview.nhimaDeduction.toFixed(2) : '',
+      taxDeduction: preview.taxDeduction ? preview.taxDeduction.toFixed(2) : '',
+    };
+  }, [activeModuleId, appSettings, formValues]);
   const attendanceRows = useMemo(() => moduleRowsState['attendance-time'] || [], [moduleRowsState]);
   const fingerprintRows = useMemo(() => moduleRowsState.fingerprint || [], [moduleRowsState]);
   const leaveRequestRows = useMemo(
@@ -1867,22 +2035,45 @@ function App({ initialModuleId }) {
     };
   }
 
+  function buildPayrollFormValuesFromEmployee(employee, previousValues = {}) {
+    if (!employee) {
+      return previousValues;
+    }
+    return {
+      ...previousValues,
+      payrollEmployeeSearch: `${employee.fullName || ''} (${employee.id || ''})`.trim(),
+      employee: employee.fullName || '',
+      employeeId: employee.id || '',
+      taxId: employee.taxId || '',
+      pensionId: employee.pensionId || '',
+      nhimaNumber: employee.nhimaNumber || '',
+      accessAccount: employee.accessAccount || '',
+      mobileMoneyNumber: employee.mobileMoneyNumber || '',
+      mobileMoneyNetwork: employee.mobileMoneyNetwork || '',
+      mobileMoneyName: employee.mobileMoneyName || previousValues.mobileMoneyName || '',
+      bankName: employee.bankName || '',
+      bankAccountName: employee.bankAccountName || '',
+      bankAccountNumber: employee.bankAccountNumber || '',
+      basicPay: employee.basicPay || '',
+      monthlyBonuses: employee.monthlyBonuses || '',
+      transportAllowance: employee.transportAllowance || '',
+      housingAllowance: employee.housingAllowance || '',
+      foodAllowance: employee.foodAllowance || '',
+      workingDays: employee.workingDays || previousValues.workingDays || '',
+      status: previousValues.status || employee.employmentState || 'Processing',
+    };
+  }
+
+  function findPayrollEmployeeFromSearch(value) {
+    return findExactEmployeeBySearch(employeeBaseRows, value);
+  }
+
   const leaveFormEmployeeMatches = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
       const row = getCurrentEmployeeRow();
       return row ? [row] : [];
     }
-    const query = String(formValues.leaveEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
+    return filterEmployeesBySearch(employeeBaseRows, formValues.leaveEmployeeSearch);
   }, [employeeBaseRows, formValues.leaveEmployeeSearch, currentUser]);
 
   const loanFormEmployeeMatches = useMemo(() => {
@@ -1893,18 +2084,16 @@ function App({ initialModuleId }) {
       const row = getCurrentEmployeeRow();
       return row ? [row] : [];
     }
-    const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
+    return filterEmployeesBySearch(employeeBaseRows, formValues.loanEmployeeSearch);
   }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch, currentUser]);
+  const selectedLoanFormEmployee = useMemo(
+    () =>
+      employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '') === String(formValues.employee || '')) ||
+      findExactEmployeeBySearch(employeeBaseRows, formValues.loanEmployeeSearch) ||
+      null,
+    [employeeBaseRows, formValues.employee, formValues.employeeId, formValues.loanEmployeeSearch]
+  );
   const selectedLeaveFormEmployee = useMemo(
     () =>
       employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
@@ -1938,6 +2127,62 @@ function App({ initialModuleId }) {
     }
     return leaveRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
   }, [activeModuleId, leaveRequestRows, modalState.rowId]);
+  useEffect(() => {
+    if (activeModuleId !== 'payroll-management' || modalState.mode !== 'form') {
+      return;
+    }
+    const matchedEmployee = findPayrollEmployeeFromSearch(formValues.payrollEmployeeSearch);
+    if (!matchedEmployee) {
+      return;
+    }
+    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
+      return;
+    }
+    setFormValues((prev) => buildPayrollFormValuesFromEmployee(matchedEmployee, prev));
+  }, [activeModuleId, formValues.payrollEmployeeSearch, formValues.employeeId, modalState.mode]);
+  useEffect(() => {
+    if (activeModuleId !== 'leave-management' || modalState.mode !== 'form') {
+      return;
+    }
+    if (currentUser && currentUser.role === 'employee') {
+      return;
+    }
+    const matchedEmployee = findExactEmployeeBySearch(employeeBaseRows, formValues.leaveEmployeeSearch);
+    if (!matchedEmployee) {
+      return;
+    }
+    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
+      return;
+    }
+    setFormValues((prev) => ({
+      ...prev,
+      leaveEmployeeSearch: `${matchedEmployee.fullName} (${matchedEmployee.id})`,
+      employee: matchedEmployee.fullName,
+      employeeId: matchedEmployee.id,
+      department: matchedEmployee.department || 'Unassigned',
+    }));
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.employeeId, formValues.leaveEmployeeSearch, modalState.mode]);
+  useEffect(() => {
+    if (activeModuleId !== 'loan-records' || modalState.mode !== 'form') {
+      return;
+    }
+    if (currentUser && currentUser.role === 'employee') {
+      return;
+    }
+    const matchedEmployee = findExactEmployeeBySearch(employeeBaseRows, formValues.loanEmployeeSearch);
+    if (!matchedEmployee) {
+      return;
+    }
+    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
+      return;
+    }
+    setFormValues((prev) => ({
+      ...prev,
+      loanEmployeeSearch: `${matchedEmployee.fullName} (${matchedEmployee.id})`,
+      employee: matchedEmployee.fullName,
+      employeeId: matchedEmployee.id,
+    }));
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.employeeId, formValues.loanEmployeeSearch, modalState.mode]);
   const getApprovalBadgeClass = (approvalValue) => {
     const normalized = String(approvalValue || '').trim().toLowerCase();
     if (normalized === 'approved') {
@@ -1985,6 +2230,11 @@ function App({ initialModuleId }) {
     }
     const isEmployeeSelfServiceLoan =
       activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
+    const isPayrollComputedField =
+      activeModuleId === 'payroll-management' &&
+      ['grossPay', 'napsaDeduction', 'nhimaDeduction', 'taxDeduction', 'totalAttendancePenalty', 'totalDeductions', 'netPayable'].includes(
+        field.key
+      );
     if (
       isEmployeeSelfServiceLoan &&
       (field.key === 'employee' ||
@@ -1998,6 +2248,14 @@ function App({ initialModuleId }) {
         <label key={field.key}>
           <span>{getFieldLabel(field)}</span>
           <input value={formValues[field.key] || ''} readOnly />
+        </label>
+      );
+    }
+    if (isPayrollComputedField) {
+      return (
+        <label key={field.key}>
+          <span>{getFieldLabel(field)}</span>
+          <input value={payrollPreviewValues[field.key] || ''} readOnly />
         </label>
       );
     }
@@ -2141,6 +2399,17 @@ function App({ initialModuleId }) {
               />
             ) : null}
           </>
+        ) : field.type === 'month' ? (
+          <input
+            type="month"
+            value={toPayrollMonthInputValue(formValues[field.key])}
+            onChange={(event) =>
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: event.target.value,
+              }))
+            }
+          />
         ) : (
           <input
             type={field.type || 'text'}
@@ -2193,17 +2462,7 @@ function App({ initialModuleId }) {
     if (currentUser && currentUser.role === 'employee') {
       return [];
     }
-    const query = attendanceSearchText.trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
+    return filterEmployeesBySearch(employeeBaseRows, attendanceSearchText);
   }, [attendanceSearchText, currentUser, employeeBaseRows]);
   const selectedFingerprintEmployee = useMemo(
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
@@ -3521,6 +3780,7 @@ function App({ initialModuleId }) {
               employee: '',
               employeeId: '',
               month: '',
+              status: 'Processing',
             }
         : activeModuleId === 'loan-records'
           ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
@@ -3562,6 +3822,7 @@ function App({ initialModuleId }) {
         : activeModuleId === 'payroll-management'
           ? {
               ...row,
+              month: toPayrollMonthInputValue(row.month),
               payrollEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim(),
             }
         : { ...row }
@@ -3625,55 +3886,25 @@ function App({ initialModuleId }) {
     let computedPayrollValues = {};
     let computedLoanValues = {};
     if (activeModuleId === 'payroll-management') {
-      const basicPay = toNumberValue(formValues.basicPay);
-      const monthlyBonuses = toNumberValue(formValues.monthlyBonuses);
-      const transportAllowance = toNumberValue(formValues.transportAllowance);
-      const housingAllowance = toNumberValue(formValues.housingAllowance);
-      const foodAllowance = toNumberValue(formValues.foodAllowance);
-      const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
-      const lateDeduction = toNumberValue(formValues.lateDeduction);
-      const noClockInPenalty = toNumberValue(formValues.noClockInPenalty);
-      const noClockOutPenalty = toNumberValue(formValues.noClockOutPenalty);
-      const absentPenalty = toNumberValue(formValues.absentPenalty);
-      const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-      const statutoryRules = appSettings.statutoryRules || {};
-      const calcStatutory = (mode, value) => {
-        const numeric = Math.max(0, Number(value) || 0);
-        if (mode === 'percent-gross') {
-          return (grossPay * numeric) / 100;
-        }
-        if (mode === 'percent-basic') {
-          return (basicPay * numeric) / 100;
-        }
-        return numeric;
-      };
-      const napsaDeduction = calcStatutory(
-        statutoryRules.napsaMode || 'percent-basic',
-        statutoryRules.napsaValue ?? 0
-      );
-      const nhimaDeduction = calcStatutory(
-        statutoryRules.nhimaMode || 'percent-basic',
-        statutoryRules.nhimaValue ?? 0
-      );
-      const taxMinAmount = Math.max(0, Number(statutoryRules.taxMinAmount) || 0);
-      const taxBaseForThreshold = grossPay;
-      const taxDeduction =
-        taxBaseForThreshold >= taxMinAmount
-          ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0)
-          : 0;
-      const otherDeduction = toNumberValue(formValues.otherDeduction);
-      const totalDeductions =
-        napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-      const netPayable = grossPay - totalDeductions;
+      const matchedEmployeeFromSearch = selectedPayrollFormEmployee;
+      if (!matchedEmployeeFromSearch) {
+        const message = 'Select a valid employee from payroll search.';
+        setFormError(message);
+        showToast(message, 'error');
+        return;
+      }
+      const payrollPreviewNumeric = computePayrollPreviewValues(formValues, appSettings);
       const loanRules = appSettings.loanRules || {};
       const minTakeHomePercent = Math.max(1, Math.min(100, Number(loanRules.minTakeHomePercent) || 45));
       const maxLoanDeductionPercentOfGross = Math.max(
         0,
         Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 35)
       );
-      const grossPositive = grossPay > 0;
-      const effectiveLoanPercentOfGross = grossPositive ? (otherDeduction / grossPay) * 100 : 0;
-      const takeHomePercent = grossPositive ? (netPayable / grossPay) * 100 : 0;
+      const grossPositive = payrollPreviewNumeric.grossPay > 0;
+      const effectiveLoanPercentOfGross = grossPositive
+        ? (payrollPreviewNumeric.otherDeduction / payrollPreviewNumeric.grossPay) * 100
+        : 0;
+      const takeHomePercent = grossPositive ? (payrollPreviewNumeric.netPayable / payrollPreviewNumeric.grossPay) * 100 : 0;
       if (grossPositive && effectiveLoanPercentOfGross > maxLoanDeductionPercentOfGross) {
         const message = `Loan and other deductions exceed allowed ${maxLoanDeductionPercentOfGross.toFixed(
           1
@@ -3691,13 +3922,25 @@ function App({ initialModuleId }) {
         return;
       }
       computedPayrollValues = {
-        grossPay: grossPay ? grossPay.toFixed(2) : '',
-        totalAttendancePenalty: totalAttendancePenalty ? totalAttendancePenalty.toFixed(2) : '',
-        totalDeductions: totalDeductions ? totalDeductions.toFixed(2) : '',
-        netPayable: netPayable ? netPayable.toFixed(2) : '',
-        napsaDeduction: napsaDeduction ? napsaDeduction.toFixed(2) : '',
-        nhimaDeduction: nhimaDeduction ? nhimaDeduction.toFixed(2) : '',
-        taxDeduction: taxDeduction ? taxDeduction.toFixed(2) : '',
+        employee: matchedEmployeeFromSearch.fullName || formValues.employee || '',
+        employeeId: matchedEmployeeFromSearch.id || formValues.employeeId || '',
+        taxId: formValues.taxId || matchedEmployeeFromSearch.taxId || '',
+        pensionId: formValues.pensionId || matchedEmployeeFromSearch.pensionId || '',
+        nhimaNumber: formValues.nhimaNumber || matchedEmployeeFromSearch.nhimaNumber || '',
+        accessAccount: formValues.accessAccount || matchedEmployeeFromSearch.accessAccount || '',
+        mobileMoneyNumber: formValues.mobileMoneyNumber || matchedEmployeeFromSearch.mobileMoneyNumber || '',
+        mobileMoneyNetwork: formValues.mobileMoneyNetwork || matchedEmployeeFromSearch.mobileMoneyNetwork || '',
+        bankName: formValues.bankName || matchedEmployeeFromSearch.bankName || '',
+        bankAccountName: formValues.bankAccountName || matchedEmployeeFromSearch.bankAccountName || '',
+        bankAccountNumber: formValues.bankAccountNumber || matchedEmployeeFromSearch.bankAccountNumber || '',
+        month: formatPayrollPeriodLabel(formValues.month),
+        grossPay: payrollPreviewValues.grossPay,
+        totalAttendancePenalty: payrollPreviewValues.totalAttendancePenalty,
+        totalDeductions: payrollPreviewValues.totalDeductions,
+        netPayable: payrollPreviewValues.netPayable,
+        napsaDeduction: payrollPreviewValues.napsaDeduction,
+        nhimaDeduction: payrollPreviewValues.nhimaDeduction,
+        taxDeduction: payrollPreviewValues.taxDeduction,
       };
     }
     if (activeModuleId === 'loan-records') {
@@ -5951,6 +6194,7 @@ function App({ initialModuleId }) {
                     {activeModuleId === 'payroll-management' ? (
                       <PayrollPage
                         appSettings={appSettings}
+                        startCreate={startCreate}
                         payrollUploadInputRef={payrollUploadInputRef}
                         handlePayrollBulkUpload={handlePayrollBulkUpload}
                         handleDownloadPayrollTemplate={handleDownloadPayrollTemplate}
@@ -6441,10 +6685,24 @@ function App({ initialModuleId }) {
                               setFormValues((prev) => ({
                                 ...prev,
                                 payrollEmployeeSearch: event.target.value,
+                                employee: '',
+                                employeeId: '',
                               }))
                             }
                           />
                         </label>
+                        {selectedPayrollFormEmployee ? (
+                          <div className="detail-cell">
+                            <span>Selected Employee</span>
+                            <strong>
+                              {selectedPayrollFormEmployee.fullName} ({selectedPayrollFormEmployee.id})
+                            </strong>
+                            <span>
+                              {selectedPayrollFormEmployee.department || 'Unassigned'} •{' '}
+                              {selectedPayrollFormEmployee.employmentState || 'Active'}
+                            </span>
+                          </div>
+                        ) : null}
                         {payrollFormEmployeeMatches.length > 0 ? (
                           <div className="row-actions">
                             {payrollFormEmployeeMatches.map((employee) => (
@@ -6453,26 +6711,7 @@ function App({ initialModuleId }) {
                                 type="button"
                                 className="mini-btn"
                                 onClick={() =>
-                                  setFormValues((prev) => ({
-                                    ...prev,
-                                    payrollEmployeeSearch: `${employee.fullName} (${employee.id})`,
-                                    employee: employee.fullName,
-                                    employeeId: employee.id,
-                                    taxId: employee.taxId || '',
-                                    pensionId: employee.pensionId || '',
-                                    nhimaNumber: employee.nhimaNumber || '',
-                                    accessAccount: employee.accessAccount || '',
-                                    mobileMoneyNumber: employee.mobileMoneyNumber || '',
-                                    mobileMoneyNetwork: employee.mobileMoneyNetwork || '',
-                                    bankName: employee.bankName || '',
-                                    bankAccountName: employee.bankAccountName || '',
-                                    bankAccountNumber: employee.bankAccountNumber || '',
-                                    basicPay: employee.basicPay || '',
-                                    monthlyBonuses: employee.monthlyBonuses || '',
-                                    transportAllowance: employee.transportAllowance || '',
-                                    housingAllowance: employee.housingAllowance || '',
-                                    foodAllowance: employee.foodAllowance || '',
-                                  }))
+                                  setFormValues((prev) => buildPayrollFormValuesFromEmployee(employee, prev))
                                 }
                               >
                                 {employee.fullName} ({employee.id})
@@ -6547,7 +6786,8 @@ function App({ initialModuleId }) {
                           visibleFormFields={visibleFormFields}
                           loanInstallmentPreview={loanInstallmentPreview}
                           renderFormFieldControl={renderFormFieldControl}
-                          employeeBaseRows={employeeBaseRows}
+                          loanFormEmployeeMatches={loanFormEmployeeMatches}
+                          selectedLoanFormEmployee={selectedLoanFormEmployee}
                         />
                       ) : (
                         <div className="form-section-grid">

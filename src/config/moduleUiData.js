@@ -439,7 +439,7 @@ export const moduleUiData = {
     formFields: [
       { key: 'employee', label: 'Employee', required: true },
       { key: 'employeeId', label: 'Employee ID' },
-      { key: 'month', label: 'Month', required: true },
+      { key: 'month', label: 'Period', type: 'month', required: true },
       { key: 'taxId', label: 'Tax ID' },
       { key: 'pensionId', label: 'NAPSA Number' },
       { key: 'nhimaNumber', label: 'NHIMA Number' },

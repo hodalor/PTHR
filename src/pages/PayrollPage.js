@@ -1,7 +1,5 @@
-import React from 'react';
-
 export default function PayrollPage({
-  appSettings,
+  startCreate,
   payrollUploadInputRef,
   handlePayrollBulkUpload,
   handleDownloadPayrollTemplate,
@@ -18,6 +16,9 @@ export default function PayrollPage({
           style={{ display: 'none' }}
           onChange={handlePayrollBulkUpload}
         />
+        <button type="button" className="primary-btn" onClick={startCreate}>
+          + Add Payroll
+        </button>
         <button type="button" className="neutral-btn" onClick={handleDownloadPayrollTemplate}>
           Download Template
         </button>
