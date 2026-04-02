@@ -512,6 +512,7 @@ function App({ initialModuleId }) {
   const [leaveSortBy, setLeaveSortBy] = useState('date-desc');
   const [leaveActionMessage, setLeaveActionMessage] = useState('');
   const [leaveApprovalDrafts, setLeaveApprovalDrafts] = useState({});
+  const [leaveApprovalSavingId, setLeaveApprovalSavingId] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
@@ -1911,10 +1912,21 @@ function App({ initialModuleId }) {
       null,
     [employeeBaseRows, formValues.employee, formValues.employeeId]
   );
-  const selectedLeaveFormBalance = useMemo(
-    () => leaveBalanceRows.find((row) => String(row.employeeId || '') === String(selectedLeaveFormEmployee?.id || '')) || null,
-    [leaveBalanceRows, selectedLeaveFormEmployee]
-  );
+  const selectedLeaveFormBalance = useMemo(() => {
+    let employeeIdForBalance = selectedLeaveFormEmployee?.id;
+    if (!employeeIdForBalance && currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      employeeIdForBalance = row?.id;
+    }
+    if (!employeeIdForBalance) {
+      return null;
+    }
+    return (
+      leaveBalanceRows.find(
+        (row) => String(row.employeeId || '') === String(employeeIdForBalance || '')
+      ) || null
+    );
+  }, [leaveBalanceRows, selectedLeaveFormEmployee, currentUser]);
   const leaveFormAutoDaysRequested = useMemo(
     () => getInclusiveDaysBetween(formValues.startDate, formValues.endDate),
     [formValues.endDate, formValues.startDate]
@@ -3208,7 +3220,7 @@ function App({ initialModuleId }) {
       comment: String(input.comment || '').trim(),
     };
   };
-  const handleDepartmentLeaveDecision = (leaveId, decision) => {
+  const handleDepartmentLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3219,28 +3231,56 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    const currentApproval =
+      existingRow.departmentApproval || existingRow.supervisorApproval || existingRow.managerApproval || 'Pending';
+    if (String(currentApproval) !== 'Pending') {
+      showToast(`Leave request ${leaveId} is already processed by department.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      departmentApproval: normalizedDecision,
+      departmentApprover: input.actorName,
+      departmentComment: input.comment,
+      departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.hrApproval || 'Pending',
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        const currentApproval = row.departmentApproval || row.supervisorApproval || row.managerApproval || 'Pending';
-        if (String(currentApproval) !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          departmentApproval: normalizedDecision,
-          departmentApprover: input.actorName,
-          departmentComment: input.comment,
-          departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.hrApproval || 'Pending',
-          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save department decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving department decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected'
@@ -3254,7 +3294,7 @@ function App({ initialModuleId }) {
         : 'Department approval completed. Request moved to HR.'
     );
   };
-  const handleHrLeaveDecision = (leaveId, decision) => {
+  const handleHrLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3265,26 +3305,53 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || 'Pending') !== 'Pending') {
+      showToast(`Leave request ${leaveId} is not ready for HR decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      hrApproval: normalizedDecision,
+      hrApprover: input.actorName,
+      hrComment: input.comment,
+      hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || 'Pending') !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          hrApproval: normalizedDecision,
-          hrApprover: input.actorName,
-          hrComment: input.comment,
-          hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save HR decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving HR decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected' ? `HR rejected leave request ${leaveId}.` : `HR approved leave request ${leaveId}.`,
@@ -3294,7 +3361,7 @@ function App({ initialModuleId }) {
       normalizedDecision === 'Rejected' ? 'HR rejected the leave request.' : 'HR approved. Request moved to branch manager.'
     );
   };
-  const handleManagerLeaveDecision = (leaveId, decision) => {
+  const handleManagerLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3305,28 +3372,59 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    if (
+      String(existingRow.departmentApproval || '') !== 'Approved' ||
+      String(existingRow.hrApproval || '') !== 'Approved'
+    ) {
+      showToast(`Leave request ${leaveId} is not ready for manager decision.`, 'error');
+      return;
+    }
+    if (String(existingRow.managerApproval || 'Pending') !== 'Pending') {
+      showToast(`Leave request ${leaveId} already has a manager decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      managerApproval: normalizedDecision,
+      managerApprover: input.actorName,
+      managerComment: input.comment,
+      managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || '') !== 'Approved') {
-          return row;
-        }
-        if (String(row.managerApproval || 'Pending') !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          managerApproval: normalizedDecision,
-          managerApprover: input.actorName,
-          managerComment: input.comment,
-          managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save manager decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving manager decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected'
@@ -3674,7 +3772,11 @@ function App({ initialModuleId }) {
       }
     }
     if (activeModuleId === 'leave-management') {
-      if (!selectedLeaveFormEmployee) {
+      let employeeForLeave = selectedLeaveFormEmployee;
+      if (currentUser && currentUser.role === 'employee') {
+        employeeForLeave = getCurrentEmployeeRow();
+      }
+      if (!employeeForLeave) {
         setFormError('Select a valid employee from search.');
         showToast('Select a valid employee from search.', 'error');
         return;
@@ -3710,9 +3812,9 @@ function App({ initialModuleId }) {
         editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
       const requestPayload = {
         id: rowId,
-        employee: selectedLeaveFormEmployee.fullName,
-        employeeId: selectedLeaveFormEmployee.id,
-        department: selectedLeaveFormEmployee.department || 'Unassigned',
+        employee: employeeForLeave.fullName,
+        employeeId: employeeForLeave.id,
+        department: employeeForLeave.department || 'Unassigned',
         type: formValues.type || 'Annual',
         startDate: formValues.startDate,
         endDate: formValues.endDate,
@@ -3774,7 +3876,7 @@ function App({ initialModuleId }) {
       );
       showToast(
         editRowId === 'new'
-          ? `Leave request submitted for ${selectedLeaveFormEmployee.fullName}.`
+          ? `Leave request submitted for ${employeeForLeave.fullName}.`
           : 'Leave request updated successfully.',
         'success'
       );
@@ -6665,7 +6767,10 @@ function App({ initialModuleId }) {
                                   <button
                                     type="button"
                                     className="mini-btn"
-                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending' ||
+                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
+                                    }
                                     onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
                                   >
                                     Approve
@@ -6673,7 +6778,10 @@ function App({ initialModuleId }) {
                                   <button
                                     type="button"
                                     className="mini-btn danger"
-                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
+                                    disabled={
+                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending' ||
+                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
+                                    }
                                     onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
                                   >
                                     Reject
@@ -6687,7 +6795,8 @@ function App({ initialModuleId }) {
                                     className="mini-btn"
                                     disabled={
                                       String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
+                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending' ||
+                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
                                     }
                                     onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
                                   >
@@ -6714,7 +6823,8 @@ function App({ initialModuleId }) {
                                     disabled={
                                       String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
                                       String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
+                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending' ||
+                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
                                     }
                                     onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
                                   >
