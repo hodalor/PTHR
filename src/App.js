@@ -5,12 +5,18 @@ import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
 import LeaveManagementPage from './pages/LeaveManagementPage';
-import PayrollPage from './pages/PayrollPage';
 import LoanRecordsPage from './pages/LoanRecordsPage';
 import LoanManagementPage from './pages/LoanManagementPage';
 import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
 import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
+import SidebarNav from './app/SidebarNav';
+import LeaveApprovalPanel from './modules/leave/LeaveApprovalPanel';
+import LoanApprovalPanel from './modules/loan/LoanApprovalPanel';
+import { toNumberValue } from './utils/number';
+import { useModuleAdapter } from './modules/adapters/useModuleAdapter';
+import { getModuleEnhancers } from './modules/adapters/moduleEnhancers';
+import { getEmployeePayrollProfile } from './utils/payrollProfile';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -98,12 +104,6 @@ const getMinutesBetweenClocks = (startClock, endClock) => {
   return endMinutes - startMinutes;
 };
 
-const toNumberValue = (value) => {
-  const sanitized = String(value || '').replace(/[^0-9.-]/g, '');
-  const numeric = Number(sanitized);
-  return Number.isFinite(numeric) ? numeric : 0;
-};
-
 const getCurrentClockValue = () => {
   const now = new Date();
   const hours = String(now.getHours()).padStart(2, '0');
@@ -161,53 +161,6 @@ const toIsoDateString = (date) => {
   return `${year}-${month}-${day}`;
 };
 
-const formatPayrollPeriodLabel = (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized) {
-    return '';
-  }
-  const monthInputMatch = normalized.match(/^(\d{4})-(\d{2})$/);
-  if (monthInputMatch) {
-    const [, yearPart, monthPart] = monthInputMatch;
-    const monthIndex = Number(monthPart) - 1;
-    const monthName = new Date(Number(yearPart), monthIndex, 1).toLocaleString('en-US', { month: 'long' });
-    return `${yearPart}-${monthName}`;
-  }
-  const legacyMatch = normalized.match(/^([A-Za-z]+)\s+(\d{4})$/);
-  if (legacyMatch) {
-    const [, monthName, yearPart] = legacyMatch;
-    return `${yearPart}-${monthName}`;
-  }
-  return normalized;
-};
-
-const toPayrollMonthInputValue = (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized) {
-    return '';
-  }
-  if (/^\d{4}-\d{2}$/.test(normalized)) {
-    return normalized;
-  }
-  const formattedMatch = normalized.match(/^(\d{4})-([A-Za-z]+)$/);
-  if (formattedMatch) {
-    const [, yearPart, monthName] = formattedMatch;
-    const monthDate = new Date(`${monthName} 1, ${yearPart}`);
-    if (!Number.isNaN(monthDate.getTime())) {
-      return `${yearPart}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
-    }
-  }
-  const legacyMatch = normalized.match(/^([A-Za-z]+)\s+(\d{4})$/);
-  if (legacyMatch) {
-    const [, monthName, yearPart] = legacyMatch;
-    const monthDate = new Date(`${monthName} 1, ${yearPart}`);
-    if (!Number.isNaN(monthDate.getTime())) {
-      return `${yearPart}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
-    }
-  }
-  return '';
-};
-
 const isLeaveRejectedRecord = (row) => {
   const departmentApproval = String(row?.departmentApproval || row?.supervisorApproval || '').trim().toLowerCase();
   const hrApproval = String(row?.hrApproval || '').trim().toLowerCase();
@@ -229,53 +182,6 @@ const isLeaveFullyApprovedRecord = (row) => {
 const isLoanCountableRecord = (row) => {
   const status = String(row?.status || '').trim().toLowerCase();
   return status === 'active' || status === 'approved';
-};
-
-const computePayrollPreviewValues = (values, appSettings) => {
-  const basicPay = toNumberValue(values.basicPay);
-  const monthlyBonuses = toNumberValue(values.monthlyBonuses);
-  const transportAllowance = toNumberValue(values.transportAllowance);
-  const housingAllowance = toNumberValue(values.housingAllowance);
-  const foodAllowance = toNumberValue(values.foodAllowance);
-  const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
-  const lateDeduction = toNumberValue(values.lateDeduction);
-  const noClockInPenalty = toNumberValue(values.noClockInPenalty);
-  const noClockOutPenalty = toNumberValue(values.noClockOutPenalty);
-  const absentPenalty = toNumberValue(values.absentPenalty);
-  const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-  const statutoryRules = appSettings.statutoryRules || {};
-  const calcStatutory = (mode, value) => {
-    const numeric = Math.max(0, Number(value) || 0);
-    if (mode === 'percent-gross') {
-      return (grossPay * numeric) / 100;
-    }
-    if (mode === 'percent-basic') {
-      return (basicPay * numeric) / 100;
-    }
-    return numeric;
-  };
-  const napsaDeduction = calcStatutory(statutoryRules.napsaMode || 'percent-basic', statutoryRules.napsaValue ?? 0);
-  const nhimaDeduction = calcStatutory(statutoryRules.nhimaMode || 'percent-basic', statutoryRules.nhimaValue ?? 0);
-  const taxMinAmount = Math.max(0, Number(statutoryRules.taxMinAmount) || 0);
-  const taxDeduction =
-    grossPay >= taxMinAmount ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0) : 0;
-  const otherDeduction = toNumberValue(values.otherDeduction);
-  const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-  const netPayable = grossPay - totalDeductions;
-  return {
-    grossPay,
-    totalAttendancePenalty,
-    totalDeductions,
-    netPayable,
-    napsaDeduction,
-    nhimaDeduction,
-    taxDeduction,
-    lateDeduction,
-    noClockInPenalty,
-    noClockOutPenalty,
-    absentPenalty,
-    otherDeduction,
-  };
 };
 
 const overlapDaysInclusive = (startA, endA, startB, endB) => {
@@ -344,44 +250,6 @@ const blendHexToBlack = (hex, blackRatio) => {
   return `#${toChannel(1)}${toChannel(3)}${toChannel(5)}`;
 };
 
-const parseCsvLine = (line) => {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (char === '"') {
-      const nextChar = line[i + 1];
-      if (inQuotes && nextChar === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  result.push(current);
-  return result.map((value) => value.trim());
-};
-
-const parseCsv = (text) => {
-  const lines = String(text || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (!lines.length) {
-    return { headers: [], rows: [] };
-  }
-  const headers = parseCsvLine(lines[0]);
-  const rows = lines.slice(1).map((line) => parseCsvLine(line));
-  return { headers, rows };
-};
-
 const defaultIdentifierPresets = [
   {
     id: 'ghana',
@@ -394,36 +262,6 @@ const defaultIdentifierPresets = [
     name: 'Zambia (NAPSA/TPIN)',
     pensionLabel: 'NAPSA Number',
     taxLabel: 'TPIN',
-  },
-];
-
-const defaultEmployeeLoanRows = [
-  {
-    id: 'LON-100',
-    employee: 'Amina Yusuf',
-    type: 'Salary Advance',
-    amount: 'GHS 2,500',
-    issuedOn: '2026-01-18',
-    balance: 'GHS 1,200',
-    status: 'Active',
-  },
-  {
-    id: 'LON-101',
-    employee: 'Liam Osei',
-    type: 'Medical Loan',
-    amount: 'GHS 4,000',
-    issuedOn: '2025-12-05',
-    balance: 'GHS 600',
-    status: 'Active',
-  },
-  {
-    id: 'LON-102',
-    employee: 'Fatima Bello',
-    type: 'Emergency Loan',
-    amount: 'NGN 850,000',
-    issuedOn: '2025-09-12',
-    balance: 'NGN 0',
-    status: 'Closed',
   },
 ];
 
@@ -730,7 +568,6 @@ function App({ initialModuleId }) {
       { name: 'Operations', code: 'OP' },
     ],
   });
-  const payrollUploadInputRef = useRef(null);
   const employeeModuleLoadingRef = useRef(false);
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
@@ -1104,191 +941,21 @@ function App({ initialModuleId }) {
     if (activeModuleId === 'loan-records') {
       return loanRowsScopedByRole;
     }
-    if (activeModuleId !== 'payroll-management') {
-      return baseRows;
-    }
-    const employeeRows = moduleRowsState['employee-management'] || [];
-    const attendanceTimeRows = moduleRowsState['attendance-time'] || [];
-    const leaveRows = moduleRowsState['leave-management'] || [];
-    const penaltyAdjustmentRows = moduleRowsState['attendance-penalty-adjustments'] || [];
-    const loanRows = moduleRowsState['loan-records'] || [];
-    const lateMinutesByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
-      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
-      if (!key) {
-        return acc;
-      }
-      const minutes = Math.max(0, Number(attendanceRow.lateMinutes) || 0);
-      acc[key] = (acc[key] || 0) + minutes;
-      return acc;
-    }, {});
-    const lateDeductionByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
-      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
-      if (!key) {
-        return acc;
-      }
-      const amount = Math.max(0, toNumberValue(attendanceRow.deductionAmount));
-      acc[key] = (acc[key] || 0) + amount;
-      return acc;
-    }, {});
-    const nowDate = getTodayIsoDate();
-    const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
-    const noClockInPenaltyByEmployee = {};
-    const noClockOutPenaltyByEmployee = {};
-    const absentPenaltyByEmployee = {};
-    attendanceTimeRows.forEach((attendanceRow) => {
-      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
-      const matchedEmployee = employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === key) || null;
-      if (!key) {
-        return;
-      }
-      const currentDate = String(attendanceRow.date || '');
-      const isPastDate = currentDate < nowDate;
-      const isNoonReached = isPastDate || (currentDate === nowDate && nowMinutes >= 12 * 60);
-      const isClockOutDeadlineReached = isPastDate;
-      const leaveMatch = leaveRows.find((leaveRow) => {
-        const leaveEmployeeKey = resolveEmployeeKey(employeeRows, leaveRow.employeeId, leaveRow.employee);
-        const leaveStatus = String(leaveRow.status || '').toLowerCase();
-        return (
-          leaveEmployeeKey === key &&
-          (leaveStatus === 'approved' || leaveStatus === 'active') &&
-          String(leaveRow.startDate || '') <= currentDate &&
-          String(leaveRow.endDate || '') >= currentDate
-        );
+    const enhancers = getModuleEnhancers(activeModuleId);
+    if (enhancers && typeof enhancers.getRows === 'function') {
+      return enhancers.getRows({
+        baseRows,
+        moduleRowsState,
+        appSettings,
+        getTodayIsoDate,
+        getCurrentClockValue,
+        toMinutesFromClock,
+        getMinutesBetweenClocks,
+        isLoanCountableRecord,
       });
-      const employeeStatus = String(matchedEmployee?.status || '').toLowerCase();
-      const employeeStage = String(matchedEmployee?.employmentState || '').toLowerCase();
-      const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
-      const isExempt = isOffDuty || Boolean(leaveMatch);
-      if (isExempt) {
-        return;
-      }
-      const checkInMinutes = toMinutesFromClock(attendanceRow.checkIn);
-      const rawCheckOut = String(attendanceRow.checkOut || '');
-      const hasClockOut =
-        rawCheckOut !== '00:00' &&
-        rawCheckOut !== '24:00' &&
-        toMinutesFromClock(attendanceRow.checkOut) !== null &&
-        toMinutesFromClock(attendanceRow.checkOut) > (checkInMinutes ?? 0);
-      const missingClockIn = checkInMinutes === null && isNoonReached;
-      const missingClockOut = !hasClockOut && isClockOutDeadlineReached;
-      const missingCount = Number(missingClockIn) + Number(missingClockOut);
-      const payrollForEmployee =
-        baseRows.find((payrollRow) => String(payrollRow.employeeId || '').trim() === key) ||
-        baseRows.find((payrollRow) => resolveEmployeeKey(employeeRows, payrollRow.employeeId, payrollRow.employee) === key);
-      const basicPay = toNumberValue(payrollForEmployee?.basicPay || matchedEmployee?.basicPay);
-      const workingDays = Math.max(
-        1,
-        Number(payrollForEmployee?.workingDays || matchedEmployee?.workingDays || appSettings.payrollWorkingDays) || 1
-      );
-      const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
-      if (missingCount >= 2) {
-        absentPenaltyByEmployee[key] = (absentPenaltyByEmployee[key] || 0) + dailyWage;
-      } else if (missingClockIn) {
-        noClockInPenaltyByEmployee[key] = (noClockInPenaltyByEmployee[key] || 0) + dailyWage / 2;
-      } else if (missingClockOut) {
-        noClockOutPenaltyByEmployee[key] = (noClockOutPenaltyByEmployee[key] || 0) + dailyWage / 2;
-      }
-      if (checkInMinutes !== null && hasClockOut && shiftEndMinutes > 0) {
-        const checkOutMinutes = toMinutesFromClock(attendanceRow.checkOut) || 0;
-        if (checkOutMinutes < shiftEndMinutes) {
-          noClockOutPenaltyByEmployee[key] = noClockOutPenaltyByEmployee[key] || 0;
-        }
-      }
-    });
-    const clearedByPenaltyAndEmployee = penaltyAdjustmentRows.reduce((acc, row) => {
-      const key = `${String(row.employeeId || '').trim()}|${String(row.penaltyType || '').trim()}`;
-      acc[key] = (acc[key] || 0) + toNumberValue(row.clearedAmount);
-      return acc;
-    }, {});
-    const loanSummaryByEmployee = loanRows.reduce((acc, loanRow) => {
-      const employeeId = String(loanRow.employeeId || '').trim();
-      const employeeName = String(loanRow.employee || '').trim();
-      if (!employeeId && !employeeName) {
-        return acc;
-      }
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
-      if (!key) {
-        return acc;
-      }
-      const isActive = isLoanCountableRecord(loanRow);
-      const balance = toNumberValue(loanRow.balance || loanRow.amount);
-      const current = acc[key] || {
-        totalBalance: 0,
-        activeCount: 0,
-        totalCount: 0,
-      };
-      const next = {
-        totalBalance: current.totalBalance + (isActive ? balance : 0),
-        activeCount: current.activeCount + (isActive ? 1 : 0),
-        totalCount: current.totalCount + (isActive ? 1 : 0),
-      };
-      acc[key] = next;
-      return acc;
-    }, {});
-    const scheduledMinutes = Math.max(
-      1,
-      getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd)
-    );
-    return baseRows.map((payrollRow) => {
-      const payrollEmployeeId = String(payrollRow.employeeId || '').trim();
-      const payrollEmployeeName = String(payrollRow.employee || '').trim();
-      const key = resolveEmployeeKey(employeeRows, payrollEmployeeId, payrollEmployeeName);
-      const matchedEmployee = employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === key) || null;
-      const lateMinutes = lateMinutesByEmployee[key] || 0;
-      const basicPay = toNumberValue(payrollRow.basicPay);
-      const workingDays = Math.max(1, Number(payrollRow.workingDays || appSettings.payrollWorkingDays) || 1);
-      const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
-      const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
-      const fixedScope = String(appSettings.attendanceFixedScope || 'all');
-      const fixedApplies =
-        fixedScope === 'all' ||
-        (fixedScope === 'department' &&
-          String(matchedEmployee?.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
-        (fixedScope === 'individual' &&
-          String(matchedEmployee?.id || payrollEmployeeId || '') === String(appSettings.attendanceFixedEmployeeId || ''));
-      const minuteRate = appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
-      const lateDeduction = lateDeductionByEmployee[key] > 0 ? lateDeductionByEmployee[key] : lateMinutes * minuteRate;
-      const noClockInPenalty = noClockInPenaltyByEmployee[key] || 0;
-      const noClockOutPenalty = noClockOutPenaltyByEmployee[key] || 0;
-      const absentPenalty = absentPenaltyByEmployee[key] || 0;
-      const lateClearance = clearedByPenaltyAndEmployee[`${key}|lateness`] || 0;
-      const noClockInClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-in`] || 0;
-      const noClockOutClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-out`] || 0;
-      const absentClearance = clearedByPenaltyAndEmployee[`${key}|absent`] || 0;
-      const netLateDeduction = Math.max(0, lateDeduction - lateClearance);
-      const netNoClockInPenalty = Math.max(0, noClockInPenalty - noClockInClearance);
-      const netNoClockOutPenalty = Math.max(0, noClockOutPenalty - noClockOutClearance);
-      const netAbsentPenalty = Math.max(0, absentPenalty - absentClearance);
-      const totalAttendancePenalty = netLateDeduction + netNoClockInPenalty + netNoClockOutPenalty + netAbsentPenalty;
-      const loanSummary = loanSummaryByEmployee[key] || {
-        totalBalance: 0,
-        activeCount: 0,
-        totalCount: 0,
-      };
-      const loanSummaryLabel =
-        loanSummary.activeCount > 0
-          ? `${loanSummary.activeCount} loan(s) • bal ${loanSummary.totalBalance.toFixed(2)}`
-          : '';
-      return {
-        ...payrollRow,
-        lateMinutes: String(lateMinutes),
-        deductionRatePerMinute: minuteRate.toFixed(3),
-        lateDeduction: netLateDeduction.toFixed(2),
-        noClockInPenalty: netNoClockInPenalty.toFixed(2),
-        noClockOutPenalty: netNoClockOutPenalty.toFixed(2),
-        absentPenalty: netAbsentPenalty.toFixed(2),
-        totalAttendancePenalty: totalAttendancePenalty.toFixed(2),
-        payableAfterLate: Math.max(0, basicPay - totalAttendancePenalty).toFixed(2),
-        loanSummary: loanSummaryLabel,
-        loanCount: String(loanSummary.activeCount || 0),
-        loanBalance: loanSummary.totalBalance ? loanSummary.totalBalance.toFixed(2) : '',
-      };
-    });
-  }, [activeModuleConfig, activeModuleId, appSettings, moduleRowsState]);
+    }
+    return baseRows;
+  }, [activeModuleConfig, activeModuleId, appSettings, loanRowsScopedByRole, moduleRowsState]);
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
   const modalRow = rows.find((row) => row.id === modalState.rowId) || null;
@@ -1326,23 +993,9 @@ function App({ initialModuleId }) {
         { key: 'contractAlert', label: 'Contract Alert' },
       ];
     }
-    if (activeModuleId === 'payroll-management') {
-      if (!columns.some((column) => column.key === 'loanSummary')) {
-        const statusIndex = columns.findIndex((column) => column.key === 'status');
-        if (statusIndex === -1) {
-          columns = [
-            ...columns,
-            { key: 'loanSummary', label: 'Loans' },
-          ];
-        } else {
-          columns = [
-            ...columns.slice(0, statusIndex),
-            { key: 'loanSummary', label: 'Loans' },
-            ...columns.slice(statusIndex),
-          ];
-        }
-      }
-      return columns;
+    const enhancers = getModuleEnhancers(activeModuleId);
+    if (enhancers && typeof enhancers.augmentColumns === 'function') {
+      return enhancers.augmentColumns(columns);
     }
     return columns;
   }, [activeModuleConfig, activeModuleId]);
@@ -1414,7 +1067,6 @@ function App({ initialModuleId }) {
     return field.label;
   };
   const isEmployeeModule = activeModuleId === 'employee-management';
-  const isPayrollModule = activeModuleId === 'payroll-management';
   const employeeFormSections = useMemo(
     () =>
       isEmployeeModule
@@ -1497,72 +1149,6 @@ function App({ initialModuleId }) {
         : [],
     [isEmployeeModule]
   );
-  const payrollDetailSections = useMemo(
-    () =>
-      isPayrollModule
-        ? [
-            {
-              id: 'employee-period',
-              title: 'Employee & Period',
-              fields: ['month', 'employee', 'employeeId', 'status'],
-            },
-            {
-              id: 'statutory',
-              title: 'Statutory IDs',
-              fields: ['taxId', 'pensionId', 'nhimaNumber'],
-            },
-            {
-              id: 'wallet-bank',
-              title: 'Wallet & Bank',
-              fields: [
-                'accessAccount',
-                'mobileMoneyNumber',
-                'mobileMoneyNetwork',
-                'bankName',
-                'bankAccountName',
-                'bankAccountNumber',
-              ],
-            },
-            {
-              id: 'pay-allowances',
-              title: 'Pay & Allowances',
-              fields: [
-                'basicPay',
-                'monthlyBonuses',
-                'transportAllowance',
-                'housingAllowance',
-                'foodAllowance',
-                'grossPay',
-                'workingDays',
-              ],
-            },
-            {
-              id: 'deductions-penalties',
-              title: 'Deductions & Penalties',
-              fields: [
-                'napsaDeduction',
-                'nhimaDeduction',
-                'taxDeduction',
-                'otherDeduction',
-                'totalAttendancePenalty',
-                'lateMinutes',
-                'deductionRatePerMinute',
-                'lateDeduction',
-                'noClockInPenalty',
-                'noClockOutPenalty',
-                'absentPenalty',
-                'totalDeductions',
-              ],
-            },
-            {
-              id: 'summary',
-              title: 'Summary',
-              fields: ['netPayable'],
-            },
-          ]
-        : [],
-    [isPayrollModule]
-  );
   const employeeFormFieldMap = useMemo(() => {
     if (!isEmployeeModule) {
       return {};
@@ -1573,18 +1159,8 @@ function App({ initialModuleId }) {
     });
     return map;
   }, [isEmployeeModule, visibleFormFields]);
-  const payrollFormFieldMap = useMemo(() => {
-    if (!isPayrollModule || !activeModuleConfig) {
-      return {};
-    }
-    const map = {};
-    activeModuleConfig.formFields.forEach((field) => {
-      map[field.key] = field;
-    });
-    return map;
-  }, [activeModuleConfig, isPayrollModule]);
   const genericFormSections = useMemo(() => {
-    if (isEmployeeModule || isPayrollModule || !activeModuleConfig) {
+    if (isEmployeeModule || !activeModuleConfig) {
       return [];
     }
     const fields = visibleFormFields;
@@ -1613,7 +1189,7 @@ function App({ initialModuleId }) {
         fields: fields.slice(midpoint).map((field) => field.key),
       },
     ];
-  }, [activeModuleConfig, isEmployeeModule, isPayrollModule, visibleFormFields]);
+  }, [activeModuleConfig, isEmployeeModule, visibleFormFields]);
   const employeeStatusOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
@@ -1675,91 +1251,7 @@ function App({ initialModuleId }) {
     formValues.interestPercent,
     formValues.tenorMonths,
   ]);
-  const payrollFormLoans = useMemo(() => {
-    if (activeModuleId !== 'payroll-management') {
-      return [];
-    }
-    const employeeId = String(formValues.employeeId || '').trim();
-    const employeeName = String(formValues.employee || '').trim();
-    if (!employeeId && !employeeName) {
-      return [];
-    }
-    return loanRows
-      .filter((loanRow) => {
-        if (!isLoanCountableRecord(loanRow)) {
-          return false;
-        }
-        const loanEmployeeId = String(loanRow.employeeId || '').trim();
-        const loanEmployeeName = String(loanRow.employee || '').trim();
-        if (employeeId && loanEmployeeId) {
-          return loanEmployeeId === employeeId;
-        }
-        if (employeeId && !loanEmployeeId) {
-          return loanEmployeeName === employeeName;
-        }
-        if (!employeeId && employeeName) {
-          return loanEmployeeName === employeeName;
-        }
-        return false;
-      })
-      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
-  }, [activeModuleId, formValues.employee, formValues.employeeId, loanRows]);
-  const payrollLoansForModal = useMemo(() => {
-    if (activeModuleId !== 'payroll-management' || !modalRow) {
-      return [];
-    }
-    const employeeId = String(modalRow.employeeId || '').trim();
-    const employeeName = String(modalRow.employee || '').trim();
-    if (!employeeId && !employeeName) {
-      return [];
-    }
-    return loanRows
-      .filter((loanRow) => {
-        if (!isLoanCountableRecord(loanRow)) {
-          return false;
-        }
-        const loanEmployeeId = String(loanRow.employeeId || '').trim();
-        const loanEmployeeName = String(loanRow.employee || '').trim();
-        if (employeeId && loanEmployeeId) {
-          return loanEmployeeId === employeeId;
-        }
-        if (employeeId && !loanEmployeeId) {
-          return loanEmployeeName === employeeName;
-        }
-        if (!employeeId && employeeName) {
-          return loanEmployeeName === employeeName;
-        }
-        return false;
-      })
-      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
-  }, [activeModuleId, loanRows, modalRow]);
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
-  const payrollFormEmployeeMatches = useMemo(() => {
-    return filterEmployeesBySearch(employeeBaseRows, formValues.payrollEmployeeSearch);
-  }, [employeeBaseRows, formValues.payrollEmployeeSearch]);
-  const selectedPayrollFormEmployee = useMemo(
-    () =>
-      employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
-      employeeBaseRows.find((employee) => String(employee.fullName || '') === String(formValues.employee || '')) ||
-      findExactEmployeeBySearch(employeeBaseRows, formValues.payrollEmployeeSearch) ||
-      null,
-    [employeeBaseRows, formValues.employee, formValues.employeeId, formValues.payrollEmployeeSearch]
-  );
-  const payrollPreviewValues = useMemo(() => {
-    if (activeModuleId !== 'payroll-management') {
-      return {};
-    }
-    const preview = computePayrollPreviewValues(formValues, appSettings);
-    return {
-      grossPay: preview.grossPay ? preview.grossPay.toFixed(2) : '',
-      totalAttendancePenalty: preview.totalAttendancePenalty ? preview.totalAttendancePenalty.toFixed(2) : '',
-      totalDeductions: preview.totalDeductions ? preview.totalDeductions.toFixed(2) : '',
-      netPayable: preview.netPayable ? preview.netPayable.toFixed(2) : '',
-      napsaDeduction: preview.napsaDeduction ? preview.napsaDeduction.toFixed(2) : '',
-      nhimaDeduction: preview.nhimaDeduction ? preview.nhimaDeduction.toFixed(2) : '',
-      taxDeduction: preview.taxDeduction ? preview.taxDeduction.toFixed(2) : '',
-    };
-  }, [activeModuleId, appSettings, formValues]);
   const attendanceRows = useMemo(() => moduleRowsState['attendance-time'] || [], [moduleRowsState]);
   const fingerprintRows = useMemo(() => moduleRowsState.fingerprint || [], [moduleRowsState]);
   const leaveRequestRows = useMemo(
@@ -1896,10 +1388,6 @@ function App({ initialModuleId }) {
   const leaveBalanceRows = useMemo(
     () =>
       employeeBaseRows.map((employee) => {
-        const payrollRows = moduleRowsState['payroll-management'] || [];
-        const payrollProfile =
-          payrollRows.find((row) => String(row.employeeId || '') === String(employee.id || '')) ||
-          payrollRows.find((row) => String(row.employee || '') === String(employee.fullName || ''));
         const approvedDays = leaveRequestRows
           .filter(
             (row) =>
@@ -1915,6 +1403,13 @@ function App({ initialModuleId }) {
               !isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
+        const employeeKey = resolveEmployeeKey(employeeBaseRows, employee.id, employee.fullName);
+        const payrollProfile = getEmployeePayrollProfile({
+          moduleRowsState,
+          employeeBaseRows,
+          employeeId: employeeKey,
+          employeeName: employee.fullName,
+        });
         const openingBalance = Math.max(0, toNumberValue(employee.leaveBalanceDays));
         const availableBalance = Math.max(0, openingBalance - approvedDays);
         const basicPay = Math.max(0, toNumberValue(payrollProfile?.basicPay));
@@ -2159,7 +1654,7 @@ function App({ initialModuleId }) {
     }
     return filteredRows;
   }, [currentUser, leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
-  function getCurrentEmployeeRow() {
+  const getCurrentEmployeeRow = useCallback(() => {
     if (!currentUser || currentUser.role !== 'employee') {
       return null;
     }
@@ -2180,40 +1675,7 @@ function App({ initialModuleId }) {
       fullName: employeeName || currentUser.username || '',
       department: '',
     };
-  }
-
-  function buildPayrollFormValuesFromEmployee(employee, previousValues = {}) {
-    if (!employee) {
-      return previousValues;
-    }
-    return {
-      ...previousValues,
-      payrollEmployeeSearch: `${employee.fullName || ''} (${employee.id || ''})`.trim(),
-      employee: employee.fullName || '',
-      employeeId: employee.id || '',
-      taxId: employee.taxId || '',
-      pensionId: employee.pensionId || '',
-      nhimaNumber: employee.nhimaNumber || '',
-      accessAccount: employee.accessAccount || '',
-      mobileMoneyNumber: employee.mobileMoneyNumber || '',
-      mobileMoneyNetwork: employee.mobileMoneyNetwork || '',
-      mobileMoneyName: employee.mobileMoneyName || previousValues.mobileMoneyName || '',
-      bankName: employee.bankName || '',
-      bankAccountName: employee.bankAccountName || '',
-      bankAccountNumber: employee.bankAccountNumber || '',
-      basicPay: employee.basicPay || '',
-      monthlyBonuses: employee.monthlyBonuses || '',
-      transportAllowance: employee.transportAllowance || '',
-      housingAllowance: employee.housingAllowance || '',
-      foodAllowance: employee.foodAllowance || '',
-      workingDays: employee.workingDays || previousValues.workingDays || '',
-      status: previousValues.status || employee.employmentState || 'Processing',
-    };
-  }
-
-  function findPayrollEmployeeFromSearch(value) {
-    return findExactEmployeeBySearch(employeeBaseRows, value);
-  }
+  }, [currentUser, employeeBaseRows]);
 
   const leaveFormEmployeeMatches = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
@@ -2221,7 +1683,7 @@ function App({ initialModuleId }) {
       return row ? [row] : [];
     }
     return filterEmployeesBySearch(employeeBaseRows, formValues.leaveEmployeeSearch);
-  }, [employeeBaseRows, formValues.leaveEmployeeSearch, currentUser]);
+  }, [currentUser, employeeBaseRows, formValues.leaveEmployeeSearch, getCurrentEmployeeRow]);
 
   const loanFormEmployeeMatches = useMemo(() => {
     if (activeModuleId !== 'loan-records') {
@@ -2232,7 +1694,7 @@ function App({ initialModuleId }) {
       return row ? [row] : [];
     }
     return filterEmployeesBySearch(employeeBaseRows, formValues.loanEmployeeSearch);
-  }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch, currentUser]);
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.loanEmployeeSearch, getCurrentEmployeeRow]);
   const selectedLoanFormEmployee = useMemo(
     () =>
       employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
@@ -2262,7 +1724,7 @@ function App({ initialModuleId }) {
         (row) => String(row.employeeId || '') === String(employeeIdForBalance || '')
       ) || null
     );
-  }, [leaveBalanceRows, selectedLeaveFormEmployee, currentUser]);
+  }, [currentUser, getCurrentEmployeeRow, leaveBalanceRows, selectedLeaveFormEmployee]);
   const leaveFormAutoDaysRequested = useMemo(
     () => getInclusiveDaysBetween(formValues.startDate, formValues.endDate),
     [formValues.endDate, formValues.startDate]
@@ -2280,19 +1742,6 @@ function App({ initialModuleId }) {
     }
     return loanRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
   }, [activeModuleId, loanRequestRows, modalState.rowId]);
-  useEffect(() => {
-    if (activeModuleId !== 'payroll-management' || modalState.mode !== 'form') {
-      return;
-    }
-    const matchedEmployee = findPayrollEmployeeFromSearch(formValues.payrollEmployeeSearch);
-    if (!matchedEmployee) {
-      return;
-    }
-    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
-      return;
-    }
-    setFormValues((prev) => buildPayrollFormValuesFromEmployee(matchedEmployee, prev));
-  }, [activeModuleId, formValues.payrollEmployeeSearch, formValues.employeeId, modalState.mode]);
   useEffect(() => {
     if (activeModuleId !== 'leave-management' || modalState.mode !== 'form') {
       return;
@@ -2383,11 +1832,6 @@ function App({ initialModuleId }) {
     }
     const isEmployeeSelfServiceLoan =
       activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
-    const isPayrollComputedField =
-      activeModuleId === 'payroll-management' &&
-      ['grossPay', 'napsaDeduction', 'nhimaDeduction', 'taxDeduction', 'totalAttendancePenalty', 'totalDeductions', 'netPayable'].includes(
-        field.key
-      );
     if (
       isEmployeeSelfServiceLoan &&
       (field.key === 'employee' ||
@@ -2401,14 +1845,6 @@ function App({ initialModuleId }) {
         <label key={field.key}>
           <span>{getFieldLabel(field)}</span>
           <input value={formValues[field.key] || ''} readOnly />
-        </label>
-      );
-    }
-    if (isPayrollComputedField) {
-      return (
-        <label key={field.key}>
-          <span>{getFieldLabel(field)}</span>
-          <input value={payrollPreviewValues[field.key] || ''} readOnly />
         </label>
       );
     }
@@ -2555,7 +1991,7 @@ function App({ initialModuleId }) {
         ) : field.type === 'month' ? (
           <input
             type="month"
-            value={toPayrollMonthInputValue(formValues[field.key])}
+            value={formValues[field.key] || ''}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
@@ -2610,7 +2046,7 @@ function App({ initialModuleId }) {
       return getCurrentEmployeeRow();
     }
     return employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null;
-  }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows]);
+  }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows, getCurrentEmployeeRow]);
   const attendanceSearchMatches = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
       return [];
@@ -2621,7 +2057,6 @@ function App({ initialModuleId }) {
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
   );
-  const payrollRows = useMemo(() => moduleRowsState['payroll-management'] || [], [moduleRowsState]);
   const penaltyAdjustmentRows = useMemo(() => moduleRowsState['attendance-penalty-adjustments'] || [], [moduleRowsState]);
   const attendanceComplianceRows = useMemo(() => {
     const targetDate = attendanceAuditDate || todayIsoDate;
@@ -2651,9 +2086,12 @@ function App({ initialModuleId }) {
       const attendanceRow = attendanceRows.find(
         (row) => String(row.employeeId || '') === String(employee.id || '') && String(row.date || '') === String(targetDate)
       );
-      const payrollProfile =
-        payrollRows.find((row) => String(row.employeeId || '') === String(employee.id || '')) ||
-        payrollRows.find((row) => String(row.employee || '') === String(employee.fullName || ''));
+      const payrollProfile = getEmployeePayrollProfile({
+        moduleRowsState,
+        employeeBaseRows,
+        employeeId: employee.id,
+        employeeName: employee.fullName,
+      });
       const basicPay = toNumberValue(payrollProfile?.basicPay);
       const workingDays = Math.max(1, toNumberValue(payrollProfile?.workingDays) || 26);
       const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
@@ -2754,7 +2192,7 @@ function App({ initialModuleId }) {
     attendanceRows,
     employeeBaseRows,
     leaveRows,
-    payrollRows,
+    moduleRowsState,
     todayIsoDate,
   ]);
   const attendanceComplianceFilteredRows = useMemo(() => {
@@ -3264,139 +2702,24 @@ function App({ initialModuleId }) {
       setToasts((prev) => prev.filter((toast) => toast.id !== toastId));
     }, 3200);
   };
-
-  const handleDownloadPayrollTemplate = () => {
-    const payrollConfig = moduleUiData['payroll-management'];
-    if (!payrollConfig || !payrollConfig.columns) {
-      showToast('Payroll template is not available.', 'error');
-      return;
-    }
-    const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
-    if (!columns.length) {
-      showToast('Payroll template has no columns to export.', 'error');
-      return;
-    }
-    const header = columns
-      .map((column) => `"${String(column.label || '').replace(/"/g, '""')}"`)
-      .join(',');
-    const csv = `${header}\n`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'payroll_template.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    showToast('Payroll template downloaded.', 'success');
-  };
-
-  const handleOpenPayrollUpload = () => {
-    if (!payrollUploadInputRef.current) {
-      return;
-    }
-    payrollUploadInputRef.current.value = '';
-    payrollUploadInputRef.current.click();
-  };
-
-  const handlePayrollBulkUpload = (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) {
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (loadEvent) => {
-      try {
-        const text = String(loadEvent.target?.result || '');
-        const { headers, rows: csvRows } = parseCsv(text);
-        if (!headers.length || !csvRows.length) {
-          showToast('Payroll file is empty.', 'error');
-          return;
-        }
-        const payrollConfig = moduleUiData['payroll-management'];
-        if (!payrollConfig || !payrollConfig.columns) {
-          showToast('Payroll configuration not found.', 'error');
-          return;
-        }
-        const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
-        const labelToKey = columns.reduce((acc, column) => {
-          const labelKey = String(column.label || '').trim().toLowerCase();
-          acc[labelKey] = column.key;
-          return acc;
-        }, {});
-        const headerKeys = headers.map((header) => {
-          const normalized = String(header || '').trim().toLowerCase();
-          return labelToKey[normalized] || null;
-        });
-        if (!headerKeys.some((key) => key === 'employee') || !headerKeys.some((key) => key === 'month')) {
-          showToast('Payroll file headers do not match the template.', 'error');
-          return;
-        }
-        const now = Date.now();
-        const importedRows = csvRows
-          .map((cells, rowIndex) => {
-            if (!Array.isArray(cells) || cells.length === 0) {
-              return null;
-            }
-            const rowPayload = {};
-            headerKeys.forEach((key, columnIndex) => {
-              if (!key) {
-                return;
-              }
-              const value = cells[columnIndex] ?? '';
-              rowPayload[key] = value;
-            });
-            if (!rowPayload.employee && !rowPayload.employeeId) {
-              return null;
-            }
-            const basicPay = toNumberValue(rowPayload.basicPay);
-            const monthlyBonuses = toNumberValue(rowPayload.monthlyBonuses);
-            const transportAllowance = toNumberValue(rowPayload.transportAllowance);
-            const housingAllowance = toNumberValue(rowPayload.housingAllowance);
-            const foodAllowance = toNumberValue(rowPayload.foodAllowance);
-            const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
-            const lateDeduction = toNumberValue(rowPayload.lateDeduction);
-            const noClockInPenalty = toNumberValue(rowPayload.noClockInPenalty);
-            const noClockOutPenalty = toNumberValue(rowPayload.noClockOutPenalty);
-            const absentPenalty = toNumberValue(rowPayload.absentPenalty);
-            const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-            const napsaDeduction = toNumberValue(rowPayload.napsaDeduction);
-            const nhimaDeduction = toNumberValue(rowPayload.nhimaDeduction);
-            const taxDeduction = toNumberValue(rowPayload.taxDeduction);
-            const otherDeduction = toNumberValue(rowPayload.otherDeduction);
-            const totalDeductions =
-              napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-            const netPayable = grossPay - totalDeductions;
-            return {
-              ...rowPayload,
-              id: `PAY-${now}-${rowIndex + 1}`,
-              grossPay: grossPay ? grossPay.toFixed(2) : rowPayload.grossPay || '',
-              totalAttendancePenalty: totalAttendancePenalty
-                ? totalAttendancePenalty.toFixed(2)
-                : rowPayload.totalAttendancePenalty || '',
-              totalDeductions: totalDeductions
-                ? totalDeductions.toFixed(2)
-                : rowPayload.totalDeductions || '',
-              netPayable: netPayable ? netPayable.toFixed(2) : rowPayload.netPayable || '',
-            };
-          })
-          .filter(Boolean);
-        if (!importedRows.length) {
-          showToast('No valid payroll rows found in file.', 'error');
-          return;
-        }
-        setModuleRowsState((prev) => ({
-          ...prev,
-          'payroll-management': [...importedRows, ...(prev['payroll-management'] || [])],
-        }));
-        showToast(`Imported ${importedRows.length} payroll row(s).`, 'success');
-      } catch (error) {
-        showToast('Failed to import payroll file.', 'error');
-      }
-    };
-    reader.readAsText(file);
-  };
+  const moduleAdapter = useModuleAdapter({
+    activeModuleId,
+    activeModuleConfig,
+    appSettings,
+    employeeBaseRows,
+    formValues,
+    modalState,
+    moduleRowsState,
+    setFormError,
+    setFormValues,
+    setModuleRowsState,
+    showToast,
+    getTodayIsoDate,
+    getCurrentClockValue,
+    toMinutesFromClock,
+    getMinutesBetweenClocks,
+    isLoanCountableRecord,
+  });
 
   const handleModuleChange = (moduleId) => {
     setActiveModuleId(moduleId);
@@ -3458,10 +2781,12 @@ function App({ initialModuleId }) {
       lateRuleMinutes === null || checkInMinutes === null ? 0 : Math.max(0, checkInMinutes - lateRuleMinutes);
     const status = lateMinutes > 0 ? 'Late' : 'On Time';
     const rowId = `ATT-${Date.now().toString().slice(-6)}`;
-    const payrollRows = moduleRowsState['payroll-management'] || [];
-    const payrollProfile =
-      payrollRows.find((row) => String(row.employeeId || '') === String(effectiveEmployee.id)) ||
-      payrollRows.find((row) => String(row.employee || '') === String(effectiveEmployee.fullName));
+    const payrollProfile = getEmployeePayrollProfile({
+      moduleRowsState,
+      employeeBaseRows,
+      employeeId: effectiveEmployee.id,
+      employeeName: effectiveEmployee.fullName,
+    });
     const basicPay = toNumberValue(payrollProfile?.basicPay);
     const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
     const scheduledMinutes = Math.max(
@@ -4124,6 +3449,10 @@ function App({ initialModuleId }) {
 
   const startCreate = () => {
     const employeeRowForSelf = getCurrentEmployeeRow();
+    const adapterInitialValues =
+      moduleAdapter && moduleAdapter.active && typeof moduleAdapter.getInitialFormValues === 'function'
+        ? moduleAdapter.getInitialFormValues()
+        : null;
     setEditRowId('new');
     setFormValues(
       activeModuleId === 'leave-management'
@@ -4147,14 +3476,6 @@ function App({ initialModuleId }) {
               startDate: getTodayIsoDate(),
               endDate: getTodayIsoDate(),
               reason: '',
-            }
-        : activeModuleId === 'payroll-management'
-          ? {
-              payrollEmployeeSearch: '',
-              employee: '',
-              employeeId: '',
-              month: '',
-              status: 'Processing',
             }
         : activeModuleId === 'loan-records'
           ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
@@ -4185,7 +3506,7 @@ function App({ initialModuleId }) {
                 managerApproval: 'Pending',
                 status: 'Pending Department',
               }
-          : {}
+          : adapterInitialValues || {}
     );
     setFormError('');
     setModalState({ mode: 'form', rowId: null });
@@ -4196,17 +3517,15 @@ function App({ initialModuleId }) {
       showToast('Loan records are view-only in employee self-service.', 'error');
       return;
     }
+    const adapterEditValues =
+      moduleAdapter && moduleAdapter.active && typeof moduleAdapter.getEditFormValues === 'function'
+        ? moduleAdapter.getEditFormValues(row)
+        : null;
     setEditRowId(row.id);
     setFormValues(
       activeModuleId === 'leave-management'
         ? { ...row, leaveEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim() }
-        : activeModuleId === 'payroll-management'
-          ? {
-              ...row,
-              month: toPayrollMonthInputValue(row.month),
-              payrollEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim(),
-            }
-        : { ...row }
+        : adapterEditValues || { ...row }
     );
     setFormError('');
     setModalState({ mode: 'form', rowId: row.id });
@@ -4266,63 +3585,12 @@ function App({ initialModuleId }) {
     }
     let computedPayrollValues = {};
     let computedLoanValues = {};
-    if (activeModuleId === 'payroll-management') {
-      const matchedEmployeeFromSearch = selectedPayrollFormEmployee;
-      if (!matchedEmployeeFromSearch) {
-        const message = 'Select a valid employee from payroll search.';
-        setFormError(message);
-        showToast(message, 'error');
+    if (moduleAdapter && moduleAdapter.active && typeof moduleAdapter.beforeSave === 'function') {
+      const adapterResult = moduleAdapter.beforeSave();
+      if (!adapterResult || adapterResult.ok === false) {
         return;
       }
-      const payrollPreviewNumeric = computePayrollPreviewValues(formValues, appSettings);
-      const loanRules = appSettings.loanRules || {};
-      const minTakeHomePercent = Math.max(1, Math.min(100, Number(loanRules.minTakeHomePercent) || 45));
-      const maxLoanDeductionPercentOfGross = Math.max(
-        0,
-        Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 35)
-      );
-      const grossPositive = payrollPreviewNumeric.grossPay > 0;
-      const effectiveLoanPercentOfGross = grossPositive
-        ? (payrollPreviewNumeric.otherDeduction / payrollPreviewNumeric.grossPay) * 100
-        : 0;
-      const takeHomePercent = grossPositive ? (payrollPreviewNumeric.netPayable / payrollPreviewNumeric.grossPay) * 100 : 0;
-      if (grossPositive && effectiveLoanPercentOfGross > maxLoanDeductionPercentOfGross) {
-        const message = `Loan and other deductions exceed allowed ${maxLoanDeductionPercentOfGross.toFixed(
-          1
-        )}% of gross pay.`;
-        setFormError(message);
-        showToast(message, 'error');
-        return;
-      }
-      if (grossPositive && takeHomePercent < minTakeHomePercent) {
-        const message = `Net pay (${takeHomePercent.toFixed(
-          1
-        )}%) is below minimum take-home of ${minTakeHomePercent.toFixed(1)}%.`;
-        setFormError(message);
-        showToast(message, 'error');
-        return;
-      }
-      computedPayrollValues = {
-        employee: matchedEmployeeFromSearch.fullName || formValues.employee || '',
-        employeeId: matchedEmployeeFromSearch.id || formValues.employeeId || '',
-        taxId: formValues.taxId || matchedEmployeeFromSearch.taxId || '',
-        pensionId: formValues.pensionId || matchedEmployeeFromSearch.pensionId || '',
-        nhimaNumber: formValues.nhimaNumber || matchedEmployeeFromSearch.nhimaNumber || '',
-        accessAccount: formValues.accessAccount || matchedEmployeeFromSearch.accessAccount || '',
-        mobileMoneyNumber: formValues.mobileMoneyNumber || matchedEmployeeFromSearch.mobileMoneyNumber || '',
-        mobileMoneyNetwork: formValues.mobileMoneyNetwork || matchedEmployeeFromSearch.mobileMoneyNetwork || '',
-        bankName: formValues.bankName || matchedEmployeeFromSearch.bankName || '',
-        bankAccountName: formValues.bankAccountName || matchedEmployeeFromSearch.bankAccountName || '',
-        bankAccountNumber: formValues.bankAccountNumber || matchedEmployeeFromSearch.bankAccountNumber || '',
-        month: formatPayrollPeriodLabel(formValues.month),
-        grossPay: payrollPreviewValues.grossPay,
-        totalAttendancePenalty: payrollPreviewValues.totalAttendancePenalty,
-        totalDeductions: payrollPreviewValues.totalDeductions,
-        netPayable: payrollPreviewValues.netPayable,
-        napsaDeduction: payrollPreviewValues.napsaDeduction,
-        nhimaDeduction: payrollPreviewValues.nhimaDeduction,
-        taxDeduction: payrollPreviewValues.taxDeduction,
-      };
+      computedPayrollValues = adapterResult.computedValues || {};
     }
     if (activeModuleId === 'loan-records') {
       const principal = toNumberValue(formValues.amount);
@@ -4345,11 +3613,12 @@ function App({ initialModuleId }) {
       if (currentUser && currentUser.role === 'employee') {
         const employeeId = String(currentUser.employeeId || '').trim();
         const employeeName = String(currentUser.fullName || '').trim();
-        const payrollRows = moduleRowsState['payroll-management'] || [];
-        const payrollProfile =
-          payrollRows.find((row) => String(row.employeeId || '').trim() === employeeId) ||
-          payrollRows.find((row) => String(row.employee || '').trim() === employeeName) ||
-          null;
+        const payrollProfile = getEmployeePayrollProfile({
+          moduleRowsState,
+          employeeBaseRows,
+          employeeId,
+          employeeName,
+        });
         if (!payrollProfile) {
           const message = 'No payroll profile found. Contact HR before applying for a loan.';
           setFormError(message);
@@ -5308,135 +4577,27 @@ function App({ initialModuleId }) {
 
   return (
     <div className="App">
-      <aside className="sidebar-shell" style={sidebarStyle}>
-        <div className="brand-block">
-          <div className="brand-logo">{appInitial}</div>
-          <div>
-            <h1>{appSettings.appName || 'PTHR'}</h1>
-            <p>HR Command Center</p>
-          </div>
-        </div>
-        {sidebarSections.map((section) => (
-          <div className="sidebar-section" key={section.title}>
-            <h2>{section.title}</h2>
-            <nav>
-              {section.items.map((item) => {
-                if (!allowedModulesByRole.has(item.id)) {
-                  return null;
-                }
-                if (activeModuleId && !allowedModulesByRole.has(activeModuleId)) {
-                  const firstAllowed = sidebarSections
-                    .flatMap((s) => s.items)
-                    .find((candidate) => allowedModulesByRole.has(candidate.id));
-                  if (firstAllowed && firstAllowed.id !== activeModuleId) {
-                    setActiveModuleId(firstAllowed.id);
-                  }
-                }
-                if (item.id === 'leave-management') {
-                  return (
-                    <div key={item.id} className="menu-group">
-                      <button
-                        type="button"
-                        className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                        onClick={() => {
-                          if (activeModuleId !== 'leave-management') {
-                            handleModuleChange('leave-management');
-                            setLeaveMenuExpanded(true);
-                            return;
-                          }
-                          setLeaveMenuExpanded((prev) => !prev);
-                        }}
-                      >
-                        <span>{item.label}</span>
-                        <span className={`menu-arrow ${leaveMenuExpanded ? 'open' : ''}`}>▾</span>
-                      </button>
-                      {leaveMenuExpanded ? (
-                        <div className="menu-subitems">
-                          {leaveSubmenuItems.map((submenu) => (
-                            <button
-                              key={submenu.key}
-                              type="button"
-                              className={`menu-subitem ${
-                                activeModuleId === 'leave-management' && leaveViewTab === submenu.key ? 'active' : ''
-                              }`}
-                              onClick={() => {
-                                if (activeModuleId !== 'leave-management') {
-                                  handleModuleChange('leave-management');
-                                }
-                                setLeaveMenuExpanded(true);
-                                setLeaveViewTab(submenu.key);
-                                if (submenu.key === 'requests') {
-                                  setLeaveRequestPageTab('requests');
-                                }
-                              }}
-                            >
-                              {submenu.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                if (item.id === 'loan-records') {
-                  return (
-                    <div key={item.id} className="menu-group">
-                      <button
-                        type="button"
-                        className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                        onClick={() => {
-                          if (activeModuleId !== 'loan-records') {
-                            handleModuleChange('loan-records');
-                            setLoanMenuExpanded(true);
-                            return;
-                          }
-                          setLoanMenuExpanded((prev) => !prev);
-                        }}
-                      >
-                        <span>{item.label}</span>
-                        <span className={`menu-arrow ${loanMenuExpanded ? 'open' : ''}`}>▾</span>
-                      </button>
-                      {loanMenuExpanded ? (
-                        <div className="menu-subitems">
-                          {loanSubmenuItems.map((submenu) => (
-                            <button
-                              key={submenu.key}
-                              type="button"
-                              className={`menu-subitem ${
-                                activeModuleId === 'loan-records' && loanViewTab === submenu.key ? 'active' : ''
-                              }`}
-                              onClick={() => {
-                                if (activeModuleId !== 'loan-records') {
-                                  handleModuleChange('loan-records');
-                                }
-                                setLoanMenuExpanded(true);
-                                setLoanViewTab(submenu.key);
-                              }}
-                            >
-                              {submenu.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                    onClick={() => handleModuleChange(item.id)}
-                  >
-                    <span>{item.label}</span>
-                    {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
-                  </button>
-                );
-              })}
-            </nav>
-          </div>
-        ))}
-      </aside>
+      <SidebarNav
+        sidebarSections={sidebarSections}
+        allowedModulesByRole={allowedModulesByRole}
+        activeModuleId={activeModuleId}
+        setActiveModuleId={setActiveModuleId}
+        handleModuleChange={handleModuleChange}
+        sidebarStyle={sidebarStyle}
+        appInitial={appInitial}
+        appSettings={appSettings}
+        leaveMenuExpanded={leaveMenuExpanded}
+        setLeaveMenuExpanded={setLeaveMenuExpanded}
+        leaveSubmenuItems={leaveSubmenuItems}
+        leaveViewTab={leaveViewTab}
+        setLeaveViewTab={setLeaveViewTab}
+        setLeaveRequestPageTab={setLeaveRequestPageTab}
+        loanMenuExpanded={loanMenuExpanded}
+        setLoanMenuExpanded={setLoanMenuExpanded}
+        loanSubmenuItems={loanSubmenuItems}
+        loanViewTab={loanViewTab}
+        setLoanViewTab={setLoanViewTab}
+      />
 
       <div className="app-shell">
         <header className="hero">
@@ -6645,16 +5806,8 @@ function App({ initialModuleId }) {
                 </div>
                 {activeModuleId !== 'attendance-time' && activeModuleId !== 'user-management' ? (
                   <div className="panel-title-actions">
-                    {activeModuleId === 'payroll-management' ? (
-                      <PayrollPage
-                        appSettings={appSettings}
-                        startCreate={startCreate}
-                        payrollUploadInputRef={payrollUploadInputRef}
-                        handlePayrollBulkUpload={handlePayrollBulkUpload}
-                        handleDownloadPayrollTemplate={handleDownloadPayrollTemplate}
-                        handleOpenPayrollUpload={handleOpenPayrollUpload}
-                        payrollLoansForModal={payrollLoansForModal}
-                      />
+                    {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderHeader === 'function' ? (
+                      moduleAdapter.renderHeader({ startCreate })
                     ) : (
                       <button type="button" className="primary-btn" onClick={startCreate}>
                         + Add {activeModuleConfig.entityLabel}
@@ -7146,91 +6299,9 @@ function App({ initialModuleId }) {
                 </div>
               ) : (
                 <>
-                  {activeModuleId === 'payroll-management' ? (
-                    <>
-                      <div className="form-grid">
-                        <label>
-                          <span>Employee Search *</span>
-                          <input
-                            value={formValues.payrollEmployeeSearch || ''}
-                            placeholder="Search by name or ID"
-                            onChange={(event) =>
-                              setFormValues((prev) => ({
-                                ...prev,
-                                payrollEmployeeSearch: event.target.value,
-                                employee: '',
-                                employeeId: '',
-                              }))
-                            }
-                          />
-                        </label>
-                        {selectedPayrollFormEmployee ? (
-                          <div className="detail-cell">
-                            <span>Selected Employee</span>
-                            <strong>
-                              {selectedPayrollFormEmployee.fullName} ({selectedPayrollFormEmployee.id})
-                            </strong>
-                            <span>
-                              {selectedPayrollFormEmployee.department || 'Unassigned'} •{' '}
-                              {selectedPayrollFormEmployee.employmentState || 'Active'}
-                            </span>
-                          </div>
-                        ) : null}
-                        {payrollFormEmployeeMatches.length > 0 ? (
-                          <div className="row-actions">
-                            {payrollFormEmployeeMatches.map((employee) => (
-                              <button
-                                key={employee.id}
-                                type="button"
-                                className="mini-btn"
-                                onClick={() =>
-                                  setFormValues((prev) => buildPayrollFormValuesFromEmployee(employee, prev))
-                                }
-                              >
-                                {employee.fullName} ({employee.id})
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    <div className="form-section-grid">
-                      {payrollDetailSections
-                        .map((section) => ({
-                          id: section.id,
-                          title: section.title,
-                          fields: section.fields
-                            .map((key) => payrollFormFieldMap[key])
-                            .filter(Boolean),
-                        }))
-                        .filter((section) => section.fields.length > 0)
-                        .map((section) => (
-                          <div key={section.id} className="form-section">
-                            <p className="form-section-title">{section.title}</p>
-                            <div className="form-grid">
-                              {section.fields.map((field) => renderFormFieldControl(field))}
-                            </div>
-                          </div>
-                        ))}
-                      {payrollFormLoans.length > 0 ? (
-                        <div className="form-section">
-                          <p className="form-section-title">Employee Loans</p>
-                          <div className="form-grid">
-                            {payrollFormLoans.map((loanRow) => (
-                              <div key={loanRow.id} className="detail-cell">
-                                <span>
-                                  {loanRow.type || 'Loan'} • {loanRow.issuedOn || '—'}
-                                </span>
-                                <strong>
-                                  {loanRow.amount || '—'} {loanRow.balance ? `• Balance: ${loanRow.balance}` : ''}
-                                </strong>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </>
-                ) : isEmployeeModule ? (
+                  {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderFormBody === 'function' ? (
+                    moduleAdapter.renderFormBody({ renderFormFieldControl })
+                  ) : isEmployeeModule ? (
                     <div className="form-section-grid">
                       {employeeFormSections
                         .map((section) => ({
@@ -7363,381 +6434,36 @@ function App({ initialModuleId }) {
                         })}
                       </div>
                     ) : null}
-                    {activeModuleId === 'payroll-management' && payrollLoansForModal.length > 0 ? (
-                      <div className="employee-ops-card">
-                        <div className="employee-ops-header">
-                          <h5>Employee Loans</h5>
-                          <span>{`${payrollLoansForModal.length} loan(s)`}</span>
-                        </div>
-                        <div className="employee-ops-list">
-                          {payrollLoansForModal.map((loanRow) => (
-                            <div className="employee-ops-row" key={loanRow.id}>
-                              <div>
-                                <p>{loanRow.type || 'Loan Record'}</p>
-                                <span>
-                                  {loanRow.issuedOn || '—'} • {loanRow.amount || '—'}
-                                </span>
-                              </div>
-                              <div className="employee-ops-actions">
-                                <strong>{loanRow.status || 'Active'}</strong>
-                                <span>{loanRow.balance ? `Balance: ${loanRow.balance}` : 'Balance: —'}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                    {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderDetailsExtras === 'function'
+                      ? moduleAdapter.renderDetailsExtras({ modalRow })
+                      : null}
+                    {activeModuleId === 'leave-management' ? (
+                      <LeaveApprovalPanel
+                        selectedLeaveDetailRow={selectedLeaveDetailRow}
+                        leaveViewTab={leaveViewTab}
+                        leaveApprovalDrafts={leaveApprovalDrafts}
+                        setLeaveApprovalDrafts={setLeaveApprovalDrafts}
+                        leaveApprovalSavingId={leaveApprovalSavingId}
+                        appSettings={appSettings}
+                        getApprovalBadgeClass={getApprovalBadgeClass}
+                        handleDepartmentLeaveDecision={handleDepartmentLeaveDecision}
+                        handleHrLeaveDecision={handleHrLeaveDecision}
+                        handleManagerLeaveDecision={handleManagerLeaveDecision}
+                      />
                     ) : null}
-                    {activeModuleId === 'leave-management' && selectedLeaveDetailRow ? (
-                      <div className="penalty-action-card">
-                        <strong>Leave Approval Details</strong>
-                        <span>
-                          {selectedLeaveDetailRow.startDate} → {selectedLeaveDetailRow.endDate} •{' '}
-                          {selectedLeaveDetailRow.daysRequested} day(s) • {selectedLeaveDetailRow.type}
-                        </span>
-                        <span>{selectedLeaveDetailRow.reason || 'No reason provided.'}</span>
-                        <div className="details-badges">
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(
-                              selectedLeaveDetailRow.departmentApproval
-                            )}`}
-                          >
-                            Department: {selectedLeaveDetailRow.departmentApproval}
-                          </span>
-                          <span className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.hrApproval)}`}>
-                            HR: {selectedLeaveDetailRow.hrApproval}
-                          </span>
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.managerApproval)}`}
-                          >
-                            Manager: {selectedLeaveDetailRow.managerApproval}
-                          </span>
-                        </div>
-                        <div className="details-grid-table">
-                          <div className="detail-cell">
-                            <span>Department Actor</span>
-                            <strong>{selectedLeaveDetailRow.departmentApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Department Comment</span>
-                            <strong>{selectedLeaveDetailRow.departmentComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Actor</span>
-                            <strong>{selectedLeaveDetailRow.hrApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Comment</span>
-                            <strong>{selectedLeaveDetailRow.hrComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Actor</span>
-                            <strong>{selectedLeaveDetailRow.managerApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Comment</span>
-                            <strong>{selectedLeaveDetailRow.managerComment || '—'}</strong>
-                          </div>
-                        </div>
-                        {leaveViewTab !== 'requests' ? (
-                          <div className="attendance-ops-form">
-                            <label>
-                              <span>Actor</span>
-                              <input
-                                value={
-                                  (leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).actorName ||
-                                  appSettings.penaltyActorUsername ||
-                                  ''
-                                }
-                                onChange={(event) =>
-                                  setLeaveApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLeaveDetailRow.id]: {
-                                      ...(prev[selectedLeaveDetailRow.id] || {}),
-                                      actorName: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Comment</span>
-                              <input
-                                value={(leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).comment || ''}
-                                onChange={(event) =>
-                                  setLeaveApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLeaveDetailRow.id]: {
-                                      ...(prev[selectedLeaveDetailRow.id] || {}),
-                                      comment: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <div className="row-actions">
-                              {leaveViewTab === 'department' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending' ||
-                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
-                                    }
-                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending' ||
-                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
-                                    }
-                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {leaveViewTab === 'hr' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending' ||
-                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
-                                    }
-                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {leaveViewTab === 'manager' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending' ||
-                                      leaveApprovalSavingId === selectedLeaveDetailRow.id
-                                    }
-                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {activeModuleId === 'loan-records' && selectedLoanDetailRow ? (
-                      <div className="penalty-action-card">
-                        <strong>Loan Approval Details</strong>
-                        <span>
-                          {selectedLoanDetailRow.type || 'Loan'} • {appSettings.defaultCurrency}{' '}
-                          {selectedLoanDetailRow.amount || '—'} • Issued {selectedLoanDetailRow.issuedOn || '—'}
-                        </span>
-                        <span>{selectedLoanDetailRow.purpose || selectedLoanDetailRow.reason || 'No purpose provided.'}</span>
-                        <div className="details-badges">
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(
-                              selectedLoanDetailRow.departmentApproval
-                            )}`}
-                          >
-                            Department: {selectedLoanDetailRow.departmentApproval}
-                          </span>
-                          <span className={`approval-stage-badge ${getApprovalBadgeClass(selectedLoanDetailRow.hrApproval)}`}>
-                            HR: {selectedLoanDetailRow.hrApproval}
-                          </span>
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(selectedLoanDetailRow.managerApproval)}`}
-                          >
-                            Manager: {selectedLoanDetailRow.managerApproval}
-                          </span>
-                        </div>
-                        <div className="details-grid-table">
-                          <div className="detail-cell">
-                            <span>Department Actor</span>
-                            <strong>{selectedLoanDetailRow.departmentApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Department Comment</span>
-                            <strong>{selectedLoanDetailRow.departmentComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Actor</span>
-                            <strong>{selectedLoanDetailRow.hrApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Comment</span>
-                            <strong>{selectedLoanDetailRow.hrComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Actor</span>
-                            <strong>{selectedLoanDetailRow.managerApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Comment</span>
-                            <strong>{selectedLoanDetailRow.managerComment || '—'}</strong>
-                          </div>
-                        </div>
-                        {loanViewTab !== 'requests' ? (
-                          <div className="attendance-ops-form">
-                            <label>
-                              <span>Actor</span>
-                              <input
-                                value={
-                                  (loanApprovalDrafts[selectedLoanDetailRow.id] || {}).actorName ||
-                                  appSettings.penaltyActorUsername ||
-                                  ''
-                                }
-                                onChange={(event) =>
-                                  setLoanApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLoanDetailRow.id]: {
-                                      ...(prev[selectedLoanDetailRow.id] || {}),
-                                      actorName: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Comment</span>
-                              <input
-                                value={(loanApprovalDrafts[selectedLoanDetailRow.id] || {}).comment || ''}
-                                onChange={(event) =>
-                                  setLoanApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLoanDetailRow.id]: {
-                                      ...(prev[selectedLoanDetailRow.id] || {}),
-                                      comment: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <div className="row-actions">
-                              {loanViewTab === 'department' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleDepartmentLoanDecision(selectedLoanDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleDepartmentLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {loanViewTab === 'hr' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleHrLoanDecision(selectedLoanDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleHrLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {loanViewTab === 'manager' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.managerApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleManagerLoanDecision(selectedLoanDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLoanDetailRow.managerApproval || '') !== 'Pending' ||
-                                      loanApprovalSavingId === selectedLoanDetailRow.id
-                                    }
-                                    onClick={() => handleManagerLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
+                    {activeModuleId === 'loan-records' ? (
+                      <LoanApprovalPanel
+                        selectedLoanDetailRow={selectedLoanDetailRow}
+                        loanViewTab={loanViewTab}
+                        loanApprovalDrafts={loanApprovalDrafts}
+                        setLoanApprovalDrafts={setLoanApprovalDrafts}
+                        loanApprovalSavingId={loanApprovalSavingId}
+                        appSettings={appSettings}
+                        getApprovalBadgeClass={getApprovalBadgeClass}
+                        handleDepartmentLoanDecision={handleDepartmentLoanDecision}
+                        handleHrLoanDecision={handleHrLoanDecision}
+                        handleManagerLoanDecision={handleManagerLoanDecision}
+                      />
                     ) : null}
 
                     <div className="details-grid-table">
@@ -7763,27 +6489,9 @@ function App({ initialModuleId }) {
                                 {section.fields.map((field) => renderDetailFieldCell(field))}
                               </Fragment>
                             ))
-                        : isPayrollModule
-                          ? payrollDetailSections
-                              .map((section) => ({
-                                id: section.id,
-                                title: section.title,
-                                fields: section.fields
-                                  .map((key) => payrollFormFieldMap[key])
-                                  .filter(Boolean),
-                              }))
-                              .filter((section) => section.fields.length > 0)
-                              .map((section) => (
-                                <Fragment key={section.id}>
-                                  <div className="detail-section-header">
-                                    <span>{section.title}</span>
-                                  </div>
-                                  {section.fields.map((field) => renderDetailFieldCell(field))}
-                                </Fragment>
-                              ))
-                          : activeModuleConfig.formFields
-                              .filter((field) => !employeeImageFields.includes(field.key))
-                              .map((field) => renderDetailFieldCell(field))}
+                        : activeModuleConfig.formFields
+                            .filter((field) => !employeeImageFields.includes(field.key))
+                            .map((field) => renderDetailFieldCell(field))}
                     </div>
                     {activeModuleId === 'employee-management' ? (
                       <div className="employee-ops-card">
