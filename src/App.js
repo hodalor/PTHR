@@ -7,8 +7,10 @@ import AttendanceTimePage from './pages/AttendanceTimePage';
 import LeaveManagementPage from './pages/LeaveManagementPage';
 import PayrollPage from './pages/PayrollPage';
 import LoanRecordsPage from './pages/LoanRecordsPage';
+import LoanManagementPage from './pages/LoanManagementPage';
 import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
+import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -206,65 +208,27 @@ const toPayrollMonthInputValue = (value) => {
   return '';
 };
 
-const normalizeEmployeeSearchText = (value) =>
-  String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-
-const getEmployeeSearchCandidates = (employee) => {
-  const employeeId = String(employee?.id || '').trim();
-  const fullName = String(employee?.fullName || '').trim();
-  return [
-    employeeId,
-    fullName,
-    `${fullName} ${employeeId}`.trim(),
-    `${fullName} (${employeeId})`.trim(),
-    String(employee?.department || '').trim(),
-    String(employee?.taxId || '').trim(),
-    String(employee?.phone || employee?.contactNumber || '').trim(),
-    String(employee?.mobileMoneyNumber || '').trim(),
-    String(employee?.nhimaNumber || '').trim(),
-    String(employee?.bankName || '').trim(),
-    String(employee?.accessAccount || '').trim(),
-  ]
-    .map((item) => normalizeEmployeeSearchText(item))
-    .filter(Boolean);
+const isLeaveRejectedRecord = (row) => {
+  const departmentApproval = String(row?.departmentApproval || row?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(row?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(row?.managerApproval || row?.finalManagerApproval || row?.branchManagerApproval || '').trim().toLowerCase();
+  const status = String(row?.status || '').trim().toLowerCase();
+  return departmentApproval === 'rejected' || hrApproval === 'rejected' || managerApproval === 'rejected' || status === 'rejected';
 };
 
-const filterEmployeesBySearch = (employees, value, limit = 6) => {
-  const query = normalizeEmployeeSearchText(value);
-  if (!query) {
-    return [];
+const isLeaveFullyApprovedRecord = (row) => {
+  if (!row || isLeaveRejectedRecord(row)) {
+    return false;
   }
-  const queryTokens = query.split(' ').filter(Boolean);
-  return [...employees]
-    .filter((employee) => {
-      const candidates = getEmployeeSearchCandidates(employee);
-      const haystack = candidates.join(' ');
-      return queryTokens.every((token) => haystack.includes(token));
-    })
-    .sort((a, b) => {
-      const aId = normalizeEmployeeSearchText(a?.id);
-      const bId = normalizeEmployeeSearchText(b?.id);
-      const aName = normalizeEmployeeSearchText(a?.fullName);
-      const bName = normalizeEmployeeSearchText(b?.fullName);
-      const aStarts = aId.startsWith(query) || aName.startsWith(query) ? 1 : 0;
-      const bStarts = bId.startsWith(query) || bName.startsWith(query) ? 1 : 0;
-      if (bStarts !== aStarts) {
-        return bStarts - aStarts;
-      }
-      return aName.localeCompare(bName);
-    })
-    .slice(0, limit);
+  const departmentApproval = String(row?.departmentApproval || row?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(row?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(row?.managerApproval || row?.finalManagerApproval || row?.branchManagerApproval || '').trim().toLowerCase();
+  return departmentApproval === 'approved' && hrApproval === 'approved' && managerApproval === 'approved';
 };
 
-const findExactEmployeeBySearch = (employees, value) => {
-  const query = normalizeEmployeeSearchText(value);
-  if (!query) {
-    return null;
-  }
-  return employees.find((employee) => getEmployeeSearchCandidates(employee).some((candidate) => candidate === query)) || null;
+const isLoanCountableRecord = (row) => {
+  const status = String(row?.status || '').trim().toLowerCase();
+  return status === 'active' || status === 'approved';
 };
 
 const computePayrollPreviewValues = (values, appSettings) => {
@@ -668,6 +632,13 @@ function App({ initialModuleId }) {
   const [leaveActionMessage, setLeaveActionMessage] = useState('');
   const [leaveApprovalDrafts, setLeaveApprovalDrafts] = useState({});
   const [leaveApprovalSavingId, setLeaveApprovalSavingId] = useState(null);
+  const [loanViewTab, setLoanViewTab] = useState('requests');
+  const [loanMenuExpanded, setLoanMenuExpanded] = useState(false);
+  const [loanSearchText, setLoanSearchText] = useState('');
+  const [loanStatusFilter, setLoanStatusFilter] = useState('All');
+  const [loanActionMessage, setLoanActionMessage] = useState('');
+  const [loanApprovalDrafts, setLoanApprovalDrafts] = useState({});
+  const [loanApprovalSavingId, setLoanApprovalSavingId] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
@@ -760,6 +731,7 @@ function App({ initialModuleId }) {
     ],
   });
   const payrollUploadInputRef = useRef(null);
+  const employeeModuleLoadingRef = useRef(false);
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -907,6 +879,44 @@ function App({ initialModuleId }) {
       cancelled = true;
     };
   }, [activeModuleId, isSettingsPage]);
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+    const currentEmployeeRows = moduleRowsState['employee-management'] || [];
+    if (currentEmployeeRows.length > 0) {
+      return;
+    }
+    if (employeeModuleLoadingRef.current) {
+      return;
+    }
+    let cancelled = false;
+    employeeModuleLoadingRef.current = true;
+    const loadEmployees = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/modules/employee-management');
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        const records = Array.isArray(data.records) ? data.records : [];
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'employee-management': records,
+        }));
+      } catch (error) {
+      } finally {
+        employeeModuleLoadingRef.current = false;
+      }
+    };
+    loadEmployees();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, moduleRowsState['employee-management']?.length]);
 
   useEffect(() => {
     const fetchTrackingSettings = async () => {
@@ -1103,17 +1113,21 @@ function App({ initialModuleId }) {
     const penaltyAdjustmentRows = moduleRowsState['attendance-penalty-adjustments'] || [];
     const loanRows = moduleRowsState['loan-records'] || [];
     const lateMinutesByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
-      const employeeId = String(attendanceRow.employeeId || '').trim();
-      const employeeName = String(attendanceRow.employee || '').trim();
-      if (!employeeId && !employeeName) {
+      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
+      if (!key) {
         return acc;
       }
       const minutes = Math.max(0, Number(attendanceRow.lateMinutes) || 0);
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
       acc[key] = (acc[key] || 0) + minutes;
+      return acc;
+    }, {});
+    const lateDeductionByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
+      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
+      if (!key) {
+        return acc;
+      }
+      const amount = Math.max(0, toNumberValue(attendanceRow.deductionAmount));
+      acc[key] = (acc[key] || 0) + amount;
       return acc;
     }, {});
     const nowDate = getTodayIsoDate();
@@ -1123,12 +1137,8 @@ function App({ initialModuleId }) {
     const noClockOutPenaltyByEmployee = {};
     const absentPenaltyByEmployee = {};
     attendanceTimeRows.forEach((attendanceRow) => {
-      const employeeId = String(attendanceRow.employeeId || '').trim();
-      const employeeName = String(attendanceRow.employee || '').trim();
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
+      const key = resolveEmployeeKey(employeeRows, attendanceRow.employeeId, attendanceRow.employee);
+      const matchedEmployee = employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === key) || null;
       if (!key) {
         return;
       }
@@ -1137,12 +1147,10 @@ function App({ initialModuleId }) {
       const isNoonReached = isPastDate || (currentDate === nowDate && nowMinutes >= 12 * 60);
       const isClockOutDeadlineReached = isPastDate;
       const leaveMatch = leaveRows.find((leaveRow) => {
-        const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
-        const leaveEmployeeName = String(leaveRow.employee || '').trim();
+        const leaveEmployeeKey = resolveEmployeeKey(employeeRows, leaveRow.employeeId, leaveRow.employee);
         const leaveStatus = String(leaveRow.status || '').toLowerCase();
-        const sameEmployee = leaveEmployeeId === key || leaveEmployeeName === String(matchedEmployee?.fullName || '');
         return (
-          sameEmployee &&
+          leaveEmployeeKey === key &&
           (leaveStatus === 'approved' || leaveStatus === 'active') &&
           String(leaveRow.startDate || '') <= currentDate &&
           String(leaveRow.endDate || '') >= currentDate
@@ -1167,9 +1175,12 @@ function App({ initialModuleId }) {
       const missingCount = Number(missingClockIn) + Number(missingClockOut);
       const payrollForEmployee =
         baseRows.find((payrollRow) => String(payrollRow.employeeId || '').trim() === key) ||
-        baseRows.find((payrollRow) => String(payrollRow.employee || '').trim() === String(matchedEmployee?.fullName || ''));
-      const basicPay = toNumberValue(payrollForEmployee?.basicPay);
-      const workingDays = Math.max(1, Number(payrollForEmployee?.workingDays || appSettings.payrollWorkingDays) || 1);
+        baseRows.find((payrollRow) => resolveEmployeeKey(employeeRows, payrollRow.employeeId, payrollRow.employee) === key);
+      const basicPay = toNumberValue(payrollForEmployee?.basicPay || matchedEmployee?.basicPay);
+      const workingDays = Math.max(
+        1,
+        Number(payrollForEmployee?.workingDays || matchedEmployee?.workingDays || appSettings.payrollWorkingDays) || 1
+      );
       const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
       if (missingCount >= 2) {
         absentPenaltyByEmployee[key] = (absentPenaltyByEmployee[key] || 0) + dailyWage;
@@ -1203,8 +1214,7 @@ function App({ initialModuleId }) {
       if (!key) {
         return acc;
       }
-      const status = String(loanRow.status || '').toLowerCase();
-      const isActive = status !== 'closed' && status !== 'settled';
+      const isActive = isLoanCountableRecord(loanRow);
       const balance = toNumberValue(loanRow.balance || loanRow.amount);
       const current = acc[key] || {
         totalBalance: 0,
@@ -1214,7 +1224,7 @@ function App({ initialModuleId }) {
       const next = {
         totalBalance: current.totalBalance + (isActive ? balance : 0),
         activeCount: current.activeCount + (isActive ? 1 : 0),
-        totalCount: current.totalCount + 1,
+        totalCount: current.totalCount + (isActive ? 1 : 0),
       };
       acc[key] = next;
       return acc;
@@ -1226,10 +1236,8 @@ function App({ initialModuleId }) {
     return baseRows.map((payrollRow) => {
       const payrollEmployeeId = String(payrollRow.employeeId || '').trim();
       const payrollEmployeeName = String(payrollRow.employee || '').trim();
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === payrollEmployeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === payrollEmployeeName);
-      const key = String(matchedEmployee?.id || payrollEmployeeId || payrollEmployeeName);
+      const key = resolveEmployeeKey(employeeRows, payrollEmployeeId, payrollEmployeeName);
+      const matchedEmployee = employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === key) || null;
       const lateMinutes = lateMinutesByEmployee[key] || 0;
       const basicPay = toNumberValue(payrollRow.basicPay);
       const workingDays = Math.max(1, Number(payrollRow.workingDays || appSettings.payrollWorkingDays) || 1);
@@ -1243,7 +1251,7 @@ function App({ initialModuleId }) {
         (fixedScope === 'individual' &&
           String(matchedEmployee?.id || payrollEmployeeId || '') === String(appSettings.attendanceFixedEmployeeId || ''));
       const minuteRate = appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
-      const lateDeduction = lateMinutes * minuteRate;
+      const lateDeduction = lateDeductionByEmployee[key] > 0 ? lateDeductionByEmployee[key] : lateMinutes * minuteRate;
       const noClockInPenalty = noClockInPenaltyByEmployee[key] || 0;
       const noClockOutPenalty = noClockOutPenaltyByEmployee[key] || 0;
       const absentPenalty = absentPenaltyByEmployee[key] || 0;
@@ -1678,6 +1686,9 @@ function App({ initialModuleId }) {
     }
     return loanRows
       .filter((loanRow) => {
+        if (!isLoanCountableRecord(loanRow)) {
+          return false;
+        }
         const loanEmployeeId = String(loanRow.employeeId || '').trim();
         const loanEmployeeName = String(loanRow.employee || '').trim();
         if (employeeId && loanEmployeeId) {
@@ -1704,6 +1715,9 @@ function App({ initialModuleId }) {
     }
     return loanRows
       .filter((loanRow) => {
+        if (!isLoanCountableRecord(loanRow)) {
+          return false;
+        }
         const loanEmployeeId = String(loanRow.employeeId || '').trim();
         const loanEmployeeName = String(loanRow.employee || '').trim();
         if (employeeId && loanEmployeeId) {
@@ -1814,6 +1828,71 @@ function App({ initialModuleId }) {
         .sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || ''))),
     [employeeBaseRows, leaveRows]
   );
+  const loanRequestRows = useMemo(() => {
+    const rowsForRole = loanRowsScopedByRole || [];
+    return rowsForRole
+      .map((loanRow) => {
+        const matchedEmployee =
+          employeeBaseRows.find((employee) => String(employee.id || '') === String(loanRow.employeeId || '')) ||
+          findExactEmployeeBySearch(employeeBaseRows, loanRow.employee) ||
+          null;
+        const statusLower = String(loanRow.status || '').trim().toLowerCase();
+        const departmentApproval =
+          loanRow.departmentApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const hrApproval =
+          loanRow.hrApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const managerApproval =
+          loanRow.managerApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const normalizedStatus =
+          statusLower === 'closed'
+            ? 'Closed'
+            : departmentApproval === 'Rejected' || hrApproval === 'Rejected' || managerApproval === 'Rejected'
+              ? 'Rejected'
+              : departmentApproval === 'Pending'
+                ? 'Pending Department'
+                : hrApproval === 'Pending'
+                  ? 'Pending HR'
+                  : managerApproval === 'Pending'
+                    ? 'Pending Manager'
+                    : 'Approved';
+        const resolvedEmployeeId = resolveEmployeeKey(employeeBaseRows, loanRow.employeeId, loanRow.employee);
+        return {
+          ...loanRow,
+          employeeId: loanRow.employeeId || matchedEmployee?.id || resolvedEmployeeId || '',
+          employee: loanRow.employee || matchedEmployee?.fullName || '',
+          department: loanRow.department || matchedEmployee?.department || 'Unassigned',
+          departmentApproval,
+          departmentApprover: loanRow.departmentApprover || '',
+          departmentComment: loanRow.departmentComment || '',
+          departmentApprovedOn: loanRow.departmentApprovedOn || '',
+          hrApproval,
+          hrApprover: loanRow.hrApprover || '',
+          hrComment: loanRow.hrComment || '',
+          hrApprovedOn: loanRow.hrApprovedOn || '',
+          managerApproval,
+          managerApprover: loanRow.managerApprover || '',
+          managerComment: loanRow.managerComment || '',
+          managerApprovedOn: loanRow.managerApprovedOn || '',
+          status: normalizedStatus,
+        };
+      })
+      .sort((a, b) => String(b.issuedOn || '').localeCompare(String(a.issuedOn || '')));
+  }, [employeeBaseRows, loanRowsScopedByRole]);
   const leaveBalanceRows = useMemo(
     () =>
       employeeBaseRows.map((employee) => {
@@ -1825,16 +1904,15 @@ function App({ initialModuleId }) {
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
-              String(row.departmentApproval || '') === 'Approved' &&
-              String(row.managerApproval || '') === 'Approved' &&
-              String(row.hrApproval || '') === 'Approved'
+              isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
         const pendingDays = leaveRequestRows
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
-              String(row.status || '').toLowerCase().includes('pending')
+              !isLeaveRejectedRecord(row) &&
+              !isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
         const openingBalance = Math.max(0, toNumberValue(employee.leaveBalanceDays));
@@ -1965,6 +2043,75 @@ function App({ initialModuleId }) {
     leaveStatusFilter,
     leaveViewTab,
   ]);
+  const getLoanViewStatus = useCallback(
+    (row, viewTab = loanViewTab) => {
+      if (viewTab === 'department') {
+        return String(row.departmentApproval || 'Pending');
+      }
+      if (viewTab === 'hr') {
+        return String(row.hrApproval || 'Pending');
+      }
+      if (viewTab === 'manager') {
+        return String(row.managerApproval || 'Pending');
+      }
+      return String(row.status || 'Pending');
+    },
+    [loanViewTab]
+  );
+  const loanStatusOptions = useMemo(() => {
+    const options = [
+      ...new Set(
+        loanRequestRows
+          .map((row) => getLoanViewStatus(row, loanViewTab))
+          .filter((value) => String(value || '').trim().length > 0)
+      ),
+    ];
+    return ['All', ...options.sort((a, b) => a.localeCompare(b))];
+  }, [getLoanViewStatus, loanRequestRows, loanViewTab]);
+  const loanRequestFilteredRows = useMemo(() => {
+    const query = loanSearchText.trim().toLowerCase();
+    let scopedRows = loanRequestRows.filter((row) => {
+      if (loanViewTab === 'hr') {
+        return String(row.departmentApproval || '') === 'Approved';
+      }
+      if (loanViewTab === 'manager') {
+        return String(row.departmentApproval || '') === 'Approved' && String(row.hrApproval || '') === 'Approved';
+      }
+      return true;
+    });
+    if (currentUser && currentUser.role === 'employee') {
+      const employeeId = String(currentUser.employeeId || '').trim();
+      const employeeName = String(currentUser.fullName || '').trim();
+      scopedRows = scopedRows.filter((row) => {
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      });
+    }
+    return scopedRows.filter((row) => {
+      const statusLabel = getLoanViewStatus(row);
+      const matchesStatus = loanStatusFilter === 'All' || String(statusLabel) === String(loanStatusFilter);
+      if (!matchesStatus) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return (
+        String(row.employee || '').toLowerCase().includes(query) ||
+        String(row.employeeId || '').toLowerCase().includes(query) ||
+        String(row.type || '').toLowerCase().includes(query) ||
+        String(row.department || '').toLowerCase().includes(query) ||
+        String(row.status || '').toLowerCase().includes(query)
+      );
+    });
+  }, [currentUser, getLoanViewStatus, loanRequestRows, loanSearchText, loanStatusFilter, loanViewTab]);
   const leaveBalanceFilteredRows = useMemo(() => {
     const query = leaveSearchText.trim().toLowerCase();
     const scopedRows = leaveBalanceRows.filter((row) => {
@@ -2127,6 +2274,12 @@ function App({ initialModuleId }) {
     }
     return leaveRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
   }, [activeModuleId, leaveRequestRows, modalState.rowId]);
+  const selectedLoanDetailRow = useMemo(() => {
+    if (activeModuleId !== 'loan-records') {
+      return null;
+    }
+    return loanRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
+  }, [activeModuleId, loanRequestRows, modalState.rowId]);
   useEffect(() => {
     if (activeModuleId !== 'payroll-management' || modalState.mode !== 'form') {
       return;
@@ -3092,6 +3245,18 @@ function App({ initialModuleId }) {
     }
     return items;
   }, [currentUser]);
+  const loanSubmenuItems = useMemo(() => {
+    const items = [
+      { key: 'requests', label: 'Loan Requests' },
+      { key: 'department', label: 'Department Approval' },
+      { key: 'hr', label: 'HR Approval' },
+      { key: 'manager', label: 'Manager Approval' },
+    ];
+    if (!currentUser || currentUser.role === 'employee') {
+      return items.filter((item) => item.key === 'requests');
+    }
+    return items;
+  }, [currentUser]);
   const showToast = (message, type = 'info') => {
     const toastId = `TST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     setToasts((prev) => [...prev, { id: toastId, message, type }]);
@@ -3236,6 +3401,7 @@ function App({ initialModuleId }) {
   const handleModuleChange = (moduleId) => {
     setActiveModuleId(moduleId);
     setLeaveMenuExpanded(moduleId === 'leave-management');
+    setLoanMenuExpanded(moduleId === 'loan-records');
     if (moduleId === 'settings') {
       setSettingsTab('general');
     }
@@ -3697,6 +3863,214 @@ function App({ initialModuleId }) {
         : 'Branch manager approved the leave request. Balance now takes effect.'
     );
   };
+  const getLoanApprovalInput = (loanId) => {
+    const input = loanApprovalDrafts[loanId] || {};
+    return {
+      actorName: String(input.actorName || appSettings.penaltyActorUsername || '').trim(),
+      comment: String(input.comment || '').trim(),
+    };
+  };
+  const handleDepartmentLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} is already processed by department.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      departmentApproval: normalizedDecision,
+      departmentApprover: input.actorName,
+      departmentComment: input.comment,
+      departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.hrApproval || 'Pending',
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save department decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving department decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Department rejected loan request ${loanId}.`
+        : `Department approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Department approval rejected the loan request.'
+        : 'Department approval completed. Request moved to HR.'
+    );
+  };
+  const handleHrLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} is not ready for HR decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      hrApproval: normalizedDecision,
+      hrApprover: input.actorName,
+      hrComment: input.comment,
+      hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save HR decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving HR decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected' ? `HR rejected loan request ${loanId}.` : `HR approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected' ? 'HR rejected the loan request.' : 'HR approved. Request moved to branch manager.'
+    );
+  };
+  const handleManagerLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || '') !== 'Approved') {
+      showToast(`Loan request ${loanId} is not ready for manager decision.`, 'error');
+      return;
+    }
+    if (String(existingRow.managerApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} already has a manager decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      managerApproval: normalizedDecision,
+      managerApprover: input.actorName,
+      managerComment: input.comment,
+      managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save manager decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving manager decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Manager rejected loan request ${loanId}.`
+        : `Manager approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Branch manager rejected the loan request.'
+        : 'Branch manager approved the loan request.'
+    );
+  };
   const handlePenaltyActionSave = () => {
     if (!selectedPenaltyRow || selectedPenaltyRow.outstandingAmount <= 0) {
       return;
@@ -3794,7 +4168,10 @@ function App({ initialModuleId }) {
                 monthlyInstallment: '',
                 issuedOn: getTodayIsoDate(),
                 balance: '',
-                status: 'Pending Approval',
+                departmentApproval: 'Pending',
+                hrApproval: 'Pending',
+                managerApproval: 'Pending',
+                status: 'Pending Department',
               }
             : {
                 loanEmployeeSearch: '',
@@ -3803,6 +4180,10 @@ function App({ initialModuleId }) {
                 amount: '',
                 interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
                 balance: '',
+                departmentApproval: 'Pending',
+                hrApproval: 'Pending',
+                managerApproval: 'Pending',
+                status: 'Pending Department',
               }
           : {}
     );
@@ -4004,13 +4385,43 @@ function App({ initialModuleId }) {
         balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
         overduePenaltyPercentPerDay: appSettings.loanRules.overduePenaltyPercentPerDay,
       };
+      const requestedDepartmentApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.departmentApproval || '').trim() || 'Pending';
+      const requestedHrApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.hrApproval || '').trim() || 'Pending';
+      const requestedManagerApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.managerApproval || '').trim() || 'Pending';
+      const derivedLoanStatus =
+        requestedDepartmentApproval === 'Rejected' ||
+        requestedHrApproval === 'Rejected' ||
+        requestedManagerApproval === 'Rejected'
+          ? 'Rejected'
+          : requestedDepartmentApproval !== 'Approved'
+            ? 'Pending Department'
+            : requestedHrApproval !== 'Approved'
+              ? 'Pending HR'
+              : requestedManagerApproval !== 'Approved'
+                ? 'Pending Manager'
+                : 'Approved';
+      computedLoanValues = {
+        ...computedLoanValues,
+        departmentApproval: requestedDepartmentApproval,
+        hrApproval: requestedHrApproval,
+        managerApproval: requestedManagerApproval,
+        status: derivedLoanStatus,
+      };
       if (currentUser && currentUser.role === 'employee') {
         computedLoanValues = {
           ...computedLoanValues,
           employee: currentUser.fullName || '',
           employeeId: currentUser.employeeId || '',
           issuedOn: formValues.issuedOn || todayIsoDate,
-          status: formValues.status || 'Pending Approval',
         };
       }
     }
@@ -4957,6 +5368,49 @@ function App({ initialModuleId }) {
                                 if (submenu.key === 'requests') {
                                   setLeaveRequestPageTab('requests');
                                 }
+                              }}
+                            >
+                              {submenu.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                }
+                if (item.id === 'loan-records') {
+                  return (
+                    <div key={item.id} className="menu-group">
+                      <button
+                        type="button"
+                        className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
+                        onClick={() => {
+                          if (activeModuleId !== 'loan-records') {
+                            handleModuleChange('loan-records');
+                            setLoanMenuExpanded(true);
+                            return;
+                          }
+                          setLoanMenuExpanded((prev) => !prev);
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <span className={`menu-arrow ${loanMenuExpanded ? 'open' : ''}`}>▾</span>
+                      </button>
+                      {loanMenuExpanded ? (
+                        <div className="menu-subitems">
+                          {loanSubmenuItems.map((submenu) => (
+                            <button
+                              key={submenu.key}
+                              type="button"
+                              className={`menu-subitem ${
+                                activeModuleId === 'loan-records' && loanViewTab === submenu.key ? 'active' : ''
+                              }`}
+                              onClick={() => {
+                                if (activeModuleId !== 'loan-records') {
+                                  handleModuleChange('loan-records');
+                                }
+                                setLoanMenuExpanded(true);
+                                setLoanViewTab(submenu.key);
                               }}
                             >
                               {submenu.label}
@@ -6299,6 +6753,25 @@ function App({ initialModuleId }) {
                   setLeaveApprovalDrafts={setLeaveApprovalDrafts}
                 />
               ) : null}
+              {activeModuleId === 'loan-records' ? (
+                <LoanManagementPage
+                  appSettings={appSettings}
+                  currentUser={currentUser}
+                  startCreate={startCreate}
+                  selectedRowId={selectedRowId}
+                  loanSearchText={loanSearchText}
+                  setLoanSearchText={setLoanSearchText}
+                  loanStatusFilter={loanStatusFilter}
+                  setLoanStatusFilter={setLoanStatusFilter}
+                  loanStatusOptions={loanStatusOptions}
+                  loanRequestFilteredRows={loanRequestFilteredRows}
+                  getLoanViewStatus={getLoanViewStatus}
+                  loanActionMessage={loanActionMessage}
+                  loanViewTab={loanViewTab}
+                  openDetails={openDetails}
+                  getApprovalBadgeClass={getApprovalBadgeClass}
+                />
+              ) : null}
               {activeModuleId === 'fingerprint' ? (
                 <FingerprintPage
                   fingerprintConnectionState={fingerprintConnectionState}
@@ -7079,6 +7552,183 @@ function App({ initialModuleId }) {
                                       String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
                                     }
                                     onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {activeModuleId === 'loan-records' && selectedLoanDetailRow ? (
+                      <div className="penalty-action-card">
+                        <strong>Loan Approval Details</strong>
+                        <span>
+                          {selectedLoanDetailRow.type || 'Loan'} • {appSettings.defaultCurrency}{' '}
+                          {selectedLoanDetailRow.amount || '—'} • Issued {selectedLoanDetailRow.issuedOn || '—'}
+                        </span>
+                        <span>{selectedLoanDetailRow.purpose || selectedLoanDetailRow.reason || 'No purpose provided.'}</span>
+                        <div className="details-badges">
+                          <span
+                            className={`approval-stage-badge ${getApprovalBadgeClass(
+                              selectedLoanDetailRow.departmentApproval
+                            )}`}
+                          >
+                            Department: {selectedLoanDetailRow.departmentApproval}
+                          </span>
+                          <span className={`approval-stage-badge ${getApprovalBadgeClass(selectedLoanDetailRow.hrApproval)}`}>
+                            HR: {selectedLoanDetailRow.hrApproval}
+                          </span>
+                          <span
+                            className={`approval-stage-badge ${getApprovalBadgeClass(selectedLoanDetailRow.managerApproval)}`}
+                          >
+                            Manager: {selectedLoanDetailRow.managerApproval}
+                          </span>
+                        </div>
+                        <div className="details-grid-table">
+                          <div className="detail-cell">
+                            <span>Department Actor</span>
+                            <strong>{selectedLoanDetailRow.departmentApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Department Comment</span>
+                            <strong>{selectedLoanDetailRow.departmentComment || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>HR Actor</span>
+                            <strong>{selectedLoanDetailRow.hrApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>HR Comment</span>
+                            <strong>{selectedLoanDetailRow.hrComment || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Manager Actor</span>
+                            <strong>{selectedLoanDetailRow.managerApprover || '—'}</strong>
+                          </div>
+                          <div className="detail-cell">
+                            <span>Manager Comment</span>
+                            <strong>{selectedLoanDetailRow.managerComment || '—'}</strong>
+                          </div>
+                        </div>
+                        {loanViewTab !== 'requests' ? (
+                          <div className="attendance-ops-form">
+                            <label>
+                              <span>Actor</span>
+                              <input
+                                value={
+                                  (loanApprovalDrafts[selectedLoanDetailRow.id] || {}).actorName ||
+                                  appSettings.penaltyActorUsername ||
+                                  ''
+                                }
+                                onChange={(event) =>
+                                  setLoanApprovalDrafts((prev) => ({
+                                    ...prev,
+                                    [selectedLoanDetailRow.id]: {
+                                      ...(prev[selectedLoanDetailRow.id] || {}),
+                                      actorName: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>Comment</span>
+                              <input
+                                value={(loanApprovalDrafts[selectedLoanDetailRow.id] || {}).comment || ''}
+                                onChange={(event) =>
+                                  setLoanApprovalDrafts((prev) => ({
+                                    ...prev,
+                                    [selectedLoanDetailRow.id]: {
+                                      ...(prev[selectedLoanDetailRow.id] || {}),
+                                      comment: event.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <div className="row-actions">
+                              {loanViewTab === 'department' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleDepartmentLoanDecision(selectedLoanDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleDepartmentLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                              {loanViewTab === 'hr' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleHrLoanDecision(selectedLoanDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleHrLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : null}
+                              {loanViewTab === 'manager' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="mini-btn"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.managerApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleManagerLoanDecision(selectedLoanDetailRow.id, 'Approved')}
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="mini-btn danger"
+                                    disabled={
+                                      String(selectedLoanDetailRow.departmentApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.hrApproval || '') !== 'Approved' ||
+                                      String(selectedLoanDetailRow.managerApproval || '') !== 'Pending' ||
+                                      loanApprovalSavingId === selectedLoanDetailRow.id
+                                    }
+                                    onClick={() => handleManagerLoanDecision(selectedLoanDetailRow.id, 'Rejected')}
                                   >
                                     Reject
                                   </button>

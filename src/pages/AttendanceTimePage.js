@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { filterEmployeesBySearch } from '../utils/employeeSearch';
 
 export default function AttendanceTimePage({
   appSettings,
@@ -660,14 +661,7 @@ export default function AttendanceTimePage({
                     value={attendanceSearchText}
                     onChange={(event) => {
                       const query = event.target.value;
-                      const normalizedQuery = query.trim().toLowerCase();
-                      const matchedEmployee = normalizedQuery
-                        ? employeeBaseRows.find((employee) => {
-                            const employeeId = String(employee.id || '').toLowerCase();
-                            const employeeName = String(employee.fullName || '').toLowerCase();
-                            return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
-                          }) || null
-                        : null;
+                      const matchedEmployee = filterEmployeesBySearch(employeeBaseRows, query, 1)[0] || null;
                       setAttendanceSearchText(query);
                       setAttendanceClockDraft((prev) => ({
                         ...prev,
