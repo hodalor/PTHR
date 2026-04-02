@@ -879,12 +879,12 @@ function App({ initialModuleId }) {
       cancelled = true;
     };
   }, [activeModuleId, isSettingsPage]);
+  const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
   useEffect(() => {
     if (!currentUser) {
       return;
     }
-    const currentEmployeeRows = moduleRowsState['employee-management'] || [];
-    if (currentEmployeeRows.length > 0) {
+    if (employeeRowsCount > 0) {
       return;
     }
     if (employeeModuleLoadingRef.current) {
@@ -916,7 +916,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [currentUser, moduleRowsState['employee-management']?.length]);
+  }, [currentUser, employeeRowsCount]);
 
   useEffect(() => {
     const fetchTrackingSettings = async () => {
