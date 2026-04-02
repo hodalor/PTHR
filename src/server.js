@@ -94,6 +94,24 @@ async function syncEmployeeUser(db, employee) {
   }
 }
 
+async function persistModuleRecord(db, moduleId, record) {
+  if (!record || !record.id) {
+    return;
+  }
+  const collectionName = moduleCollections[moduleId];
+  if (!collectionName) {
+    return;
+  }
+  const collection = db.collection(collectionName);
+  const { id, _id, ...rest } = record;
+  const update = {
+    ...rest,
+    id,
+    updatedAt: new Date().toISOString(),
+  };
+  await collection.updateOne({ id }, { $set: update }, { upsert: false });
+}
+
 function getModuleCollection(db, moduleId) {
   const collectionName = moduleCollections[moduleId];
   if (!collectionName) {
@@ -173,25 +191,24 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
       res.status(404).json({ error: 'Unknown module' });
       return;
     }
+    const { _id, ...requestBody } = req.body || {};
     const update = {
-      ...req.body,
+      ...requestBody,
       moduleId,
       updatedAt: new Date().toISOString(),
     };
-    const result = await collection.findOneAndUpdate(
-      { id: recordId },
-      { $set: update },
-      { returnDocument: 'after' }
-    );
-    if (!result.value) {
+    const result = await collection.updateOne({ id: recordId }, { $set: update });
+    if (!result.matchedCount) {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
+    const updated = await collection.findOne({ id: recordId });
     if (moduleId === 'employee-management') {
-      await syncEmployeeUser(req.db, result.value);
+      await syncEmployeeUser(req.db, updated);
     }
-    res.json({ record: result.value });
+    res.json({ record: updated });
   } catch (error) {
+    console.error('Failed to update record', error);
     res.status(500).json({ error: 'Failed to update record' });
   }
 });
