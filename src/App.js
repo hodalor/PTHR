@@ -497,6 +497,10 @@ function App({ initialModuleId }) {
   const [trackingSettingsError, setTrackingSettingsError] = useState('');
   const [trackingSettingsSaving, setTrackingSettingsSaving] = useState(false);
   const [trackingSettingsSavedMessage, setTrackingSettingsSavedMessage] = useState('');
+  const [mobileSettingsLoading, setMobileSettingsLoading] = useState(false);
+  const [mobileSettingsError, setMobileSettingsError] = useState('');
+  const [mobileSettingsSaving, setMobileSettingsSaving] = useState(false);
+  const [mobileSettingsSavedMessage, setMobileSettingsSavedMessage] = useState('');
   const [appSettings, setAppSettings] = useState({
     appName: 'PTHR',
     sidebarColor: '#0a73d9',
@@ -561,6 +565,18 @@ function App({ initialModuleId }) {
       officeIpRanges: [],
       offlineMinutesThreshold: 15,
     },
+    mobileApp: {
+      enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
+      allowClockIn: true,
+      allowClockOut: true,
+      requireLocationOnClock: true,
+      autoSendLocationOnClock: true,
+      allowLoanView: true,
+      allowLoanRequest: true,
+      allowLeaveView: true,
+      allowLeaveRequest: true,
+      allowTrackingView: true,
+    },
     departments: [
       { name: 'Human Resources', code: 'HR' },
       { name: 'Engineering', code: 'EN' },
@@ -589,11 +605,11 @@ function App({ initialModuleId }) {
     if (isSuperAdmin) {
       return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
     }
-    if (currentUser.role === 'employee') {
-      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
-    }
     if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
       return new Set(currentUser.allowedModules);
+    }
+    if (currentUser.role === 'employee') {
+      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
     }
     return new Set(['employee-management', 'attendance-time', 'leave-management']);
   }, [currentUser, isSuperAdmin]);
@@ -830,6 +846,36 @@ function App({ initialModuleId }) {
     fetchTrackingSettings();
   }, []);
 
+  useEffect(() => {
+    const fetchMobileSettings = async () => {
+      try {
+        setMobileSettingsLoading(true);
+        const response = await fetch('http://localhost:8000/api/mobile/settings');
+        if (!response.ok) {
+          throw new Error('Failed to load mobile settings');
+        }
+        const data = await response.json();
+        setAppSettings((prev) => ({
+          ...prev,
+          mobileApp: {
+            ...prev.mobileApp,
+            ...(data || {}),
+            enabledModules: Array.isArray(data?.enabledModules)
+              ? data.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
+              : prev.mobileApp.enabledModules,
+          },
+        }));
+        setMobileSettingsError('');
+      } catch (error) {
+        setMobileSettingsError('Unable to load mobile settings from backend');
+      } finally {
+        setMobileSettingsLoading(false);
+      }
+    };
+
+    fetchMobileSettings();
+  }, []);
+
   const handleSaveTrackingSettings = async () => {
     try {
       setTrackingSettingsSaving(true);
@@ -910,6 +956,40 @@ function App({ initialModuleId }) {
       setTrackingSettingsError('Unable to save tracking settings to backend');
     } finally {
       setTrackingSettingsSaving(false);
+    }
+  };
+
+  const handleSaveMobileSettings = async () => {
+    try {
+      setMobileSettingsSaving(true);
+      setMobileSettingsSavedMessage('');
+      setMobileSettingsError('');
+      const response = await fetch('http://localhost:8000/api/mobile/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(appSettings.mobileApp),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save mobile settings');
+      }
+      const data = await response.json();
+      setAppSettings((prev) => ({
+        ...prev,
+        mobileApp: {
+          ...prev.mobileApp,
+          ...(data?.settings || {}),
+          enabledModules: Array.isArray(data?.settings?.enabledModules)
+            ? data.settings.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
+            : prev.mobileApp.enabledModules,
+        },
+      }));
+      setMobileSettingsSavedMessage('Mobile settings saved to backend');
+    } catch (error) {
+      setMobileSettingsError('Unable to save mobile settings to backend');
+    } finally {
+      setMobileSettingsSaving(false);
     }
   };
 
@@ -4686,6 +4766,7 @@ function App({ initialModuleId }) {
                   { id: 'general', label: 'General' },
                   { id: 'attendance', label: 'Attendance Rules' },
                   { id: 'tracking', label: 'Presence Tracking' },
+                  { id: 'mobile', label: 'Mobile App' },
                   { id: 'payroll', label: 'Payroll & Loans' },
                   { id: 'fingerprint', label: 'Fingerprint' },
                   { id: 'labels', label: 'Employee Labels' },
@@ -5161,6 +5242,189 @@ function App({ initialModuleId }) {
                       </button>
                     </div>
                     {trackingSettingsSavedMessage ? <p>{trackingSettingsSavedMessage}</p> : null}
+                  </>
+                ) : null}
+                {settingsTab === 'mobile' ? (
+                  <>
+                    <h4 className="settings-subtitle">Mobile App Management</h4>
+                    {mobileSettingsLoading ? <p>Loading mobile settings from backend...</p> : null}
+                    {mobileSettingsError ? <p className="form-error">{mobileSettingsError}</p> : null}
+                    <label>
+                      <span>Enabled Mobile Modules</span>
+                      <select
+                        multiple
+                        value={appSettings.mobileApp.enabledModules}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              enabledModules: Array.from(event.target.selectedOptions).map((option) => option.value),
+                            },
+                          }))
+                        }
+                      >
+                        <option value="attendance-time">Attendance</option>
+                        <option value="loan-records">Loan Records</option>
+                        <option value="leave-management">Leave Management</option>
+                        <option value="monitoring-tracking">Live Tracking</option>
+                      </select>
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowClockIn)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowClockIn: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Clock Out</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowClockOut)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowClockOut: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Require Location When Clocking</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.requireLocationOnClock)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              requireLocationOnClock: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Auto Send Live Location On Clock</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.autoSendLocationOnClock)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              autoSendLocationOnClock: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Loan Records View</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLoanView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLoanView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Loan Requests</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLoanRequest)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLoanRequest: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Leave Records View</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLeaveView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLeaveView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Leave Requests</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLeaveRequest)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLeaveRequest: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Tracking Module</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowTrackingView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowTrackingView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="attendance-ops-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={handleSaveMobileSettings}
+                        disabled={mobileSettingsSaving}
+                      >
+                        {mobileSettingsSaving ? 'Saving...' : 'Save Mobile Settings'}
+                      </button>
+                    </div>
+                    {mobileSettingsSavedMessage ? <p>{mobileSettingsSavedMessage}</p> : null}
                   </>
                 ) : null}
                 {settingsTab === 'payroll' ? (
