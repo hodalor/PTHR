@@ -12,6 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 const trackingRoutes = require('./routes/tracking');
+const mobileRoutes = require('./routes/mobile');
 const { router: authRoutes, ensureSuperAdmin } = require('./routes/auth');
 
 const PORT = process.env.PORT || 8000;
@@ -142,6 +143,7 @@ app.use(async (req, res, next) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/mobile', mobileRoutes);
 
 app.get('/api/modules/:moduleId', async (req, res) => {
   try {

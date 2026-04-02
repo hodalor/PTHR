@@ -6,6 +6,7 @@ const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = '12h';
+const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'];
 
 function getUsersCollection(db) {
   return db.collection('users');
@@ -79,6 +80,33 @@ async function getAuthUser(req) {
     return null;
   }
   return user;
+}
+
+function resolveAllowedModules(user) {
+  if (!user) {
+    return [];
+  }
+  if (user.role === 'superadmin') {
+    return ['*'];
+  }
+  const allowedModules = Array.isArray(user.allowedModules)
+    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  if (user.role === 'employee' && allowedModules.length === 0) {
+    return defaultEmployeeModules;
+  }
+  return allowedModules;
+}
+
+function buildAuthUserPayload(user) {
+  return {
+    id: user._id.toString(),
+    username: user.username,
+    fullName: user.fullName || user.username,
+    role: user.role || 'employee',
+    employeeId: user.employeeId || '',
+    allowedModules: resolveAllowedModules(user),
+  };
 }
 
 async function requireSuperAdmin(req, res, next) {
@@ -165,13 +193,7 @@ router.post('/login', async (req, res) => {
     const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.json({
       token,
-      user: {
-        id: user._id.toString(),
-        username: user.username,
-        fullName: user.fullName || user.username,
-        role: user.role || 'employee',
-        employeeId: user.employeeId || '',
-      },
+      user: buildAuthUserPayload(user),
     });
   } catch (error) {
     res.status(500).json({ error: 'Login failed' });
@@ -186,13 +208,7 @@ router.get('/me', async (req, res) => {
       return;
     }
     res.json({
-      user: {
-        id: user._id.toString(),
-        username: user.username,
-        fullName: user.fullName || user.username,
-        role: user.role || 'employee',
-        employeeId: user.employeeId || '',
-      },
+      user: buildAuthUserPayload(user),
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load current user' });
