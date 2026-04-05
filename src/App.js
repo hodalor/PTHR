@@ -460,6 +460,10 @@ function App({ initialModuleId }) {
   const [attendancePerformanceSearchText, setAttendancePerformanceSearchText] = useState('');
   const [selectedPerformanceEmployeeId, setSelectedPerformanceEmployeeId] = useState('');
   const [attendanceDetailModal, setAttendanceDetailModal] = useState({ type: '', key: '' });
+  const [complianceReplayActive, setComplianceReplayActive] = useState(false);
+  const [complianceReplayIndex, setComplianceReplayIndex] = useState(0);
+  const [complianceReplaySpeed, setComplianceReplaySpeed] = useState(1);
+  const [complianceShowPointLabels, setComplianceShowPointLabels] = useState(true);
   const [leaveViewTab, setLeaveViewTab] = useState('requests');
   const [leaveRequestPageTab, setLeaveRequestPageTab] = useState('requests');
   const [leaveMenuExpanded, setLeaveMenuExpanded] = useState(false);
@@ -501,6 +505,10 @@ function App({ initialModuleId }) {
   const [mobileSettingsError, setMobileSettingsError] = useState('');
   const [mobileSettingsSaving, setMobileSettingsSaving] = useState(false);
   const [mobileSettingsSavedMessage, setMobileSettingsSavedMessage] = useState('');
+  const [attendanceSettingsLoading, setAttendanceSettingsLoading] = useState(false);
+  const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
+  const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
+  const [attendanceSettingsSavedMessage, setAttendanceSettingsSavedMessage] = useState('');
   const [appSettings, setAppSettings] = useState({
     appName: 'PTHR',
     sidebarColor: '#0a73d9',
@@ -515,6 +523,24 @@ function App({ initialModuleId }) {
     attendanceLateAfter: '08:15',
     attendanceReportTime: '08:00',
     attendanceShiftEnd: '17:00',
+    shifts: [
+      {
+        id: 'SHIFT-MORNING',
+        name: 'Morning',
+        reportTime: '08:00',
+        shiftEnd: '17:00',
+        graceInMinutes: 15,
+        graceOutMinutes: 0,
+      },
+      {
+        id: 'SHIFT-EVENING',
+        name: 'Evening',
+        reportTime: '14:00',
+        shiftEnd: '22:00',
+        graceInMinutes: 10,
+        graceOutMinutes: 0,
+      },
+    ],
     payrollWorkingDays: 26,
     attendanceCalculationMode: 'auto',
     attendanceFixedDeductionPerMinute: 0.128,
@@ -585,6 +611,7 @@ function App({ initialModuleId }) {
     ],
   });
   const employeeModuleLoadingRef = useRef(false);
+  const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -596,7 +623,8 @@ function App({ initialModuleId }) {
   const isSettingsPage = activeModuleId === 'settings';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
 
-  const isSuperAdmin = currentUser?.role === 'superadmin';
+  const normalizedCurrentUserRole = String(currentUser?.role || '').toLowerCase();
+  const isSuperAdmin = normalizedCurrentUserRole === 'superadmin';
 
   const allowedModulesByRole = useMemo(() => {
     if (!currentUser) {
@@ -608,11 +636,11 @@ function App({ initialModuleId }) {
     if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
       return new Set(currentUser.allowedModules);
     }
-    if (currentUser.role === 'employee') {
+    if (normalizedCurrentUserRole === 'employee') {
       return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
     }
     return new Set(['employee-management', 'attendance-time', 'leave-management']);
-  }, [currentUser, isSuperAdmin]);
+  }, [currentUser, isSuperAdmin, normalizedCurrentUserRole]);
 
   useEffect(() => {
     let cancelled = false;
@@ -845,6 +873,96 @@ function App({ initialModuleId }) {
 
     fetchTrackingSettings();
   }, []);
+
+  useEffect(() => {
+    const fetchAttendanceSettings = async () => {
+      try {
+        setAttendanceSettingsLoading(true);
+        const response = await fetch('http://localhost:8000/api/settings/attendance');
+        if (!response.ok) {
+          throw new Error('Failed to load attendance settings');
+        }
+        const data = await response.json();
+        setAppSettings((prev) => ({
+          ...prev,
+          attendanceLateAfter: String(data?.attendanceLateAfter || prev.attendanceLateAfter || '08:15'),
+          attendanceReportTime: String(data?.attendanceReportTime || prev.attendanceReportTime || '08:00'),
+          attendanceShiftEnd: String(data?.attendanceShiftEnd || prev.attendanceShiftEnd || '17:00'),
+          payrollWorkingDays: Math.max(1, Number(data?.payrollWorkingDays) || prev.payrollWorkingDays || 26),
+          attendanceCalculationMode: data?.attendanceCalculationMode === 'fixed' ? 'fixed' : 'auto',
+          attendanceFixedDeductionPerMinute: Math.max(
+            0,
+            Number(data?.attendanceFixedDeductionPerMinute) || prev.attendanceFixedDeductionPerMinute || 0
+          ),
+          attendanceFixedScope: ['all', 'department', 'individual'].includes(String(data?.attendanceFixedScope || ''))
+            ? String(data.attendanceFixedScope)
+            : prev.attendanceFixedScope || 'all',
+          attendanceFixedDepartment: String(data?.attendanceFixedDepartment || prev.attendanceFixedDepartment || ''),
+          attendanceFixedEmployeeId: String(data?.attendanceFixedEmployeeId || prev.attendanceFixedEmployeeId || ''),
+          shifts: Array.isArray(data?.shifts) && data.shifts.length > 0 ? data.shifts : prev.shifts,
+        }));
+        setAttendanceSettingsError('');
+      } catch (error) {
+        setAttendanceSettingsError('Unable to load attendance settings from backend');
+      } finally {
+        setAttendanceSettingsLoading(false);
+      }
+    };
+
+    fetchAttendanceSettings();
+  }, []);
+
+  const buildAttendanceSettingsPayload = useCallback((source) => {
+    return {
+      attendanceLateAfter: source.attendanceLateAfter,
+      attendanceReportTime: source.attendanceReportTime,
+      attendanceShiftEnd: source.attendanceShiftEnd,
+      payrollWorkingDays: source.payrollWorkingDays,
+      attendanceCalculationMode: source.attendanceCalculationMode,
+      attendanceFixedDeductionPerMinute: source.attendanceFixedDeductionPerMinute,
+      attendanceFixedScope: source.attendanceFixedScope,
+      attendanceFixedDepartment: source.attendanceFixedDepartment,
+      attendanceFixedEmployeeId: source.attendanceFixedEmployeeId,
+      shifts: Array.isArray(source.shifts) ? source.shifts : [],
+    };
+  }, []);
+
+  const saveAttendanceSettings = useCallback(
+    async (nextSettings) => {
+      try {
+        setAttendanceSettingsSaving(true);
+        setAttendanceSettingsSavedMessage('');
+        setAttendanceSettingsError('');
+        const payload = buildAttendanceSettingsPayload(nextSettings || appSettings);
+        const response = await fetch('http://localhost:8000/api/settings/attendance', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error('Failed to save attendance settings');
+        }
+        const data = await response.json();
+        if (data?.settings) {
+          setAppSettings((prev) => ({
+            ...prev,
+            ...buildAttendanceSettingsPayload({
+              ...prev,
+              ...data.settings,
+            }),
+          }));
+        }
+        setAttendanceSettingsSavedMessage('Attendance settings saved to backend');
+      } catch (error) {
+        setAttendanceSettingsError('Unable to save attendance settings to backend');
+      } finally {
+        setAttendanceSettingsSaving(false);
+      }
+    },
+    [appSettings, buildAttendanceSettingsPayload]
+  );
 
   useEffect(() => {
     const fetchMobileSettings = async () => {
@@ -1134,6 +1252,63 @@ function App({ initialModuleId }) {
     () => appSettings.employmentStages,
     [appSettings.employmentStages]
   );
+  const attendanceShiftOptions = useMemo(() => {
+    const normalized = Array.isArray(appSettings.shifts)
+      ? appSettings.shifts
+          .map((shift, index) => {
+            const name = String(shift?.name || '').trim();
+            const reportTime = String(shift?.reportTime || appSettings.attendanceReportTime || '08:00').trim();
+            const shiftEnd = String(shift?.shiftEnd || appSettings.attendanceShiftEnd || '17:00').trim();
+            if (!name || !/^\d{2}:\d{2}$/.test(reportTime) || !/^\d{2}:\d{2}$/.test(shiftEnd)) {
+              return null;
+            }
+            return {
+              id: String(shift?.id || `SHIFT-${index + 1}`),
+              name,
+              reportTime,
+              shiftEnd,
+              graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
+              graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+            };
+          })
+          .filter(Boolean)
+      : [];
+    if (normalized.length > 0) {
+      return normalized;
+    }
+    return [
+      {
+        id: 'SHIFT-DEFAULT',
+        name: 'Default',
+        reportTime: appSettings.attendanceReportTime || '08:00',
+        shiftEnd: appSettings.attendanceShiftEnd || '17:00',
+        graceInMinutes: Math.max(
+          0,
+          (toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0) -
+            (toMinutesFromClock(appSettings.attendanceReportTime) ?? 0)
+        ),
+        graceOutMinutes: 0,
+      },
+    ];
+  }, [
+    appSettings.attendanceLateAfter,
+    appSettings.attendanceReportTime,
+    appSettings.attendanceShiftEnd,
+    appSettings.shifts,
+  ]);
+  const resolveShiftConfig = useCallback(
+    (shiftName) => {
+      const normalizedName = String(shiftName || '').trim().toLowerCase();
+      const exact = attendanceShiftOptions.find(
+        (shift) => String(shift.name || '').trim().toLowerCase() === normalizedName
+      );
+      if (exact) {
+        return exact;
+      }
+      return attendanceShiftOptions[0] || null;
+    },
+    [attendanceShiftOptions]
+  );
   const getFieldLabel = (field) => {
     if (!field) {
       return '';
@@ -1211,6 +1386,7 @@ function App({ initialModuleId }) {
               title: 'Employment & Documents',
               fields: [
                 'department',
+                'assignedShift',
                 'position',
                 'lineManager',
                 'leaveBalanceDays',
@@ -1951,6 +2127,10 @@ function App({ initialModuleId }) {
                 ? currentDepartmentOptions
                 : field.key === 'employmentState' && activeModuleId === 'employee-management'
                   ? currentEmploymentStageOptions
+                  : field.key === 'assignedShift' && activeModuleId === 'employee-management'
+                    ? attendanceShiftOptions.map((shift) => shift.name)
+                    : field.key === 'shift' && activeModuleId === 'attendance-time'
+                      ? attendanceShiftOptions.map((shift) => shift.name)
                   : field.options || []
             ).map((option) => (
               <option key={option} value={option}>
@@ -2094,6 +2274,74 @@ function App({ initialModuleId }) {
       </label>
     );
   };
+  const normalizeAttendanceClockings = useCallback((row) => {
+    if (!row) {
+      return [];
+    }
+    if (Array.isArray(row.clockings) && row.clockings.length > 0) {
+      return row.clockings
+        .map((clocking) => ({
+          id: String(clocking.id || `CLK-${Date.now()}`),
+          mode: clocking.mode === 'clock-out' ? 'clock-out' : 'clock-in',
+          time: String(clocking.time || '').trim(),
+          lat: typeof clocking.lat === 'number' ? clocking.lat : undefined,
+          lng: typeof clocking.lng === 'number' ? clocking.lng : undefined,
+          accuracy: typeof clocking.accuracy === 'number' ? clocking.accuracy : null,
+          source: String(clocking.source || row.source || 'System'),
+          createdAt: String(clocking.createdAt || ''),
+        }))
+        .filter((clocking) => /^\d{2}:\d{2}$/.test(clocking.time))
+        .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+    }
+    const fallbackClockings = [];
+    if (row.checkIn) {
+      fallbackClockings.push({
+        id: `CLK-IN-${row.id || row.employeeId || Date.now()}`,
+        mode: 'clock-in',
+        time: String(row.checkIn),
+        lat: typeof row.checkInLat === 'number' ? row.checkInLat : undefined,
+        lng: typeof row.checkInLng === 'number' ? row.checkInLng : undefined,
+        accuracy: typeof row.checkInAccuracy === 'number' ? row.checkInAccuracy : null,
+        source: String(row.source || 'System'),
+        createdAt: '',
+      });
+    }
+    if (row.checkOut) {
+      fallbackClockings.push({
+        id: `CLK-OUT-${row.id || row.employeeId || Date.now()}`,
+        mode: 'clock-out',
+        time: String(row.checkOut),
+        lat: typeof row.checkOutLat === 'number' ? row.checkOutLat : undefined,
+        lng: typeof row.checkOutLng === 'number' ? row.checkOutLng : undefined,
+        accuracy: typeof row.checkOutAccuracy === 'number' ? row.checkOutAccuracy : null,
+        source: String(row.source || 'System'),
+        createdAt: '',
+      });
+    }
+    return fallbackClockings.sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  }, []);
+  const getAttendanceClockSummary = useCallback(
+    (row) => {
+      const clockings = normalizeAttendanceClockings(row);
+      const firstClockIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
+      const lastClockOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+      const openClockInCount = clockings.reduce(
+        (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+        0
+      );
+      return {
+        clockings,
+        checkIn: firstClockIn?.time || '',
+        checkOut: lastClockOut?.time || '',
+        checkInLat: firstClockIn?.lat,
+        checkInLng: firstClockIn?.lng,
+        checkOutLat: lastClockOut?.lat,
+        checkOutLng: lastClockOut?.lng,
+        openClockInCount,
+      };
+    },
+    [normalizeAttendanceClockings]
+  );
   const attendanceTodayRows = useMemo(() => {
     const scopedRows = attendanceRows.filter((row) => {
       if (currentUser && currentUser.role === 'employee') {
@@ -2115,8 +2363,12 @@ function App({ initialModuleId }) {
       }
       return String(row.date || '') === todayIsoDate;
     });
-    return scopedRows.sort((a, b) => toMinutesFromClock(b.checkIn) - toMinutesFromClock(a.checkIn));
-  }, [attendanceRows, currentUser, todayIsoDate]);
+    return scopedRows.sort((a, b) => {
+      const aSummary = getAttendanceClockSummary(a);
+      const bSummary = getAttendanceClockSummary(b);
+      return (toMinutesFromClock(bSummary.checkIn) || -1) - (toMinutesFromClock(aSummary.checkIn) || -1);
+    });
+  }, [attendanceRows, currentUser, getAttendanceClockSummary, todayIsoDate]);
   const attendanceLateCount = useMemo(
     () => attendanceTodayRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
     [attendanceTodayRows]
@@ -2127,6 +2379,28 @@ function App({ initialModuleId }) {
     }
     return employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null;
   }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows, getCurrentEmployeeRow]);
+  useEffect(() => {
+    const selectedEmployeeId = String(selectedAttendanceEmployee?.id || '').trim();
+    if (!selectedEmployeeId) {
+      if (!attendanceClockDraft.shift && attendanceShiftOptions.length > 0) {
+        setAttendanceClockDraft((prev) => ({ ...prev, shift: attendanceShiftOptions[0].name }));
+      }
+      return;
+    }
+    if (lastAttendanceShiftAutoEmployeeIdRef.current === selectedEmployeeId) {
+      return;
+    }
+    const preferredShift = String(selectedAttendanceEmployee?.assignedShift || '').trim();
+    if (preferredShift) {
+      setAttendanceClockDraft((prev) => ({ ...prev, shift: preferredShift }));
+      lastAttendanceShiftAutoEmployeeIdRef.current = selectedEmployeeId;
+      return;
+    }
+    if (!attendanceClockDraft.shift && attendanceShiftOptions.length > 0) {
+      setAttendanceClockDraft((prev) => ({ ...prev, shift: attendanceShiftOptions[0].name }));
+    }
+    lastAttendanceShiftAutoEmployeeIdRef.current = selectedEmployeeId;
+  }, [attendanceClockDraft.shift, attendanceShiftOptions, selectedAttendanceEmployee]);
   const attendanceSearchMatches = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
       return [];
@@ -2137,15 +2411,38 @@ function App({ initialModuleId }) {
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
   );
+  const getShiftScheduleForAttendance = useCallback(
+    ({ attendanceRow, employee }) => {
+      const shiftName =
+        String(attendanceRow?.shift || '').trim() ||
+        String(employee?.assignedShift || '').trim() ||
+        attendanceShiftOptions[0]?.name ||
+        'Default';
+      const shiftConfig = resolveShiftConfig(shiftName);
+      const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || appSettings.attendanceReportTime) ?? 0;
+      const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
+      const shiftEndMinutes = toMinutesFromClock(shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd) ?? 0;
+      const clockOutGraceMinutes = Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0);
+      return {
+        shiftName: shiftConfig?.name || shiftName,
+        reportMinutes,
+        lateAfterMinutes,
+        shiftEndMinutes,
+        shiftEndWithGraceMinutes: shiftEndMinutes + clockOutGraceMinutes,
+      };
+    },
+    [
+      appSettings.attendanceReportTime,
+      appSettings.attendanceShiftEnd,
+      attendanceShiftOptions,
+      resolveShiftConfig,
+    ]
+  );
   const penaltyAdjustmentRows = useMemo(() => moduleRowsState['attendance-penalty-adjustments'] || [], [moduleRowsState]);
   const attendanceComplianceRows = useMemo(() => {
     const targetDate = attendanceAuditDate || todayIsoDate;
     const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
     const isPastDate = targetDate < todayIsoDate;
-    const isNoonReached = isPastDate || (targetDate === todayIsoDate && nowMinutes >= 12 * 60);
-    const isClockOutDeadlineReached = isPastDate;
-    const lateAfterMinutes = toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
     const scopedEmployees = employeeBaseRows.filter((employee) => {
       if (currentUser && currentUser.role === 'employee') {
         const employeeId = String(currentUser.employeeId || '').trim();
@@ -2166,6 +2463,8 @@ function App({ initialModuleId }) {
       const attendanceRow = attendanceRows.find(
         (row) => String(row.employeeId || '') === String(employee.id || '') && String(row.date || '') === String(targetDate)
       );
+      const attendanceSummary = getAttendanceClockSummary(attendanceRow);
+      const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
       const payrollProfile = getEmployeePayrollProfile({
         moduleRowsState,
         employeeBaseRows,
@@ -2193,17 +2492,24 @@ function App({ initialModuleId }) {
       const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
       const isOnLeave = Boolean(leaveMatch);
       const isExempt = isOffDuty || isOnLeave;
-      const checkInMinutes = toMinutesFromClock(attendanceRow?.checkIn);
-      const rawCheckOut = String(attendanceRow?.checkOut || '');
+      const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
+      const rawCheckOut = String(attendanceSummary.checkOut || '');
       const hasMidnightCheckout = rawCheckOut === '00:00' || rawCheckOut === '24:00';
       const checkOutMinutes = hasMidnightCheckout ? null : toMinutesFromClock(rawCheckOut);
       const hasClockIn = checkInMinutes !== null;
       const hasClockOut = checkOutMinutes !== null && checkOutMinutes > (checkInMinutes ?? 0);
-      const isLate = hasClockIn && checkInMinutes > lateAfterMinutes;
-      const leftEarly = hasClockOut && shiftEndMinutes > 0 && checkOutMinutes < shiftEndMinutes;
+      const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+      const leftEarly =
+        hasClockOut && shiftSchedule.shiftEndMinutes > 0 && checkOutMinutes < shiftSchedule.shiftEndMinutes;
       const lateDeduction = toNumberValue(attendanceRow?.deductionAmount);
-      const countMissingClockIn = !isExempt && !hasClockIn && isNoonReached;
-      const countMissingClockOut = !isExempt && !hasClockOut && isClockOutDeadlineReached;
+      const countMissingClockIn =
+        !isExempt &&
+        !hasClockIn &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+      const countMissingClockOut =
+        !isExempt &&
+        !hasClockOut &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
       const missingCount = Number(countMissingClockIn) + Number(countMissingClockOut);
       const noClockInPenalty = missingCount === 1 && countMissingClockIn ? dailyWage / 2 : 0;
       const noClockOutPenalty = missingCount === 1 && countMissingClockOut ? dailyWage / 2 : 0;
@@ -2255,8 +2561,10 @@ function App({ initialModuleId }) {
         employeeId: employee.id,
         employee: employee.fullName,
         department: employee.department || 'Unassigned',
-        checkIn: attendanceRow?.checkIn || '',
-        checkOut: attendanceRow?.checkOut || '',
+        shift: shiftSchedule.shiftName,
+        checkIn: attendanceSummary.checkIn,
+        checkOut: attendanceSummary.checkOut,
+        clockings: attendanceSummary.clockings,
         dailyWage,
         dailyStatus,
         isLate,
@@ -2266,11 +2574,11 @@ function App({ initialModuleId }) {
     });
   }, [
     currentUser,
-    appSettings.attendanceLateAfter,
-    appSettings.attendanceShiftEnd,
     attendanceAuditDate,
     attendanceRows,
     employeeBaseRows,
+    getShiftScheduleForAttendance,
+    getAttendanceClockSummary,
     leaveRows,
     moduleRowsState,
     todayIsoDate,
@@ -2386,8 +2694,6 @@ function App({ initialModuleId }) {
     todayIsoDate,
   ]);
   const attendancePerformanceRows = useMemo(() => {
-    const lateAfterMinutes = toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
     const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
     const rangeStart = attendancePerformanceRange.startDate;
     const rangeEnd = attendancePerformanceRange.endDate;
@@ -2452,8 +2758,6 @@ function App({ initialModuleId }) {
         for (let cursor = parseIsoDateValue(rangeStart); cursor && cursor <= (parseIsoDateValue(rangeEnd) || cursor); ) {
           const currentDate = toIsoDateString(cursor);
           const isPastDate = currentDate < todayIsoDate;
-          const isNoonReached = isPastDate || (currentDate === todayIsoDate && nowMinutes >= 12 * 60);
-          const isClockOutDeadlineReached = isPastDate;
           const leaveOnDate = leaveRows.find((leaveRow) => {
             const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
             const leaveEmployeeName = String(leaveRow.employee || '').trim();
@@ -2470,8 +2774,10 @@ function App({ initialModuleId }) {
           if (!isOffDuty && !leaveOnDate) {
             expectedWorkDays += 1;
             const attendanceRow = attendanceByEmployeeDate[`${String(employee.id || '')}|${currentDate}`];
-            const checkInMinutes = toMinutesFromClock(attendanceRow?.checkIn);
-            const checkOutRaw = String(attendanceRow?.checkOut || '');
+            const attendanceSummary = getAttendanceClockSummary(attendanceRow);
+            const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
+            const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
+            const checkOutRaw = String(attendanceSummary.checkOut || '');
             const checkOutMinutes = toMinutesFromClock(checkOutRaw);
             const hasClockIn = checkInMinutes !== null;
             const hasClockOut =
@@ -2479,16 +2785,24 @@ function App({ initialModuleId }) {
               checkOutRaw !== '24:00' &&
               checkOutMinutes !== null &&
               checkOutMinutes > (checkInMinutes ?? 0);
-            const isLate = hasClockIn && checkInMinutes > lateAfterMinutes;
-            const leftEarly = hasClockOut && shiftEndMinutes > 0 && checkOutMinutes < shiftEndMinutes;
+            const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+            const leftEarly =
+              hasClockOut &&
+              shiftSchedule.shiftEndMinutes > 0 &&
+              checkOutMinutes < shiftSchedule.shiftEndMinutes;
             if (isLate) {
               lateDays += 1;
             }
             if (leftEarly) {
               leftEarlyDays += 1;
             }
-            const missingClockIn = !hasClockIn && isNoonReached;
-            const missingClockOut = !hasClockOut && isClockOutDeadlineReached;
+            const missingClockIn =
+              !hasClockIn &&
+              (isPastDate || (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+            const missingClockOut =
+              !hasClockOut &&
+              (isPastDate ||
+                (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
             if (missingClockIn) {
               noClockInDays += 1;
             }
@@ -2576,14 +2890,14 @@ function App({ initialModuleId }) {
       });
   }, [
     currentUser,
-    appSettings.attendanceLateAfter,
-    appSettings.attendanceShiftEnd,
     attendancePerformanceRange,
     attendancePerformanceRankMetric,
     attendancePerformanceDepartmentFilter,
     attendancePerformanceSearchText,
     attendanceRows,
     employeeBaseRows,
+    getShiftScheduleForAttendance,
+    getAttendanceClockSummary,
     leaveRows,
     todayIsoDate,
   ]);
@@ -2609,6 +2923,132 @@ function App({ initialModuleId }) {
       ) || null
     );
   }, [attendanceRows, selectedComplianceRow]);
+  const selectedComplianceClockings = useMemo(() => {
+    if (selectedComplianceAttendanceRow) {
+      return normalizeAttendanceClockings(selectedComplianceAttendanceRow);
+    }
+    if (selectedComplianceRow) {
+      return normalizeAttendanceClockings(selectedComplianceRow);
+    }
+    return [];
+  }, [normalizeAttendanceClockings, selectedComplianceAttendanceRow, selectedComplianceRow]);
+  const selectedComplianceClockingMapPoints = useMemo(
+    () =>
+      selectedComplianceClockings.filter(
+        (clocking) => typeof clocking.lat === 'number' && !Number.isNaN(clocking.lat) && typeof clocking.lng === 'number' && !Number.isNaN(clocking.lng)
+      ),
+    [selectedComplianceClockings]
+  );
+  const selectedComplianceClockingBounds = useMemo(() => {
+    if (selectedComplianceClockingMapPoints.length === 0) {
+      return null;
+    }
+    let minLat = selectedComplianceClockingMapPoints[0].lat;
+    let maxLat = selectedComplianceClockingMapPoints[0].lat;
+    let minLng = selectedComplianceClockingMapPoints[0].lng;
+    let maxLng = selectedComplianceClockingMapPoints[0].lng;
+    selectedComplianceClockingMapPoints.forEach((point) => {
+      if (point.lat < minLat) {
+        minLat = point.lat;
+      }
+      if (point.lat > maxLat) {
+        maxLat = point.lat;
+      }
+      if (point.lng < minLng) {
+        minLng = point.lng;
+      }
+      if (point.lng > maxLng) {
+        maxLng = point.lng;
+      }
+    });
+    return {
+      minLat,
+      maxLat,
+      minLng,
+      maxLng,
+    };
+  }, [selectedComplianceClockingMapPoints]);
+  const selectedComplianceClockingMapNodes = useMemo(() => {
+    if (!selectedComplianceClockingBounds) {
+      return [];
+    }
+    const latRange = selectedComplianceClockingBounds.maxLat - selectedComplianceClockingBounds.minLat || 0.000001;
+    const lngRange = selectedComplianceClockingBounds.maxLng - selectedComplianceClockingBounds.minLng || 0.000001;
+    return selectedComplianceClockingMapPoints.map((point, index) => {
+      const x = ((point.lng - selectedComplianceClockingBounds.minLng) / lngRange) * 100;
+      const y = ((selectedComplianceClockingBounds.maxLat - point.lat) / latRange) * 100;
+      return {
+        ...point,
+        x: Math.max(2, Math.min(98, x)),
+        y: Math.max(2, Math.min(98, y)),
+        index,
+      };
+    });
+  }, [selectedComplianceClockingBounds, selectedComplianceClockingMapPoints]);
+  const displayedComplianceTrailNodes = useMemo(() => {
+    if (selectedComplianceClockingMapNodes.length === 0) {
+      return [];
+    }
+    if (!complianceReplayActive && complianceReplayIndex === 0) {
+      return selectedComplianceClockingMapNodes;
+    }
+    return selectedComplianceClockingMapNodes.slice(0, complianceReplayIndex + 1);
+  }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes]);
+  const selectedComplianceClockingSessions = useMemo(() => {
+    const sessions = [];
+    let activeClockIn = null;
+    selectedComplianceClockings.forEach((clocking) => {
+      if (clocking.mode === 'clock-in') {
+        activeClockIn = clocking;
+        return;
+      }
+      if (clocking.mode === 'clock-out' && activeClockIn) {
+        const minutesWorked = getMinutesBetweenClocks(activeClockIn.time, clocking.time);
+        sessions.push({
+          id: `${activeClockIn.id || activeClockIn.time}-${clocking.id || clocking.time}`,
+          startTime: activeClockIn.time,
+          endTime: clocking.time,
+          duration:
+            minutesWorked > 0
+              ? formatWorkedDuration(activeClockIn.time, clocking.time)
+              : '00:00',
+          startLat: activeClockIn.lat,
+          startLng: activeClockIn.lng,
+          endLat: clocking.lat,
+          endLng: clocking.lng,
+        });
+        activeClockIn = null;
+      }
+    });
+    return sessions;
+  }, [selectedComplianceClockings]);
+  useEffect(() => {
+    if (attendanceDetailModal.type !== 'compliance' || selectedComplianceClockingMapNodes.length === 0) {
+      setComplianceReplayActive(false);
+      setComplianceReplayIndex(0);
+      return;
+    }
+    setComplianceReplayIndex((prev) => Math.min(prev, selectedComplianceClockingMapNodes.length - 1));
+  }, [attendanceDetailModal.type, selectedComplianceClockingMapNodes.length]);
+  useEffect(() => {
+    if (!complianceReplayActive || selectedComplianceClockingMapNodes.length === 0) {
+      return;
+    }
+    const intervalMs = Math.max(200, Math.round(700 / Math.max(0.5, complianceReplaySpeed)));
+    const intervalId = setInterval(() => {
+      setComplianceReplayIndex((prev) => Math.min(prev + 1, selectedComplianceClockingMapNodes.length - 1));
+    }, intervalMs);
+    return () => clearInterval(intervalId);
+  }, [complianceReplayActive, complianceReplaySpeed, selectedComplianceClockingMapNodes.length]);
+  useEffect(() => {
+    if (
+      complianceReplayActive &&
+      selectedComplianceClockingMapNodes.length > 0 &&
+      complianceReplayIndex >= selectedComplianceClockingMapNodes.length - 1
+    ) {
+      setComplianceReplayActive(false);
+    }
+  }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes.length]);
   const selectedPerformanceAttendanceRows = useMemo(() => {
     if (!selectedPerformanceRow) {
       return [];
@@ -2847,6 +3287,27 @@ function App({ initialModuleId }) {
     closeModal();
   };
 
+  const buildAttendanceFromClockings = (baseRow, clockings) => {
+    const sortedClockings = [...clockings].sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+    const firstClockIn = sortedClockings.find((clocking) => clocking.mode === 'clock-in') || null;
+    const lastClockOut = [...sortedClockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+    return {
+      ...baseRow,
+      clockings: sortedClockings,
+      checkIn: firstClockIn?.time || '',
+      checkOut: lastClockOut?.time || '',
+      workedHours:
+        firstClockIn?.time && lastClockOut?.time
+          ? formatWorkedDuration(firstClockIn.time, lastClockOut.time)
+          : baseRow.workedHours || '',
+      checkInLat: firstClockIn?.lat,
+      checkInLng: firstClockIn?.lng,
+      checkInAccuracy: firstClockIn?.accuracy ?? null,
+      checkOutLat: lastClockOut?.lat,
+      checkOutLng: lastClockOut?.lng,
+      checkOutAccuracy: lastClockOut?.accuracy ?? null,
+    };
+  };
   const handleClockIn = async () => {
     let effectiveEmployee = selectedAttendanceEmployee || getCurrentEmployeeRow();
     if (!effectiveEmployee || !effectiveEmployee.id) {
@@ -2855,7 +3316,15 @@ function App({ initialModuleId }) {
     }
     const checkInTime = getCurrentClockValue();
     const nowDate = getTodayIsoDate();
-    const lateRuleMinutes = toMinutesFromClock(appSettings.attendanceLateAfter || appSettings.attendanceReportTime);
+    const selectedShiftName =
+      String(attendanceClockDraft.shift || '').trim() ||
+      String(effectiveEmployee.assignedShift || '').trim() ||
+      attendanceShiftOptions[0]?.name ||
+      'Default';
+    const selectedShiftConfig = resolveShiftConfig(selectedShiftName);
+    const lateRuleMinutes =
+      (toMinutesFromClock(selectedShiftConfig?.reportTime) ?? toMinutesFromClock(appSettings.attendanceReportTime) ?? 0) +
+      Math.max(0, Number(selectedShiftConfig?.graceInMinutes) || 0);
     const checkInMinutes = toMinutesFromClock(checkInTime);
     const lateMinutes =
       lateRuleMinutes === null || checkInMinutes === null ? 0 : Math.max(0, checkInMinutes - lateRuleMinutes);
@@ -2871,7 +3340,10 @@ function App({ initialModuleId }) {
     const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
     const scheduledMinutes = Math.max(
       1,
-      getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd)
+      getMinutesBetweenClocks(
+        selectedShiftConfig?.reportTime || appSettings.attendanceReportTime,
+        selectedShiftConfig?.shiftEnd || appSettings.attendanceShiftEnd
+      )
     );
     const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
     const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
@@ -2890,21 +3362,42 @@ function App({ initialModuleId }) {
     const existingRowIndex = currentRows.findIndex(
       (row) => row.employeeId === effectiveEmployee.id && String(row.date || '') === nowDate
     );
-    const newRow = {
+    const existingRow = existingRowIndex >= 0 ? currentRows[existingRowIndex] : null;
+    const existingClockings = normalizeAttendanceClockings(existingRow);
+    const openClockInCount = existingClockings.reduce(
+      (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+      0
+    );
+    if (openClockInCount > 0) {
+      showToast('Clock out the last active session before clocking in again.', 'error');
+      return;
+    }
+    const baseRow = {
       id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
       employee: effectiveEmployee.fullName,
       employeeId: effectiveEmployee.id,
       date: nowDate,
-      shift: attendanceClockDraft.shift || 'Morning',
-      checkIn: checkInTime,
-      checkOut: existingRowIndex >= 0 ? currentRows[existingRowIndex].checkOut || '' : '',
-      workedHours: existingRowIndex >= 0 ? currentRows[existingRowIndex].workedHours || '' : '',
+      shift: selectedShiftConfig?.name || selectedShiftName,
+      checkIn: '',
+      checkOut: '',
+      workedHours: existingRow?.workedHours || '',
       lateMinutes: String(lateMinutes),
       deductionRatePerMinute: deductionRatePerMinute.toFixed(3),
       deductionAmount: deductionAmount.toFixed(2),
       source: appSettings.fingerprintIntegration.mode === 'live' ? 'Fingerprint Device' : 'Manual Clock',
       status,
     };
+    const newClocking = {
+      id: `CLK-${Date.now().toString().slice(-7)}`,
+      mode: 'clock-in',
+      time: checkInTime,
+      lat: null,
+      lng: null,
+      accuracy: null,
+      source: baseRow.source,
+      createdAt: new Date().toISOString(),
+    };
+    const newRow = buildAttendanceFromClockings(baseRow, [...existingClockings, newClocking]);
 
     setModuleRowsState((prev) => {
       const prevRows = prev['attendance-time'] || [];
@@ -2941,57 +3434,76 @@ function App({ initialModuleId }) {
     const nowDate = getTodayIsoDate();
     const currentRows = moduleRowsState['attendance-time'] || [];
     const existingRow = currentRows.find(
-      (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
     );
     if (!existingRow) {
       showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
       return;
     }
-    if (!existingRow.checkIn || getMinutesBetweenClocks(existingRow.checkIn, checkOutTime) <= 0) {
-      showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
-      return;
-    }
-
     const stateRows = moduleRowsState['attendance-time'] || [];
     const existingRowIndex = stateRows.findIndex(
-      (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
     );
     if (existingRowIndex < 0) {
       showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
       return;
     }
     const matchedRow = stateRows[existingRowIndex];
-    if (!matchedRow.checkIn || getMinutesBetweenClocks(matchedRow.checkIn, checkOutTime) <= 0) {
+    const existingClockings = normalizeAttendanceClockings(matchedRow);
+    const openClockInCount = existingClockings.reduce(
+      (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+      0
+    );
+    if (openClockInCount <= 0) {
+      showToast('No open clock-in session found for clock-out.', 'error');
+      return;
+    }
+    const lastClockIn = [...existingClockings].reverse().find((clocking) => clocking.mode === 'clock-in') || null;
+    if (!lastClockIn || getMinutesBetweenClocks(lastClockIn.time, checkOutTime) <= 0) {
       showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
       return;
     }
-    const workedHours = formatWorkedDuration(matchedRow.checkIn, checkOutTime);
-    const updatedRow = {
+    const nextClocking = {
+      id: `CLK-${Date.now().toString().slice(-7)}`,
+      mode: 'clock-out',
+      time: checkOutTime,
+      lat: null,
+      lng: null,
+      accuracy: null,
+      source: matchedRow.source || 'Manual Clock',
+      createdAt: new Date().toISOString(),
+    };
+    const updatedRow = buildAttendanceFromClockings(
+      {
+        ...matchedRow,
+      },
+      [...existingClockings, nextClocking]
+    );
+    const normalizedUpdatedRow = {
       ...matchedRow,
-      checkOut: checkOutTime,
-      workedHours,
+      ...updatedRow,
     };
 
     setModuleRowsState((prev) => {
       const prevRows = prev['attendance-time'] || [];
       const idx = prevRows.findIndex(
-        (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+        (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
       );
       if (idx < 0) {
         return prev;
       }
       const rowsCopy = [...prevRows];
-      rowsCopy[idx] = updatedRow;
+      rowsCopy[idx] = normalizedUpdatedRow;
       return { ...prev, 'attendance-time': rowsCopy };
     });
 
     try {
       await fetch(
-        `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(updatedRow.id)}`,
+        `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(normalizedUpdatedRow.id)}`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updatedRow),
+          body: JSON.stringify(normalizedUpdatedRow),
         }
       );
     } catch (error) {
@@ -4848,10 +5360,13 @@ function App({ initialModuleId }) {
                 ) : null}
                 {settingsTab === 'attendance' ? (
                   <>
+                    {attendanceSettingsLoading ? <p>Loading attendance settings from backend...</p> : null}
+                    {attendanceSettingsError ? <p className="form-error">{attendanceSettingsError}</p> : null}
                     <label>
                       <span>Reporting Time</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceReportTime}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4859,12 +5374,14 @@ function App({ initialModuleId }) {
                             attendanceReportTime: event.target.value || '08:00',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Free Late Until</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceLateAfter}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4872,12 +5389,14 @@ function App({ initialModuleId }) {
                             attendanceLateAfter: event.target.value || '08:15',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Shift End Time</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceShiftEnd}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4885,14 +5404,224 @@ function App({ initialModuleId }) {
                             attendanceShiftEnd: event.target.value || '17:00',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
+                    <div className="attendance-audit-wrap" style={{ gridColumn: '1 / -1' }}>
+                      <div className="attendance-audit-head">
+                        <h4>Shift Templates</h4>
+                        <div className="attendance-audit-actions">
+                          <button
+                            type="button"
+                            className="neutral-btn"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            onClick={() =>
+                              setAppSettings((prev) => {
+                                const nextSettings = {
+                                  ...prev,
+                                  shifts: [
+                                    ...(Array.isArray(prev.shifts) ? prev.shifts : []),
+                                    {
+                                      id: `SHIFT-${Date.now()}`,
+                                      name: `Shift ${Math.max(1, (Array.isArray(prev.shifts) ? prev.shifts.length : 0) + 1)}`,
+                                      reportTime: prev.attendanceReportTime || '08:00',
+                                      shiftEnd: prev.attendanceShiftEnd || '17:00',
+                                      graceInMinutes: 15,
+                                      graceOutMinutes: 0,
+                                    },
+                                  ],
+                                };
+                                void saveAttendanceSettings(nextSettings);
+                                return nextSettings;
+                              })
+                            }
+                          >
+                            {attendanceSettingsSaving ? 'Saving...' : 'Add Shift'}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="attendance-audit-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Shift Name</th>
+                              <th>Time In</th>
+                              <th>Time Out</th>
+                              <th>Grace In (min)</th>
+                              <th>Grace Out (min)</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {attendanceShiftOptions.map((shift, index) => (
+                              <tr key={shift.id || `${shift.name}-${index}`}>
+                                <td>
+                                  <input
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.name}
+                                    onChange={(event) => {
+                                      const previousName = String(shift.name || '').trim();
+                                      const nextName = String(event.target.value || '').trim();
+                                      if (!nextName) {
+                                        return;
+                                      }
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index ? { ...item, name: nextName } : item
+                                        ),
+                                      }));
+                                      if (previousName && nextName && previousName !== nextName) {
+                                        setModuleRowsState((prev) => ({
+                                          ...prev,
+                                          'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
+                                            String(employeeRow.assignedShift || '').trim() === previousName
+                                              ? { ...employeeRow, assignedShift: nextName }
+                                              : employeeRow
+                                          ),
+                                          'attendance-time': (prev['attendance-time'] || []).map((attendanceRow) =>
+                                            String(attendanceRow.shift || '').trim() === previousName
+                                              ? { ...attendanceRow, shift: nextName }
+                                              : attendanceRow
+                                          ),
+                                        }));
+                                        setAttendanceClockDraft((prev) =>
+                                          String(prev.shift || '').trim() === previousName
+                                            ? { ...prev, shift: nextName }
+                                            : prev
+                                        );
+                                      }
+                                    }}
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="time"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.reportTime}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, reportTime: event.target.value || '08:00' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="time"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.shiftEnd}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, shiftEnd: event.target.value || '17:00' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.graceInMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, graceInMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.graceOutMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, graceOutMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() =>
+                                      (() => {
+                                        const removingName = String(shift.name || '').trim();
+                                        const fallbackShiftName =
+                                          attendanceShiftOptions.find((item) => String(item.name || '').trim() !== removingName)?.name ||
+                                          '';
+                                        setAppSettings((prev) => {
+                                          const nextSettings = {
+                                            ...prev,
+                                            shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).filter(
+                                              (item, itemIndex) => !(item.id === shift.id || itemIndex === index)
+                                            ),
+                                          };
+                                          void saveAttendanceSettings(nextSettings);
+                                          return nextSettings;
+                                        });
+                                        setModuleRowsState((prev) => ({
+                                          ...prev,
+                                          'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
+                                            String(employeeRow.assignedShift || '').trim() === removingName
+                                              ? { ...employeeRow, assignedShift: fallbackShiftName }
+                                              : employeeRow
+                                          ),
+                                        }));
+                                        setAttendanceClockDraft((prev) =>
+                                          String(prev.shift || '').trim() === removingName
+                                            ? { ...prev, shift: fallbackShiftName }
+                                            : prev
+                                        );
+                                      })()
+                                    }
+                                    disabled={attendanceShiftOptions.length <= 1 || attendanceSettingsLoading || attendanceSettingsSaving}
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                     <label>
                       <span>Payroll Working Days</span>
                       <input
                         type="number"
                         min="1"
                         max="31"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.payrollWorkingDays}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4900,12 +5629,14 @@ function App({ initialModuleId }) {
                             payrollWorkingDays: Math.max(1, Number(event.target.value) || 1),
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Deduction Mode</span>
                       <select
                         className="filter-select"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceCalculationMode}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4913,6 +5644,7 @@ function App({ initialModuleId }) {
                             attendanceCalculationMode: event.target.value === 'fixed' ? 'fixed' : 'auto',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       >
                         <option value="auto">System Calculation</option>
                         <option value="fixed">Fixed Per Minute</option>
@@ -4924,7 +5656,7 @@ function App({ initialModuleId }) {
                         type="number"
                         min="0"
                         step="0.001"
-                        disabled={appSettings.attendanceCalculationMode !== 'fixed'}
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving || appSettings.attendanceCalculationMode !== 'fixed'}
                         value={appSettings.attendanceFixedDeductionPerMinute}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4932,13 +5664,14 @@ function App({ initialModuleId }) {
                             attendanceFixedDeductionPerMinute: Math.max(0, Number(event.target.value) || 0),
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Fixed Scope</span>
                       <select
                         className="filter-select"
-                        disabled={appSettings.attendanceCalculationMode !== 'fixed'}
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving || appSettings.attendanceCalculationMode !== 'fixed'}
                         value={appSettings.attendanceFixedScope}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4946,6 +5679,7 @@ function App({ initialModuleId }) {
                             attendanceFixedScope: event.target.value,
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       >
                         <option value="all">All Employees</option>
                         <option value="department">By Department</option>
@@ -4957,6 +5691,7 @@ function App({ initialModuleId }) {
                         <span>Fixed Department</span>
                         <select
                           className="filter-select"
+                          disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                           value={appSettings.attendanceFixedDepartment}
                           onChange={(event) =>
                             setAppSettings((prev) => ({
@@ -4964,6 +5699,7 @@ function App({ initialModuleId }) {
                               attendanceFixedDepartment: event.target.value,
                             }))
                           }
+                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
                         >
                           <option value="">Select department</option>
                           {currentDepartmentOptions.map((department) => (
@@ -4979,6 +5715,7 @@ function App({ initialModuleId }) {
                         <span>Fixed Employee</span>
                         <select
                           className="filter-select"
+                          disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                           value={appSettings.attendanceFixedEmployeeId}
                           onChange={(event) =>
                             setAppSettings((prev) => ({
@@ -4986,6 +5723,7 @@ function App({ initialModuleId }) {
                               attendanceFixedEmployeeId: event.target.value,
                             }))
                           }
+                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
                         >
                           <option value="">Select employee</option>
                           {employeeBaseRows.map((employee) => (
@@ -4996,6 +5734,17 @@ function App({ initialModuleId }) {
                         </select>
                       </label>
                     ) : null}
+                    <div className="attendance-audit-actions" style={{ gridColumn: '1 / -1' }}>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                        onClick={() => saveAttendanceSettings({ ...appSettings })}
+                      >
+                        {attendanceSettingsSaving ? 'Saving Attendance Settings...' : 'Save Attendance Settings'}
+                      </button>
+                      {attendanceSettingsSavedMessage ? <span>{attendanceSettingsSavedMessage}</span> : null}
+                    </div>
                   </>
                 ) : null}
                 {settingsTab === 'tracking' ? (
@@ -7026,6 +7775,306 @@ function App({ initialModuleId }) {
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+                  <div className="attendance-audit-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Mode</th>
+                          <th>Time</th>
+                          <th>Latitude</th>
+                          <th>Longitude</th>
+                          <th>Accuracy</th>
+                          <th>Source</th>
+                          <th>Map</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedComplianceClockings.length > 0 ? (
+                          selectedComplianceClockings.map((clocking, index) => (
+                            <tr key={`${selectedComplianceRow.employeeId}-${selectedComplianceRow.date}-${clocking.id || index}`}>
+                              <td>{index + 1}</td>
+                              <td>{clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'}</td>
+                              <td>{clocking.time || '—'}</td>
+                              <td>{typeof clocking.lat === 'number' ? clocking.lat.toFixed(6) : '—'}</td>
+                              <td>{typeof clocking.lng === 'number' ? clocking.lng.toFixed(6) : '—'}</td>
+                              <td>{typeof clocking.accuracy === 'number' ? `${Math.round(clocking.accuracy)} m` : '—'}</td>
+                              <td>{clocking.source || 'System'}</td>
+                              <td>
+                                {typeof clocking.lat === 'number' && typeof clocking.lng === 'number' ? (
+                                  <a href={`https://www.google.com/maps?q=${clocking.lat},${clocking.lng}`} target="_blank" rel="noreferrer">
+                                    Open
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={8}>No clocking events for this day.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="attendance-audit-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Session #</th>
+                          <th>Start</th>
+                          <th>End</th>
+                          <th>Duration</th>
+                          <th>Start Point</th>
+                          <th>End Point</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedComplianceClockingSessions.length > 0 ? (
+                          selectedComplianceClockingSessions.map((session, index) => (
+                            <tr key={session.id}>
+                              <td>{index + 1}</td>
+                              <td>{session.startTime || '—'}</td>
+                              <td>{session.endTime || '—'}</td>
+                              <td>{session.duration}</td>
+                              <td>
+                                {typeof session.startLat === 'number' && typeof session.startLng === 'number' ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${session.startLat},${session.startLng}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Open Start
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                              <td>
+                                {typeof session.endLat === 'number' && typeof session.endLng === 'number' ? (
+                                  <a href={`https://www.google.com/maps?q=${session.endLat},${session.endLng}`} target="_blank" rel="noreferrer">
+                                    Open End
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={6}>No complete IN/OUT session pairs for this day.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="employee-ops-card" style={{ minHeight: 260 }}>
+                    <div className="employee-ops-header">
+                      <h5>Clocking Location Trail</h5>
+                      <div className="employee-ops-actions" style={{ gap: 8 }}>
+                        <span>
+                          {selectedComplianceClockingMapNodes.length > 0
+                            ? `${selectedComplianceClockingMapNodes.length} point(s) • ${Math.min(
+                                complianceReplayIndex + 1,
+                                selectedComplianceClockingMapNodes.length
+                              )}/${selectedComplianceClockingMapNodes.length}`
+                            : 'No GPS points'}
+                        </span>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => {
+                            setComplianceReplayIndex(0);
+                            setComplianceReplayActive(true);
+                          }}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          Replay
+                        </button>
+                        <select
+                          className="filter-select"
+                          value={String(complianceReplaySpeed)}
+                          onChange={(event) => setComplianceReplaySpeed(Number(event.target.value) || 1)}
+                          style={{ minWidth: 84 }}
+                        >
+                          <option value="0.5">0.5x</option>
+                          <option value="1">1x</option>
+                          <option value="2">2x</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => setComplianceReplayActive((prev) => !prev)}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          {complianceReplayActive ? 'Pause' : 'Resume'}
+                        </button>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => {
+                            setComplianceReplayActive(false);
+                            setComplianceReplayIndex(0);
+                          }}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          Reset
+                        </button>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => setComplianceShowPointLabels((prev) => !prev)}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          {complianceShowPointLabels ? 'Hide Labels' : 'Show Labels'}
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        position: 'relative',
+                        height: 240,
+                        borderRadius: 10,
+                        background: 'radial-gradient(circle at 50% 50%, rgba(10,115,217,0.12), rgba(10,115,217,0.04))',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          backgroundImage:
+                            'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
+                          backgroundSize: '30px 30px',
+                          opacity: 0.4,
+                        }}
+                      />
+                      {selectedComplianceClockingMapNodes.length > 0 ? (
+                        <>
+                          <svg
+                            viewBox="0 0 100 100"
+                            preserveAspectRatio="none"
+                            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+                          >
+                            {displayedComplianceTrailNodes.length > 1 ? (
+                              <polyline
+                                points={displayedComplianceTrailNodes
+                                  .map((point) => `${point.x},${point.y}`)
+                                  .join(' ')}
+                                fill="none"
+                                stroke="rgba(10,115,217,0.8)"
+                                strokeWidth="0.8"
+                              />
+                            ) : null}
+                          </svg>
+                          {displayedComplianceTrailNodes.map((point, index) => (
+                            <div
+                              key={`clocking-map-point-${index}`}
+                              style={{
+                                position: 'absolute',
+                                left: `${point.x}%`,
+                                top: `${point.y}%`,
+                              }}
+                            >
+                              <div
+                                title={`${point.mode === 'clock-in' ? 'IN' : 'OUT'} ${point.time || ''}`}
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  borderRadius: '50%',
+                                  transform: 'translate(-50%, -50%)',
+                                  backgroundColor: point.mode === 'clock-in' ? '#0f9d58' : '#db4437',
+                                  boxShadow: '0 0 0 5px rgba(0,0,0,0.16)',
+                                }}
+                              />
+                              {complianceShowPointLabels ? (
+                                <div
+                                  style={{
+                                    transform: 'translate(-50%, -165%)',
+                                    backgroundColor: 'rgba(11, 25, 58, 0.88)',
+                                    color: '#e9f0ff',
+                                    fontSize: 10,
+                                    padding: '2px 6px',
+                                    borderRadius: 6,
+                                    whiteSpace: 'nowrap',
+                                    pointerEvents: 'none',
+                                  }}
+                                >
+                                  {point.mode === 'clock-in' ? 'IN' : 'OUT'} {point.time || ''}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                          {selectedComplianceClockingMapNodes[complianceReplayIndex] ? (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                width: 18,
+                                height: 18,
+                                borderRadius: '50%',
+                                left: `${selectedComplianceClockingMapNodes[complianceReplayIndex].x}%`,
+                                top: `${selectedComplianceClockingMapNodes[complianceReplayIndex].y}%`,
+                                transform: 'translate(-50%, -50%)',
+                                border: '3px solid rgba(10,115,217,0.9)',
+                                backgroundColor: '#ffffff',
+                                boxShadow: '0 0 0 10px rgba(10,115,217,0.22)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          ) : null}
+                        </>
+                      ) : (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#607098',
+                            fontSize: 13,
+                          }}
+                        >
+                          No location trail captured for this day.
+                        </div>
+                      )}
+                    </div>
+                    {selectedComplianceClockingMapNodes.length > 0 ? (
+                      <div style={{ marginTop: 12 }}>
+                        <input
+                          type="range"
+                          min={0}
+                          max={Math.max(0, selectedComplianceClockingMapNodes.length - 1)}
+                          value={Math.min(complianceReplayIndex, Math.max(0, selectedComplianceClockingMapNodes.length - 1))}
+                          onChange={(event) => {
+                            const nextIndex = Number(event.target.value) || 0;
+                            setComplianceReplayActive(false);
+                            setComplianceReplayIndex(Math.max(0, Math.min(nextIndex, selectedComplianceClockingMapNodes.length - 1)));
+                          }}
+                          style={{ width: '100%' }}
+                        />
+                        <div
+                          style={{
+                            marginTop: 6,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            color: '#607098',
+                            fontSize: 12,
+                          }}
+                        >
+                          <span>Start</span>
+                          <span>
+                            Step {Math.min(complianceReplayIndex + 1, selectedComplianceClockingMapNodes.length)} of{' '}
+                            {selectedComplianceClockingMapNodes.length}
+                          </span>
+                          <span>End</span>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="attendance-audit-table">
                     <table>

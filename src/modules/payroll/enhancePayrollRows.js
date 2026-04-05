@@ -1,6 +1,39 @@
 import { toNumberValue } from '../../utils/number';
 import { resolveEmployeeKey } from '../../utils/employeeSearch';
 
+const normalizeAttendanceClockings = (row) => {
+  if (!row) {
+    return [];
+  }
+  if (Array.isArray(row.clockings) && row.clockings.length > 0) {
+    return row.clockings
+      .map((clocking) => ({
+        mode: clocking.mode === 'clock-out' ? 'clock-out' : 'clock-in',
+        time: String(clocking.time || '').trim(),
+      }))
+      .filter((clocking) => /^\d{2}:\d{2}$/.test(clocking.time))
+      .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  }
+  const fallback = [];
+  if (row.checkIn) {
+    fallback.push({ mode: 'clock-in', time: String(row.checkIn) });
+  }
+  if (row.checkOut) {
+    fallback.push({ mode: 'clock-out', time: String(row.checkOut) });
+  }
+  return fallback.sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+};
+
+const getAttendanceClockSummary = (row) => {
+  const clockings = normalizeAttendanceClockings(row);
+  const firstClockIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
+  const lastClockOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+  return {
+    checkIn: firstClockIn?.time || '',
+    checkOut: lastClockOut?.time || '',
+  };
+};
+
 export const enhancePayrollRows = ({
   baseRows,
   moduleRowsState,
@@ -67,13 +100,14 @@ export const enhancePayrollRows = ({
     if (isExempt) {
       return;
     }
-    const checkInMinutes = toMinutesFromClock(attendanceRow.checkIn);
-    const rawCheckOut = String(attendanceRow.checkOut || '');
+    const attendanceSummary = getAttendanceClockSummary(attendanceRow);
+    const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
+    const rawCheckOut = String(attendanceSummary.checkOut || '');
     const hasClockOut =
       rawCheckOut !== '00:00' &&
       rawCheckOut !== '24:00' &&
-      toMinutesFromClock(attendanceRow.checkOut) !== null &&
-      toMinutesFromClock(attendanceRow.checkOut) > (checkInMinutes ?? 0);
+      toMinutesFromClock(attendanceSummary.checkOut) !== null &&
+      toMinutesFromClock(attendanceSummary.checkOut) > (checkInMinutes ?? 0);
     const missingClockIn = checkInMinutes === null && isNoonReached;
     const missingClockOut = !hasClockOut && isClockOutDeadlineReached;
     const missingCount = Number(missingClockIn) + Number(missingClockOut);
@@ -94,7 +128,7 @@ export const enhancePayrollRows = ({
       noClockOutPenaltyByEmployee[key] = (noClockOutPenaltyByEmployee[key] || 0) + dailyWage / 2;
     }
     if (checkInMinutes !== null && hasClockOut && shiftEndMinutes > 0) {
-      const checkOutMinutes = toMinutesFromClock(attendanceRow.checkOut) || 0;
+      const checkOutMinutes = toMinutesFromClock(attendanceSummary.checkOut) || 0;
       if (checkOutMinutes < shiftEndMinutes) {
         noClockOutPenaltyByEmployee[key] = noClockOutPenaltyByEmployee[key] || 0;
       }
@@ -187,4 +221,3 @@ export const enhancePayrollRows = ({
     };
   });
 };
-

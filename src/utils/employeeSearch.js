@@ -5,13 +5,22 @@ export const normalizeEmployeeSearchText = (value) =>
     .replace(/\s+/g, ' ');
 
 export const getEmployeeSearchCandidates = (employee) => {
-  const employeeId = String(employee?.id || '').trim();
-  const fullName = String(employee?.fullName || '').trim();
+  const employeeId = String(employee?.id || employee?.employeeId || employee?.staffId || '').trim();
+  const fullName = String(employee?.fullName || employee?.employee || employee?.name || '').trim();
+  const firstName = String(employee?.firstName || '').trim();
+  const lastName = String(employee?.lastName || '').trim();
+  const combinedName = `${firstName} ${lastName}`.trim();
+  const reversedCombinedName = `${lastName} ${firstName}`.trim();
+  const compactQueryTargets = [fullName, combinedName].filter(Boolean).map((text) => text.replace(/\s+/g, ''));
   return [
     employeeId,
     fullName,
+    combinedName,
+    reversedCombinedName,
     `${fullName} ${employeeId}`.trim(),
     `${fullName} (${employeeId})`.trim(),
+    `${combinedName} ${employeeId}`.trim(),
+    ...compactQueryTargets,
     String(employee?.department || '').trim(),
     String(employee?.position || '').trim(),
     String(employee?.taxId || '').trim(),
@@ -38,17 +47,20 @@ export const filterEmployeesBySearch = (employees, value, limit = 6) => {
     return [];
   }
   const queryTokens = query.split(' ').filter(Boolean);
+  const compactQuery = query.replace(/\s+/g, '');
   return [...(employees || [])]
     .filter((employee) => {
       const candidates = getEmployeeSearchCandidates(employee);
       const haystack = candidates.join(' ');
-      return queryTokens.every((token) => haystack.includes(token));
+      const compactHaystack = haystack.replace(/\s+/g, '');
+      const allTokensMatch = queryTokens.every((token) => haystack.includes(token));
+      return allTokensMatch || compactHaystack.includes(compactQuery);
     })
     .sort((a, b) => {
-      const aId = normalizeEmployeeSearchText(a?.id);
-      const bId = normalizeEmployeeSearchText(b?.id);
-      const aName = normalizeEmployeeSearchText(a?.fullName);
-      const bName = normalizeEmployeeSearchText(b?.fullName);
+      const aId = normalizeEmployeeSearchText(a?.id || a?.employeeId || a?.staffId);
+      const bId = normalizeEmployeeSearchText(b?.id || b?.employeeId || b?.staffId);
+      const aName = normalizeEmployeeSearchText(a?.fullName || a?.employee || a?.name);
+      const bName = normalizeEmployeeSearchText(b?.fullName || b?.employee || b?.name);
       const aStarts = aId.startsWith(query) || aName.startsWith(query) ? 1 : 0;
       const bStarts = bId.startsWith(query) || bName.startsWith(query) ? 1 : 0;
       if (bStarts !== aStarts) {
@@ -97,4 +109,3 @@ export const resolveEmployeeKey = (employees, employeeIdValue, employeeNameValue
   }
   return String(employeeNameValue || '').trim();
 };
-
