@@ -34,6 +34,66 @@ const moduleCollections = {
   training: 'trainingRecords',
 };
 
+const defaultAttendanceSettings = {
+  attendanceLateAfter: '08:15',
+  attendanceReportTime: '08:00',
+  attendanceShiftEnd: '17:00',
+  payrollWorkingDays: 26,
+  attendanceCalculationMode: 'auto',
+  attendanceFixedDeductionPerMinute: 0.128,
+  attendanceFixedScope: 'all',
+  attendanceFixedDepartment: '',
+  attendanceFixedEmployeeId: '',
+  shifts: [
+    {
+      id: 'SHIFT-MORNING',
+      name: 'Morning',
+      reportTime: '08:00',
+      shiftEnd: '17:00',
+      graceInMinutes: 15,
+      graceOutMinutes: 0,
+    },
+  ],
+};
+
+function normalizeAttendanceSettings(payload) {
+  const source = payload || {};
+  const shifts = Array.isArray(source.shifts)
+    ? source.shifts
+        .map((shift, index) => ({
+          id: String(shift?.id || `SHIFT-${index + 1}`),
+          name: String(shift?.name || '').trim(),
+          reportTime: String(shift?.reportTime || '').trim(),
+          shiftEnd: String(shift?.shiftEnd || '').trim(),
+          graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
+          graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+        }))
+        .filter(
+          (shift) =>
+            shift.name &&
+            /^\d{2}:\d{2}$/.test(shift.reportTime) &&
+            /^\d{2}:\d{2}$/.test(shift.shiftEnd)
+        )
+    : [];
+  return {
+    attendanceLateAfter: String(source.attendanceLateAfter || defaultAttendanceSettings.attendanceLateAfter),
+    attendanceReportTime: String(source.attendanceReportTime || defaultAttendanceSettings.attendanceReportTime),
+    attendanceShiftEnd: String(source.attendanceShiftEnd || defaultAttendanceSettings.attendanceShiftEnd),
+    payrollWorkingDays: Math.max(1, Number(source.payrollWorkingDays) || defaultAttendanceSettings.payrollWorkingDays),
+    attendanceCalculationMode: source.attendanceCalculationMode === 'fixed' ? 'fixed' : 'auto',
+    attendanceFixedDeductionPerMinute: Math.max(
+      0,
+      Number(source.attendanceFixedDeductionPerMinute) || defaultAttendanceSettings.attendanceFixedDeductionPerMinute
+    ),
+    attendanceFixedScope: ['all', 'department', 'individual'].includes(String(source.attendanceFixedScope || ''))
+      ? String(source.attendanceFixedScope)
+      : defaultAttendanceSettings.attendanceFixedScope,
+    attendanceFixedDepartment: String(source.attendanceFixedDepartment || ''),
+    attendanceFixedEmployeeId: String(source.attendanceFixedEmployeeId || ''),
+    shifts: shifts.length > 0 ? shifts : defaultAttendanceSettings.shifts,
+  };
+}
+
 let mongoClient;
 
 async function connectToMongo() {
@@ -144,6 +204,38 @@ app.use(async (req, res, next) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/mobile', mobileRoutes);
+
+app.get('/api/settings/attendance', async (req, res) => {
+  try {
+    const record = await req.db.collection('appSettings').findOne({ _id: 'attendance-rules' });
+    const settings = normalizeAttendanceSettings(record?.value);
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load attendance settings' });
+  }
+});
+
+app.post('/api/settings/attendance', async (req, res) => {
+  try {
+    const settings = normalizeAttendanceSettings(req.body);
+    await req.db.collection('appSettings').updateOne(
+      { _id: 'attendance-rules' },
+      {
+        $set: {
+          value: settings,
+          updatedAt: new Date().toISOString(),
+        },
+        $setOnInsert: {
+          createdAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true }
+    );
+    res.json({ ok: true, settings });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save attendance settings' });
+  }
+});
 
 app.get('/api/modules/:moduleId', async (req, res) => {
   try {

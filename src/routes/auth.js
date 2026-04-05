@@ -83,29 +83,31 @@ async function getAuthUser(req) {
 }
 
 function resolveAllowedModules(user) {
+  const normalizedRole = String(user?.role || '').toLowerCase();
   if (!user) {
     return [];
   }
-  if (user.role === 'superadmin') {
+  if (normalizedRole === 'superadmin') {
     return ['*'];
   }
   const allowedModules = Array.isArray(user.allowedModules)
     ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
-  if (user.role === 'employee' && allowedModules.length === 0) {
+  if (normalizedRole === 'employee' && allowedModules.length === 0) {
     return defaultEmployeeModules;
   }
   return allowedModules;
 }
 
 function buildAuthUserPayload(user) {
+  const normalizedRole = String(user.role || 'employee').toLowerCase();
   return {
     id: user._id.toString(),
     username: user.username,
     fullName: user.fullName || user.username,
-    role: user.role || 'employee',
+    role: normalizedRole,
     employeeId: user.employeeId || '',
-    allowedModules: resolveAllowedModules(user),
+    allowedModules: resolveAllowedModules({ ...user, role: normalizedRole }),
   };
 }
 

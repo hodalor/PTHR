@@ -96,6 +96,8 @@ router.post('/location', (req, res) => {
     fullName,
     lat,
     lng,
+    locationLabel,
+    locationAddress,
     wifiSsid,
     wifiBssid,
     ipAddress,
@@ -143,6 +145,8 @@ router.post('/location', (req, res) => {
     fullName: fullName || employeeId,
     lat: latNum,
     lng: lngNum,
+    locationLabel: locationLabel || null,
+    locationAddress: locationAddress || null,
     wifiSsid: wifiSsid || null,
     wifiBssid: wifiBssid || null,
     ipAddress: ipAddress || null,
@@ -176,6 +180,8 @@ router.post('/location', (req, res) => {
     timestamp: lastSeen,
     distanceMeters,
     status,
+    locationLabel: locationLabel || null,
+    locationAddress: locationAddress || null,
     wifiSsid: wifiSsid || null,
     ipAddress: ipAddress || null,
   });
@@ -194,6 +200,8 @@ router.get('/employees', (req, res) => {
       fullName: record.fullName,
       lat: record.lat,
       lng: record.lng,
+      locationLabel: record.locationLabel || null,
+      locationAddress: record.locationAddress || null,
       wifiSsid: record.wifiSsid,
       wifiBssid: record.wifiBssid,
       ipAddress: record.ipAddress,
@@ -208,6 +216,38 @@ router.get('/employees', (req, res) => {
   });
 
   res.json({ employees });
+});
+
+router.get('/movement/:employeeId', (req, res) => {
+  const { employeeId } = req.params;
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 120));
+  const movement = movementLogs
+    .filter((row) => String(row.employeeId || '') === String(employeeId || ''))
+    .slice(-limit);
+  res.json({ movement });
+});
+
+router.get('/reverse-geocode', async (req, res) => {
+  const lat = toNumber(req.query.lat);
+  const lng = toNumber(req.query.lng);
+  if (lat === null || lng === null) {
+    return res.status(400).json({ error: 'lat and lng are required' });
+  }
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`
+    );
+    if (!response.ok) {
+      throw new Error('Reverse geocode failed');
+    }
+    const data = await response.json();
+    return res.json({
+      displayName: data.display_name || '',
+      address: data.address || {},
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Unable to reverse geocode location' });
+  }
 });
 
 router.get('/settings', (req, res) => {
