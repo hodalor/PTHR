@@ -160,9 +160,23 @@ export const stopBackgroundTracking = async () => {
 export const isBackgroundTrackingActive = async () => Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
 
 export const captureCurrentLocation = async () => {
-  const location = await Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
-
-  return location;
+  try {
+    const location = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Highest,
+      mayShowUserSettingsDialog: true,
+    });
+    return location;
+  } catch (error) {
+    const fallback = await Location.getLastKnownPositionAsync({
+      maxAge: 180000,
+      requiredAccuracy: 150,
+    });
+    if (fallback) {
+      return {
+        ...fallback,
+        mocked: false,
+      };
+    }
+    throw new Error('Unable to get GPS fix. Turn on device location and retry.');
+  }
 };

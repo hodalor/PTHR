@@ -5,11 +5,26 @@ import {
   fetchTrackingSettings,
   isBackgroundTrackingActive,
   persistTrackingRuntime,
+  requestForegroundLocationPermission,
   requestTrackingPermissions,
   startBackgroundTracking,
   stopBackgroundTracking,
   transmitLocation,
 } from '../services/tracking';
+
+const runWithTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
 
 type TrackingState = {
   latestStatus: string;
@@ -63,10 +78,32 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
       try {
         await persistTrackingRuntime({ apiBaseUrl, session });
         await Promise.all([refreshSettings(), refreshTrackingStatus()]);
-      } catch (error) {
+        await requestForegroundLocationPermission();
+        const position = await captureCurrentLocation();
+        const response = await transmitLocation({
+          apiBaseUrl,
+          session,
+          location: position.coords,
+          mocked: position.mocked,
+          activity: 'boot',
+        });
         setState((prev) => ({
           ...prev,
-          error: error instanceof Error ? error.message : 'Failed to initialize tracking',
+          latestStatus: response.status || prev.latestStatus,
+          distanceMeters: typeof response.distanceMeters === 'number' ? response.distanceMeters : prev.distanceMeters,
+          lastSentAt: new Date().toISOString(),
+          latestCoordinates: {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy ?? null,
+          },
+        }));
+      } catch (caughtError) {
+        const errorMessage =
+          caughtError instanceof Error ? caughtError.message : 'Failed to initialize tracking';
+        setState((prev) => ({
+          ...prev,
+          error: errorMessage,
         }));
       }
     };
@@ -74,12 +111,16 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
     boot();
   }, [apiBaseUrl, refreshSettings, refreshTrackingStatus, session]);
 
-  const sendCurrentLocation = useCallback(async () => {
-    if (!session) {
+  const sendCurrentLocation = useCallback(async (options?: { silent?: boolean }) => {
+    if (!session || !apiBaseUrl) {
       return;
     }
-    setState((prev) => ({ ...prev, loading: true, error: '' }));
+    const isSilent = Boolean(options?.silent);
+    if (!isSilent) {
+      setState((prev) => ({ ...prev, loading: true, error: '' }));
+    }
     try {
+      await requestForegroundLocationPermission();
       await persistTrackingRuntime({ apiBaseUrl, session });
       const position = await captureCurrentLocation();
       const response = await transmitLocation({
@@ -91,7 +132,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
       });
       setState((prev) => ({
         ...prev,
-        loading: false,
+        loading: isSilent ? prev.loading : false,
         latestStatus: response.status || 'SENT',
         distanceMeters: typeof response.distanceMeters === 'number' ? response.distanceMeters : null,
         lastSentAt: new Date().toISOString(),
@@ -101,34 +142,59 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
           accuracy: position.coords.accuracy ?? null,
         },
       }));
-    } catch (error) {
+    } catch (caughtError) {
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : 'Failed to send location';
       setState((prev) => ({
         ...prev,
-        loading: false,
-        error: error instanceof Error ? error.message : 'Failed to send location',
+        loading: isSilent ? prev.loading : false,
+        error: isSilent ? prev.error : errorMessage,
       }));
     }
   }, [apiBaseUrl, session]);
 
   const enableTracking = useCallback(async () => {
-    if (!session) {
+    if (!session || !apiBaseUrl) {
       return;
     }
     setState((prev) => ({ ...prev, loading: true, error: '' }));
     try {
-      await requestTrackingPermissions();
-      await startBackgroundTracking({ apiBaseUrl, session });
-      await sendCurrentLocation();
+      await runWithTimeout(
+        requestForegroundLocationPermission(),
+        8000,
+        'Location permission request timed out. Please try again.'
+      );
+      let backgroundEnabled = false;
+      try {
+        await runWithTimeout(
+          requestTrackingPermissions(),
+          8000,
+          'Background permission request timed out. Using foreground tracking.'
+        );
+        await runWithTimeout(
+          startBackgroundTracking({ apiBaseUrl, session }),
+          8000,
+          'Background tracking start timed out. Using foreground tracking.'
+        );
+        backgroundEnabled = true;
+      } catch (backgroundError) {
+        backgroundEnabled = false;
+      }
       setState((prev) => ({
         ...prev,
         loading: false,
         enabled: true,
+        latestStatus: backgroundEnabled ? prev.latestStatus : 'FOREGROUND_ONLY',
+        error: '',
       }));
-    } catch (error) {
+      await sendCurrentLocation({ silent: true });
+    } catch (caughtError) {
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : 'Unable to start tracking';
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: error instanceof Error ? error.message : 'Unable to start tracking',
+        error: errorMessage,
       }));
     }
   }, [apiBaseUrl, sendCurrentLocation, session]);
@@ -142,14 +208,26 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
         loading: false,
         enabled: false,
       }));
-    } catch (error) {
+    } catch (caughtError) {
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : 'Unable to stop tracking';
       setState((prev) => ({
         ...prev,
         loading: false,
-        error: error instanceof Error ? error.message : 'Unable to stop tracking',
+        error: errorMessage,
       }));
     }
   }, []);
+
+  useEffect(() => {
+    if (!session || !state.enabled) {
+      return;
+    }
+    const intervalId = setInterval(() => {
+      sendCurrentLocation({ silent: true });
+    }, 12000);
+    return () => clearInterval(intervalId);
+  }, [sendCurrentLocation, session, state.enabled]);
 
   return useMemo(
     () => ({
@@ -163,4 +241,3 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
     [disableTracking, enableTracking, refreshSettings, refreshTrackingStatus, sendCurrentLocation, state]
   );
 };
-

@@ -1,5 +1,14 @@
 import { apiRequest } from './http';
-import { AttendanceRecord, AuthSession, EmployeeProfile, LeaveRecord, LoanRecord, MobileSettings, TrackingSettings } from '../types/app';
+import {
+  AttendanceClocking,
+  AttendanceRecord,
+  AuthSession,
+  EmployeeProfile,
+  LeaveRecord,
+  LoanRecord,
+  MobileSettings,
+  TrackingSettings,
+} from '../types/app';
 import { captureCurrentLocation, requestForegroundLocationPermission, transmitLocation } from './tracking';
 
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'];
@@ -42,6 +51,74 @@ const formatWorkedHours = (start?: string, end?: string) => {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[] => {
+  if (Array.isArray(row?.clockings) && row.clockings.length > 0) {
+    return row.clockings
+      .map((clocking) => {
+        const mode: AttendanceClocking['mode'] = clocking?.mode === 'clock-out' ? 'clock-out' : 'clock-in';
+        return {
+          id: String(clocking?.id || createRecordId('CLK')),
+          mode,
+          time: String(clocking?.time || '').trim(),
+          lat: typeof clocking?.lat === 'number' ? clocking.lat : undefined,
+          lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
+          accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
+          source: String(clocking?.source || 'Mobile App'),
+          createdAt: String(clocking?.createdAt || ''),
+        };
+      })
+      .filter((clocking) => /^\d{2}:\d{2}$/.test(clocking.time));
+  }
+  const fallbackClockings: AttendanceClocking[] = [];
+  if (row?.checkIn) {
+    fallbackClockings.push({
+      id: createRecordId('CLK'),
+      mode: 'clock-in',
+      time: row.checkIn,
+      lat: row.checkInLat,
+      lng: row.checkInLng,
+      accuracy: row.checkInAccuracy ?? null,
+      source: row.source || 'Mobile App',
+      createdAt: row.date ? `${row.date}T${row.checkIn}:00` : new Date().toISOString(),
+    });
+  }
+  if (row?.checkOut) {
+    fallbackClockings.push({
+      id: createRecordId('CLK'),
+      mode: 'clock-out',
+      time: row.checkOut,
+      lat: row.checkOutLat,
+      lng: row.checkOutLng,
+      accuracy: row.checkOutAccuracy ?? null,
+      source: row.source || 'Mobile App',
+      createdAt: row.date ? `${row.date}T${row.checkOut}:00` : new Date().toISOString(),
+    });
+  }
+  return fallbackClockings;
+};
+
+const buildClockingDerivedFields = (clockings: AttendanceClocking[]) => {
+  const ordered = [...clockings].sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  const firstClockIn = ordered.find((clocking) => clocking.mode === 'clock-in') || null;
+  const lastClockOut = [...ordered].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+  const openClockInCount = ordered.reduce(
+    (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+    0
+  );
+  return {
+    checkIn: firstClockIn?.time || '',
+    checkOut: lastClockOut?.time || '',
+    workedHours: firstClockIn?.time && lastClockOut?.time ? formatWorkedHours(firstClockIn.time, lastClockOut.time) : '',
+    checkInLat: firstClockIn?.lat,
+    checkInLng: firstClockIn?.lng,
+    checkInAccuracy: firstClockIn?.accuracy ?? null,
+    checkOutLat: lastClockOut?.lat,
+    checkOutLng: lastClockOut?.lng,
+    checkOutAccuracy: lastClockOut?.accuracy ?? null,
+    openClockInCount,
+  };
 };
 
 const nowDateTime = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
@@ -89,14 +166,18 @@ const filterRowsForEmployee = <T extends { employeeId?: string; employee?: strin
 };
 
 export const fetchMobileSettings = async (apiBaseUrl: string) => {
-  const response = await apiRequest<Partial<MobileSettings>>(apiBaseUrl, '/api/mobile/settings');
-  return {
-    ...defaultMobileSettings,
-    ...(response || {}),
-    enabledModules: Array.isArray(response?.enabledModules)
-      ? response.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
-      : defaultMobileSettings.enabledModules,
-  };
+  try {
+    const response = await apiRequest<Partial<MobileSettings>>(apiBaseUrl, '/api/mobile/settings');
+    return {
+      ...defaultMobileSettings,
+      ...(response || {}),
+      enabledModules: Array.isArray(response?.enabledModules)
+        ? response.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
+        : defaultMobileSettings.enabledModules,
+    };
+  } catch (error) {
+    return { ...defaultMobileSettings };
+  }
 };
 
 export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSession) => {
@@ -112,10 +193,11 @@ export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSess
 };
 
 export const getAvailableEmployeeModules = (session: AuthSession, settings: MobileSettings) => {
+  const normalizedRole = String(session.user.role || '').toLowerCase();
   const allowedModules =
     Array.isArray(session.user.allowedModules) && session.user.allowedModules.length > 0
       ? session.user.allowedModules
-      : session.user.role === 'employee'
+      : normalizedRole === 'employee'
         ? defaultEmployeeModules
         : [];
 
@@ -321,7 +403,10 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     rows.find((row) => String(row.date || '') === today && String(row.employeeId || '') === String(session.user.employeeId || '')) ||
     null;
 
-  if (mode === 'clock-out' && !existingRow?.checkIn) {
+  const existingClockings = normalizeClockings(existingRow);
+  const existingDerived = buildClockingDerivedFields(existingClockings);
+
+  if (mode === 'clock-out' && existingDerived.openClockInCount <= 0) {
     throw new Error('No clock-in record found for today');
   }
 
@@ -333,27 +418,38 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     shift: 'Morning',
     source: 'Mobile App',
     status: 'On Time',
+    clockings: [],
   };
 
-  const payload: AttendanceRecord =
-    mode === 'clock-in'
-      ? {
-          ...baseRecord,
-          checkIn: clockValue,
-          source: 'Mobile App',
-          status: baseRecord.status || 'On Time',
-          checkInLat: position?.coords.latitude,
-          checkInLng: position?.coords.longitude,
-          checkInAccuracy: position?.coords.accuracy ?? null,
-        }
-      : {
-          ...baseRecord,
-          checkOut: clockValue,
-          workedHours: formatWorkedHours(baseRecord.checkIn, clockValue),
-          checkOutLat: position?.coords.latitude,
-          checkOutLng: position?.coords.longitude,
-          checkOutAccuracy: position?.coords.accuracy ?? null,
-        };
+  const nextClocking: AttendanceClocking = {
+    id: createRecordId('CLK'),
+    mode,
+    time: clockValue,
+    lat: position?.coords.latitude,
+    lng: position?.coords.longitude,
+    accuracy: position?.coords.accuracy ?? null,
+    source: 'Mobile App',
+    createdAt: new Date().toISOString(),
+  };
+
+  const mergedClockings = [...existingClockings, nextClocking];
+  const derivedFields = buildClockingDerivedFields(mergedClockings);
+
+  const payload: AttendanceRecord = {
+    ...baseRecord,
+    source: 'Mobile App',
+    status: baseRecord.status || 'On Time',
+    clockings: mergedClockings,
+    checkIn: derivedFields.checkIn,
+    checkOut: derivedFields.checkOut,
+    workedHours: derivedFields.workedHours,
+    checkInLat: derivedFields.checkInLat,
+    checkInLng: derivedFields.checkInLng,
+    checkInAccuracy: derivedFields.checkInAccuracy,
+    checkOutLat: derivedFields.checkOutLat,
+    checkOutLng: derivedFields.checkOutLng,
+    checkOutAccuracy: derivedFields.checkOutAccuracy,
+  };
 
   const endpoint = existingRow
     ? `/api/modules/attendance-time/${encodeURIComponent(payload.id)}`

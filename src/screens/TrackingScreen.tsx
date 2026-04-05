@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTrackingController } from '../hooks/useTrackingController';
 import { StatCard } from '../components/StatCard';
 import { colors } from '../theme';
 import {
+  fetchEmployeeProfile,
   fetchEmployeeAttendanceRows,
   fetchEmployeeLeaveRows,
   fetchEmployeeLoanRows,
   fetchMobileSettings,
   getAvailableEmployeeModules,
   saveAttendanceClock,
+  submitLeaveRequest,
+  submitLoanRequest,
 } from '../services/mobileModules';
-import { AttendanceRecord, LeaveRecord, LoanRecord, MobileSettings } from '../types/app';
+import { AttendanceRecord, EmployeeProfile, LeaveRecord, LoanRecord, MobileSettings } from '../types/app';
 
 const formatCoordinate = (value: number | undefined) => (typeof value === 'number' ? value.toFixed(6) : '—');
 const moduleLabels: Record<string, string> = {
@@ -21,20 +24,49 @@ const moduleLabels: Record<string, string> = {
   'leave-management': 'Leaves',
   'monitoring-tracking': 'Tracking',
 };
+const moduleDescriptions: Record<string, string> = {
+  'attendance-time': 'Clock in and out with verified location',
+  'loan-records': 'Review and request employee loans',
+  'leave-management': 'Review balances and submit leave requests',
+  'monitoring-tracking': 'Keep live location tracking active',
+};
 const todayIso = () => new Date().toISOString().slice(0, 10);
+const initialLoanForm = {
+  type: 'Salary Advance',
+  amount: '',
+  interestPercent: '',
+  tenorMonths: '1',
+};
+const initialLeaveForm = {
+  type: 'Annual',
+  startDate: todayIso(),
+  endDate: todayIso(),
+  reason: '',
+};
+const formatApprovalTrail = (row: { departmentApproval?: string; hrApproval?: string; managerApproval?: string }) =>
+  `Dept ${row.departmentApproval || 'Pending'} • HR ${row.hrApproval || 'Pending'} • Mgr ${row.managerApproval || 'Pending'}`;
 
 export const TrackingScreen = () => {
   const { apiBaseUrl, logout, session } = useAuth();
   const tracking = useTrackingController(apiBaseUrl, session);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [mobileSettings, setMobileSettings] = useState<MobileSettings | null>(null);
+  const [employeeProfile, setEmployeeProfile] = useState<EmployeeProfile | null>(null);
   const [attendanceRows, setAttendanceRows] = useState<AttendanceRecord[]>([]);
   const [loanRows, setLoanRows] = useState<LoanRecord[]>([]);
   const [leaveRows, setLeaveRows] = useState<LeaveRecord[]>([]);
-  const [selectedModule, setSelectedModule] = useState('attendance-time');
+  const [selectedModule, setSelectedModule] = useState('monitoring-tracking');
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState('');
   const [clockLoadingMode, setClockLoadingMode] = useState<'clock-in' | 'clock-out' | ''>('');
   const [clockMessage, setClockMessage] = useState('');
+  const [loanForm, setLoanForm] = useState(initialLoanForm);
+  const [leaveForm, setLeaveForm] = useState(initialLeaveForm);
+  const [loanSubmitting, setLoanSubmitting] = useState(false);
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false);
+  const [loanMessage, setLoanMessage] = useState('');
+  const [leaveMessage, setLeaveMessage] = useState('');
+  const [trackingRefreshLoading, setTrackingRefreshLoading] = useState(false);
 
   const refreshDashboard = useCallback(async () => {
     if (!session) {
@@ -44,15 +76,17 @@ export const TrackingScreen = () => {
     setDashboardError('');
     try {
       const settings = await fetchMobileSettings(apiBaseUrl);
-      const [nextAttendanceRows, nextLoanRows, nextLeaveRows] = await Promise.all([
+      setMobileSettings(settings);
+      const [profileResult, attendanceResult, loanResult, leaveResult] = await Promise.allSettled([
+        fetchEmployeeProfile(apiBaseUrl, session),
         fetchEmployeeAttendanceRows(apiBaseUrl, session),
         fetchEmployeeLoanRows(apiBaseUrl, session),
         fetchEmployeeLeaveRows(apiBaseUrl, session),
       ]);
-      setMobileSettings(settings);
-      setAttendanceRows(nextAttendanceRows);
-      setLoanRows(nextLoanRows);
-      setLeaveRows(nextLeaveRows);
+      setEmployeeProfile(profileResult.status === 'fulfilled' ? profileResult.value : null);
+      setAttendanceRows(attendanceResult.status === 'fulfilled' ? attendanceResult.value : []);
+      setLoanRows(loanResult.status === 'fulfilled' ? loanResult.value : []);
+      setLeaveRows(leaveResult.status === 'fulfilled' ? leaveResult.value : []);
     } catch (error) {
       setDashboardError(error instanceof Error ? error.message : 'Unable to load employee modules');
     } finally {
@@ -75,8 +109,13 @@ export const TrackingScreen = () => {
     if (availableModules.length === 0) {
       return;
     }
+    const preferredModule = availableModules.includes('monitoring-tracking')
+      ? 'monitoring-tracking'
+      : availableModules.includes('attendance-time')
+        ? 'attendance-time'
+        : availableModules[0];
     if (!availableModules.includes(selectedModule)) {
-      setSelectedModule(availableModules[0]);
+      setSelectedModule(preferredModule);
     }
   }, [availableModules, selectedModule]);
 
@@ -93,6 +132,14 @@ export const TrackingScreen = () => {
     () => attendanceRows.find((row) => String(row.date || '') === todayIso()) || null,
     [attendanceRows]
   );
+  const trackingPriorityText = tracking.enabled ? 'Tracking is actively watching location' : 'Tracking is currently stopped';
+  const antiCheatItems = [
+    `Geofence ${tracking.settings?.geofenceEnabled ? 'enforced' : 'optional'}`,
+    `Anti-spoof ${tracking.settings?.antiGpsSpoofingEnabled ? 'enabled' : 'disabled'}`,
+    `Location on clock ${mobileSettings?.requireLocationOnClock ? 'required' : 'optional'}`,
+    `Random selfie ${tracking.settings?.randomSelfieEnabled ? 'enabled' : 'disabled'}`,
+    `Activity monitor ${tracking.settings?.activityMonitoringEnabled ? 'enabled' : 'disabled'}`,
+  ];
 
   const handleClockAction = async (mode: 'clock-in' | 'clock-out') => {
     if (!session || !mobileSettings) {
@@ -106,6 +153,7 @@ export const TrackingScreen = () => {
         apiBaseUrl,
         session,
         settings: mobileSettings,
+        trackingSettings: tracking.settings,
         rows: attendanceRows,
         mode,
       });
@@ -124,6 +172,46 @@ export const TrackingScreen = () => {
       setDashboardError(error instanceof Error ? error.message : 'Unable to complete attendance action');
     } finally {
       setClockLoadingMode('');
+    }
+  };
+
+  const handleLoanSubmit = async () => {
+    if (!session || !mobileSettings?.allowLoanRequest) {
+      return;
+    }
+    setLoanSubmitting(true);
+    setDashboardError('');
+    setLoanMessage('');
+    try {
+      const saved = await submitLoanRequest(apiBaseUrl, session, employeeProfile, loanForm);
+      setLoanRows((prev) => [saved, ...prev]);
+      setLoanForm(initialLoanForm);
+      setLoanMessage('Loan request submitted for approval.');
+      setSelectedModule('loan-records');
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : 'Unable to submit loan request');
+    } finally {
+      setLoanSubmitting(false);
+    }
+  };
+
+  const handleLeaveSubmit = async () => {
+    if (!session || !mobileSettings?.allowLeaveRequest) {
+      return;
+    }
+    setLeaveSubmitting(true);
+    setDashboardError('');
+    setLeaveMessage('');
+    try {
+      const saved = await submitLeaveRequest(apiBaseUrl, session, employeeProfile, leaveForm);
+      setLeaveRows((prev) => [saved, ...prev]);
+      setLeaveForm(initialLeaveForm);
+      setLeaveMessage('Leave request submitted for approval.');
+      setSelectedModule('leave-management');
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : 'Unable to submit leave request');
+    } finally {
+      setLeaveSubmitting(false);
     }
   };
 
@@ -154,6 +242,11 @@ export const TrackingScreen = () => {
         </Pressable>
       </View>
       {clockMessage ? <Text style={styles.success}>{clockMessage}</Text> : null}
+      <View style={styles.infoStrip}>
+        <Text style={styles.infoStripText}>
+          Clock source: GPS verified • Check-in location {todayAttendance?.checkInLat ? 'captured' : 'pending'}
+        </Text>
+      </View>
       <View style={styles.listWrap}>
         {attendanceRows.slice(0, 5).map((row) => (
           <View style={styles.listRow} key={row.id}>
@@ -161,6 +254,19 @@ export const TrackingScreen = () => {
               <Text style={styles.listTitle}>{row.date}</Text>
               <Text style={styles.detailText}>
                 {row.checkIn || '—'} → {row.checkOut || '—'} • {row.workedHours || 'Pending'}
+              </Text>
+              <Text style={styles.mutedTiny}>
+                Clockings: {Array.isArray(row.clockings) ? row.clockings.length : 0}{' '}
+                {Array.isArray(row.clockings) && row.clockings.length > 0
+                  ? `• ${row.clockings
+                      .slice(-4)
+                      .map((clocking) => `${clocking.mode === 'clock-in' ? 'IN' : 'OUT'} ${clocking.time}`)
+                      .join(' | ')}`
+                  : ''}
+              </Text>
+              <Text style={styles.mutedTiny}>
+                In GPS {formatCoordinate(row.checkInLat)} / {formatCoordinate(row.checkInLng)} • Out GPS {formatCoordinate(row.checkOutLat)} /{' '}
+                {formatCoordinate(row.checkOutLng)}
               </Text>
             </View>
             <Text style={styles.listMeta}>{row.status || 'Pending'}</Text>
@@ -172,47 +278,181 @@ export const TrackingScreen = () => {
   );
 
   const renderLoanModule = () => (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>Loan records</Text>
-      <View style={styles.listWrap}>
-        {loanRows.slice(0, 6).map((row) => (
-          <View style={styles.listRow} key={row.id}>
-            <View style={styles.listTextWrap}>
-              <Text style={styles.listTitle}>{row.type || 'Loan Record'}</Text>
-              <Text style={styles.detailText}>
-                {row.amount || '—'} • Balance: {row.balance || '—'}
-              </Text>
-            </View>
-            <Text style={styles.listMeta}>{row.status || 'Active'}</Text>
+    <>
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Request a loan</Text>
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Loan type</Text>
+          <TextInput value={loanForm.type} onChangeText={(value) => setLoanForm((prev) => ({ ...prev, type: value }))} style={styles.input} />
+        </View>
+        <View style={styles.fieldRow}>
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>Amount</Text>
+            <TextInput
+              value={loanForm.amount}
+              onChangeText={(value) => setLoanForm((prev) => ({ ...prev, amount: value }))}
+              keyboardType="decimal-pad"
+              style={styles.input}
+            />
           </View>
-        ))}
-        {loanRows.length === 0 ? <Text style={styles.detailText}>No loan records available.</Text> : null}
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>Interest % / month</Text>
+            <TextInput
+              value={loanForm.interestPercent}
+              onChangeText={(value) => setLoanForm((prev) => ({ ...prev, interestPercent: value }))}
+              keyboardType="decimal-pad"
+              style={styles.input}
+            />
+          </View>
+        </View>
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Tenor months</Text>
+          <TextInput
+            value={loanForm.tenorMonths}
+            onChangeText={(value) => setLoanForm((prev) => ({ ...prev, tenorMonths: value }))}
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+        </View>
+        <View style={styles.buttonRow}>
+          <Pressable
+            style={[styles.smallButton, !mobileSettings?.allowLoanRequest ? styles.disabledButton : null]}
+            onPress={handleLoanSubmit}
+            disabled={loanSubmitting || !mobileSettings?.allowLoanRequest}
+          >
+            <Text style={styles.buttonText}>{loanSubmitting ? 'Submitting...' : 'Submit Loan Request'}</Text>
+          </Pressable>
+        </View>
+        {loanMessage ? <Text style={styles.success}>{loanMessage}</Text> : null}
+        {!mobileSettings?.allowLoanRequest ? <Text style={styles.detailText}>Loan requests are disabled by admin settings.</Text> : null}
       </View>
-    </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Loan records</Text>
+        <View style={styles.listWrap}>
+          {loanRows.slice(0, 6).map((row) => (
+            <View style={styles.listRow} key={row.id}>
+              <View style={styles.listTextWrap}>
+                <Text style={styles.listTitle}>{row.type || 'Loan Record'}</Text>
+                <Text style={styles.detailText}>
+                  Amount {row.amount || '—'} • Balance {row.balance || '—'} • Installment {row.monthlyInstallment || '—'}
+                </Text>
+                <Text style={styles.mutedTiny}>{formatApprovalTrail(row)}</Text>
+              </View>
+              <Text style={styles.listMeta}>{row.status || 'Active'}</Text>
+            </View>
+          ))}
+          {loanRows.length === 0 ? <Text style={styles.detailText}>No loan records available.</Text> : null}
+        </View>
+      </View>
+    </>
   );
 
   const renderLeaveModule = () => (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>Leave records</Text>
-      <View style={styles.listWrap}>
-        {leaveRows.slice(0, 6).map((row) => (
-          <View style={styles.listRow} key={row.id}>
-            <View style={styles.listTextWrap}>
-              <Text style={styles.listTitle}>{row.type || 'Leave Request'}</Text>
-              <Text style={styles.detailText}>
-                {row.startDate || '—'} → {row.endDate || '—'} • {row.daysRequested || '—'} day(s)
-              </Text>
-            </View>
-            <Text style={styles.listMeta}>{row.status || 'Pending'}</Text>
+    <>
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Request leave</Text>
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Leave type</Text>
+          <TextInput value={leaveForm.type} onChangeText={(value) => setLeaveForm((prev) => ({ ...prev, type: value }))} style={styles.input} />
+        </View>
+        <View style={styles.fieldRow}>
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>Start date</Text>
+            <TextInput value={leaveForm.startDate} onChangeText={(value) => setLeaveForm((prev) => ({ ...prev, startDate: value }))} style={styles.input} />
           </View>
-        ))}
-        {leaveRows.length === 0 ? <Text style={styles.detailText}>No leave records available.</Text> : null}
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>End date</Text>
+            <TextInput value={leaveForm.endDate} onChangeText={(value) => setLeaveForm((prev) => ({ ...prev, endDate: value }))} style={styles.input} />
+          </View>
+        </View>
+        <View style={styles.fieldGroup}>
+          <Text style={styles.fieldLabel}>Reason</Text>
+          <TextInput
+            value={leaveForm.reason}
+            onChangeText={(value) => setLeaveForm((prev) => ({ ...prev, reason: value }))}
+            multiline
+            style={[styles.input, styles.textArea]}
+          />
+        </View>
+        <View style={styles.buttonRow}>
+          <Pressable
+            style={[styles.smallButton, !mobileSettings?.allowLeaveRequest ? styles.disabledButton : null]}
+            onPress={handleLeaveSubmit}
+            disabled={leaveSubmitting || !mobileSettings?.allowLeaveRequest}
+          >
+            <Text style={styles.buttonText}>{leaveSubmitting ? 'Submitting...' : 'Submit Leave Request'}</Text>
+          </Pressable>
+        </View>
+        {leaveMessage ? <Text style={styles.success}>{leaveMessage}</Text> : null}
+        {!mobileSettings?.allowLeaveRequest ? <Text style={styles.detailText}>Leave requests are disabled by admin settings.</Text> : null}
       </View>
-    </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Leave records</Text>
+        <View style={styles.listWrap}>
+          {leaveRows.slice(0, 6).map((row) => (
+            <View style={styles.listRow} key={row.id}>
+              <View style={styles.listTextWrap}>
+                <Text style={styles.listTitle}>{row.type || 'Leave Request'}</Text>
+                <Text style={styles.detailText}>
+                  {row.startDate || '—'} → {row.endDate || '—'} • {row.daysRequested || '—'} day(s)
+                </Text>
+                <Text style={styles.mutedTiny}>{formatApprovalTrail(row)}</Text>
+              </View>
+              <Text style={styles.listMeta}>{row.status || 'Pending'}</Text>
+            </View>
+          ))}
+          {leaveRows.length === 0 ? <Text style={styles.detailText}>No leave records available.</Text> : null}
+        </View>
+      </View>
+    </>
   );
 
   const renderTrackingModule = () => (
     <>
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Tracking mission control</Text>
+        <Text style={styles.detailText}>{trackingPriorityText}</Text>
+        <View style={styles.buttonRow}>
+          <Pressable style={styles.smallButton} onPress={tracking.enableTracking} disabled={tracking.loading}>
+            <Text style={styles.buttonText}>
+              {tracking.loading && !tracking.enabled ? 'Starting...' : tracking.enabled ? 'Tracking Active' : 'Start Tracking'}
+            </Text>
+          </Pressable>
+          <Pressable style={[styles.smallButton, styles.dangerButton]} onPress={tracking.disableTracking} disabled={tracking.loading}>
+            <Text style={styles.buttonText}>{tracking.loading && tracking.enabled ? 'Stopping...' : 'Stop Tracking'}</Text>
+          </Pressable>
+          <Pressable style={[styles.smallButton, styles.secondaryButton]} onPress={() => tracking.sendCurrentLocation()} disabled={tracking.loading}>
+            <Text style={styles.buttonText}>{tracking.loading ? 'Sending...' : 'Send Location'}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.smallButton, styles.ghostButton]}
+            onPress={async () => {
+              setTrackingRefreshLoading(true);
+              setDashboardError('');
+              try {
+                await Promise.all([
+                  refreshDashboard(),
+                  tracking.refreshSettings(),
+                  tracking.refreshTrackingStatus(),
+                ]);
+              } catch (error) {
+                setDashboardError(error instanceof Error ? error.message : 'Unable to refresh tracking state');
+              } finally {
+                setTrackingRefreshLoading(false);
+              }
+            }}
+            disabled={dashboardLoading || trackingRefreshLoading}
+          >
+            <Text style={styles.ghostButtonText}>
+              {dashboardLoading || trackingRefreshLoading ? 'Refreshing...' : 'Refresh Tracking'}
+            </Text>
+          </Pressable>
+        </View>
+        {tracking.error ? <Text style={styles.error}>{tracking.error}</Text> : null}
+      </View>
+
       <View style={styles.statsRow}>
         <StatCard label="Tracking State" value={tracking.enabled ? 'ACTIVE' : 'STOPPED'} tone={tracking.enabled ? 'success' : 'danger'} />
         <StatCard label="Server Status" value={tracking.latestStatus || 'IDLE'} tone={trackingTone} />
@@ -227,33 +467,29 @@ export const TrackingScreen = () => {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Live tracking</Text>
-        <View style={styles.buttonRow}>
-          <Pressable style={styles.smallButton} onPress={tracking.sendCurrentLocation} disabled={tracking.loading}>
-            <Text style={styles.buttonText}>Send Now</Text>
-          </Pressable>
-          <Pressable style={[styles.smallButton, styles.secondaryButton]} onPress={tracking.enableTracking} disabled={tracking.loading}>
-            <Text style={styles.buttonText}>Start Tracking</Text>
-          </Pressable>
-          <Pressable style={[styles.smallButton, styles.dangerButton]} onPress={tracking.disableTracking} disabled={tracking.loading}>
-            <Text style={styles.buttonText}>Stop Tracking</Text>
-          </Pressable>
-        </View>
-        {tracking.error ? <Text style={styles.error}>{tracking.error}</Text> : null}
+        <Text style={styles.sectionTitle}>Latest coordinates</Text>
+        <Text style={styles.detailText}>Latitude: {formatCoordinate(tracking.latestCoordinates?.latitude)}</Text>
+        <Text style={styles.detailText}>Longitude: {formatCoordinate(tracking.latestCoordinates?.longitude)}</Text>
+        <Text style={styles.detailText}>
+          Accuracy: {typeof tracking.latestCoordinates?.accuracy === 'number' ? `${Math.round(tracking.latestCoordinates.accuracy)} m` : '—'}
+        </Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Tracking policy</Text>
-        <Text style={styles.detailText}>
-          Geofence: {tracking.settings?.geofenceEnabled ? 'Enabled' : 'Disabled'} • Radius:{' '}
-          {tracking.settings?.geofenceRadiusMeters ?? '—'} m
-        </Text>
+        <Text style={styles.sectionTitle}>Anti-cheat and policy</Text>
+        {antiCheatItems.map((item) => (
+          <View style={styles.bulletRow} key={item}>
+            <View style={styles.bulletDot} />
+            <Text style={styles.detailText}>{item}</Text>
+          </View>
+        ))}
         <Text style={styles.detailText}>
           Office GPS: {formatCoordinate(tracking.settings?.officeLat ?? undefined)}, {formatCoordinate(tracking.settings?.officeLng ?? undefined)}
         </Text>
         <Text style={styles.detailText}>
-          Offline threshold: {tracking.settings?.offlineMinutesThreshold ?? '—'} minute(s)
+          Geofence radius: {tracking.settings?.geofenceRadiusMeters ?? '—'} m • Offline threshold {tracking.settings?.offlineMinutesThreshold ?? '—'} minute(s)
         </Text>
+        <Text style={styles.mutedTiny}>Expo Go limits background location on Android. For full production tracking, use a development or native build.</Text>
       </View>
     </>
   );
@@ -268,29 +504,48 @@ export const TrackingScreen = () => {
         <View style={styles.heroTextWrap}>
           <Text style={styles.eyebrow}>Employee Mobile</Text>
           <Text style={styles.title}>{session?.user.fullName}</Text>
-          <Text style={styles.subtitle}>
-            {session?.user.employeeId} • {session?.user.role}
-          </Text>
+          <Text style={styles.subtitle}>{session?.user.employeeId} • {employeeProfile?.department || session?.user.role}</Text>
         </View>
-        <Pressable style={[styles.smallButton, styles.ghostButton]} onPress={logout}>
-          <Text style={styles.ghostButtonText}>Logout</Text>
+        <Pressable style={[styles.menuButton, menuOpen ? styles.menuButtonActive : null]} onPress={() => setMenuOpen((prev) => !prev)}>
+          <Text style={styles.menuButtonText}>☰</Text>
         </Pressable>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Mobile access</Text>
-        <Text style={styles.detailText}>{apiBaseUrl}</Text>
-        <Text style={styles.detailText}>Modules available: {availableModules.map((item) => moduleLabels[item] || item).join(', ') || '—'}</Text>
-      </View>
+      {menuOpen ? (
+        <View style={styles.drawer}>
+          <Text style={styles.sectionTitle}>Mobile menu</Text>
+          <Text style={styles.detailText}>Choose a module quickly or close the menu to focus on live tracking.</Text>
+          <View style={styles.drawerActions}>
+            {availableModules.map((moduleId) => (
+              <Pressable
+                key={moduleId}
+                style={[styles.drawerItem, selectedModule === moduleId ? styles.drawerItemActive : null]}
+                onPress={() => {
+                  setSelectedModule(moduleId);
+                  setMenuOpen(false);
+                }}
+              >
+                <Text style={[styles.drawerItemTitle, selectedModule === moduleId ? styles.drawerItemTitleActive : null]}>
+                  {moduleLabels[moduleId] || moduleId}
+                </Text>
+                <Text style={styles.drawerItemSubtitle}>{moduleDescriptions[moduleId] || 'Employee module'}</Text>
+              </Pressable>
+            ))}
+            <Pressable style={[styles.smallButton, styles.ghostButton]} onPress={logout}>
+              <Text style={styles.ghostButtonText}>Logout</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.statsRow}>
-        <StatCard label="Today Status" value={todayAttendance?.status || 'PENDING'} tone={todayAttendance?.checkOut ? 'success' : 'warning'} />
+        <StatCard label="Today Status" value={todayAttendance?.status || 'PENDING'} tone={todayAttendance?.checkOut ? 'success' : tracking.enabled ? 'success' : 'warning'} />
         <StatCard label="Loans" value={String(loanRows.length)} />
       </View>
 
       <View style={styles.statsRow}>
         <StatCard label="Leaves" value={String(leaveRows.length)} />
-        <StatCard label="Available Modules" value={String(availableModules.length)} />
+        <StatCard label="Tracking" value={tracking.enabled ? 'ARMED' : 'OFF'} tone={tracking.enabled ? 'success' : 'danger'} />
       </View>
 
       <View style={styles.moduleTabs}>
@@ -328,7 +583,7 @@ const styles = StyleSheet.create({
   hero: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
   },
   heroTextWrap: {
@@ -369,6 +624,42 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 12,
   },
+  drawer: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 20,
+    padding: 16,
+    gap: 12,
+  },
+  drawerActions: {
+    gap: 10,
+  },
+  drawerItem: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 16,
+    padding: 14,
+    gap: 4,
+  },
+  drawerItemActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
+  },
+  drawerItemTitle: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  drawerItemTitleActive: {
+    color: colors.primary,
+  },
+  drawerItemSubtitle: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   moduleTabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -398,11 +689,60 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
   },
+  fieldRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  fieldGroup: {
+    gap: 6,
+  },
+  fieldGroupWide: {
+    flex: 1,
+    gap: 6,
+  },
+  fieldLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  input: {
+    backgroundColor: colors.input,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: colors.text,
+    fontSize: 15,
+  },
+  textArea: {
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
   smallButton: {
     backgroundColor: colors.primary,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  menuButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  menuButtonActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
+  },
+  menuButtonText: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '700',
   },
   secondaryButton: {
     backgroundColor: colors.primaryMuted,
@@ -427,6 +767,24 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 14,
     lineHeight: 20,
+  },
+  mutedTiny: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  infoStrip: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  infoStripText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
   },
   listWrap: {
     gap: 10,
@@ -456,6 +814,17 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.45,
+  },
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  bulletDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
   },
   error: {
     color: colors.danger,

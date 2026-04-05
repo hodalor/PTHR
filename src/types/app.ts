@@ -84,6 +84,18 @@ export type AttendanceRecord = {
   checkOutLat?: number;
   checkOutLng?: number;
   checkOutAccuracy?: number | null;
+  clockings?: AttendanceClocking[];
+};
+
+export type AttendanceClocking = {
+  id: string;
+  mode: 'clock-in' | 'clock-out';
+  time: string;
+  lat?: number;
+  lng?: number;
+  accuracy?: number | null;
+  source?: string;
+  createdAt?: string;
 };
 
 export type LoanRecord = {
