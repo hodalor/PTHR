@@ -27,7 +27,7 @@ cp .env.example .env
 3. Set your backend URL
 
 ```env
-EXPO_PUBLIC_API_BASE_URL=http://YOUR-LAN-IP:8000
+EXPO_PUBLIC_API_BASE_URL=https://pthr.onrender.com
 ```
 
 4. Start Expo
@@ -103,7 +103,7 @@ npm run submit:ios
 
 ## Important notes
 
-- On a physical phone, `localhost` will not reach your computer. Use your machine LAN IP.
+- On a physical phone, `localhost` will not reach your computer. Use a public backend URL (for example Render) or your machine LAN IP.
 - iOS background location requires permission approval and must be tested on a real device for the most accurate behavior.
 - Android background tracking works best on a physical device with battery optimization disabled for the app.
 - iOS simulator launch requires a full Xcode installation and selected command line tools.
