@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState } from 'react';
+
 export default function SidebarNav({
   sidebarSections,
   allowedModulesByRole,
@@ -19,30 +21,73 @@ export default function SidebarNav({
   loanViewTab,
   setLoanViewTab,
 }) {
+  const [isCompactLayout, setIsCompactLayout] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 1260px)').matches : false
+  );
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const mediaQuery = window.matchMedia('(max-width: 1260px)');
+    const applyMatch = (matches) => {
+      setIsCompactLayout(matches);
+      if (!matches) {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    applyMatch(mediaQuery.matches);
+    const onChange = (event) => applyMatch(event.matches);
+    mediaQuery.addEventListener('change', onChange);
+    return () => mediaQuery.removeEventListener('change', onChange);
+  }, []);
+
+  const firstAllowedModuleId = useMemo(() => {
+    const firstAllowed = sidebarSections
+      .flatMap((section) => section.items)
+      .find((candidate) => allowedModulesByRole.has(candidate.id));
+    return firstAllowed?.id || '';
+  }, [allowedModulesByRole, sidebarSections]);
+
+  const closeMobileMenuIfNeeded = () => {
+    if (isCompactLayout) {
+      setIsMobileMenuOpen(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeModuleId && !allowedModulesByRole.has(activeModuleId) && firstAllowedModuleId && firstAllowedModuleId !== activeModuleId) {
+      setActiveModuleId(firstAllowedModuleId);
+    }
+  }, [activeModuleId, allowedModulesByRole, firstAllowedModuleId, setActiveModuleId]);
+
   return (
-    <aside className="sidebar-shell" style={sidebarStyle}>
+    <aside className={`sidebar-shell ${isCompactLayout ? 'mobile' : ''}`} style={sidebarStyle}>
       <div className="brand-block">
         <div className="brand-logo">{appInitial}</div>
         <div>
           <h1>{appSettings.appName || 'PTHR'}</h1>
           <p>HR Command Center</p>
         </div>
+        {isCompactLayout ? (
+          <button
+            type="button"
+            className="secondary-btn small sidebar-toggle-btn"
+            onClick={() => setIsMobileMenuOpen((prev) => !prev)}
+          >
+            {isMobileMenuOpen ? 'Close' : 'Menu'}
+          </button>
+        ) : null}
       </div>
-      {sidebarSections.map((section) => (
-        <div className="sidebar-section" key={section.title}>
-          <h2>{section.title}</h2>
-          <nav>
-            {section.items.map((item) => {
+      <div className={`sidebar-content ${isCompactLayout && !isMobileMenuOpen ? 'is-hidden' : ''}`}>
+        {sidebarSections.map((section) => (
+          <div className="sidebar-section" key={section.title}>
+            <h2>{section.title}</h2>
+            <nav>
+              {section.items.map((item) => {
               if (!allowedModulesByRole.has(item.id)) {
                 return null;
-              }
-              if (activeModuleId && !allowedModulesByRole.has(activeModuleId)) {
-                const firstAllowed = sidebarSections
-                  .flatMap((s) => s.items)
-                  .find((candidate) => allowedModulesByRole.has(candidate.id));
-                if (firstAllowed && firstAllowed.id !== activeModuleId) {
-                  setActiveModuleId(firstAllowed.id);
-                }
               }
               if (item.id === 'leave-management') {
                 return (
@@ -54,6 +99,7 @@ export default function SidebarNav({
                         if (activeModuleId !== 'leave-management') {
                           handleModuleChange('leave-management');
                           setLeaveMenuExpanded(true);
+                          closeMobileMenuIfNeeded();
                           return;
                         }
                         setLeaveMenuExpanded((prev) => !prev);
@@ -80,6 +126,7 @@ export default function SidebarNav({
                               if (submenu.key === 'requests') {
                                 setLeaveRequestPageTab('requests');
                               }
+                              closeMobileMenuIfNeeded();
                             }}
                           >
                             {submenu.label}
@@ -100,6 +147,7 @@ export default function SidebarNav({
                         if (activeModuleId !== 'loan-records') {
                           handleModuleChange('loan-records');
                           setLoanMenuExpanded(true);
+                          closeMobileMenuIfNeeded();
                           return;
                         }
                         setLoanMenuExpanded((prev) => !prev);
@@ -123,6 +171,7 @@ export default function SidebarNav({
                               }
                               setLoanMenuExpanded(true);
                               setLoanViewTab(submenu.key);
+                              closeMobileMenuIfNeeded();
                             }}
                           >
                             {submenu.label}
@@ -138,16 +187,20 @@ export default function SidebarNav({
                   key={item.id}
                   type="button"
                   className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                  onClick={() => handleModuleChange(item.id)}
+                  onClick={() => {
+                    handleModuleChange(item.id);
+                    closeMobileMenuIfNeeded();
+                  }}
                 >
                   <span>{item.label}</span>
                   {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
                 </button>
               );
-            })}
-          </nav>
-        </div>
-      ))}
+              })}
+            </nav>
+          </div>
+        ))}
+      </div>
     </aside>
   );
 }

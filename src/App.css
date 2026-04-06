@@ -238,6 +238,26 @@ body {
   color: #516082;
 }
 
+.mobile-quick-bar {
+  display: none;
+}
+
+.mobile-quick-bar-row {
+  display: grid;
+  gap: 8px;
+}
+
+.mobile-quick-bar label {
+  display: grid;
+  gap: 4px;
+}
+
+.mobile-quick-bar label span {
+  font-size: 0.76rem;
+  color: #4e618e;
+  font-weight: 600;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(130px, 1fr));
@@ -423,6 +443,7 @@ body {
 
 .primary-btn,
 .neutral-btn,
+.secondary-btn,
 .mini-btn {
   border: 0;
   border-radius: 9px;
@@ -440,6 +461,18 @@ body {
   background: #ecf1fb;
   color: #2f4c85;
   padding: 9px 12px;
+}
+
+.secondary-btn {
+  background: #ffffff;
+  color: #24427b;
+  border: 1px solid #b7caea;
+  padding: 8px 12px;
+}
+
+.secondary-btn.small {
+  padding: 7px 11px;
+  font-size: 0.82rem;
 }
 
 .table-wrap {
@@ -466,6 +499,20 @@ th {
   background: #f6f9ff;
   color: #3d527f;
   font-weight: 700;
+}
+
+.sidebar-content {
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-content.is-hidden {
+  display: none;
+}
+
+.sidebar-toggle-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 tbody tr {
@@ -1991,18 +2038,41 @@ tbody tr:hover {
 }
 
 @media (max-width: 1260px) {
+  html,
+  body,
+  #root {
+    height: auto;
+    min-height: 100%;
+    overflow: auto;
+  }
+
   .App {
     grid-template-columns: 1fr;
     height: auto;
-    min-height: 100vh;
+    min-height: 100dvh;
     overflow: visible;
   }
 
   .sidebar-shell {
-    position: relative;
-    top: auto;
+    position: sticky;
+    top: 0;
+    z-index: 30;
     height: auto;
-    max-height: 280px;
+    max-height: none;
+    overflow: visible;
+    padding: 12px 10px;
+  }
+
+  .sidebar-shell.mobile .brand-block {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .sidebar-shell.mobile .sidebar-content {
+    margin-top: 10px;
+    border-top: 1px solid #2d4258;
+    padding-top: 10px;
+    max-height: min(68vh, 560px);
     overflow: auto;
   }
 
@@ -2010,11 +2080,13 @@ tbody tr:hover {
     height: auto;
     min-height: 0;
     overflow: visible;
+    padding: 12px;
   }
 
   .hero {
     position: relative;
     top: auto;
+    padding-top: 4px;
   }
 
   .content-grid {
@@ -2025,10 +2097,32 @@ tbody tr:hover {
 @media (max-width: 960px) {
   .hero {
     flex-direction: column;
+    gap: 12px;
   }
 
   .stats {
     width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hero h1 {
+    font-size: clamp(1.2rem, 6vw, 1.65rem);
+  }
+
+  .hero p {
+    font-size: 0.88rem;
+  }
+
+  .hero-right,
+  .user-header-main {
+    width: 100%;
+    text-align: left;
+    align-items: flex-start;
+  }
+
+  .user-header {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .content-grid {
@@ -2084,5 +2178,101 @@ tbody tr:hover {
 
   .manual-export-actions {
     width: 100%;
+  }
+
+  .mobile-quick-bar {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    background: #eff3f9;
+    border-bottom: 1px solid #dbe5f6;
+    padding: 8px 0;
+    margin-bottom: 6px;
+  }
+
+  .mobile-quick-bar-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-quick-bar .search-input,
+  .mobile-quick-bar .filter-select {
+    min-height: 40px;
+  }
+
+  .panel {
+    padding: 10px;
+  }
+
+  .toolbar .search-input,
+  .toolbar .filter-select,
+  .toolbar .primary-btn,
+  .toolbar .neutral-btn,
+  .toolbar .secondary-btn {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .department-row,
+  .employment-stage-row {
+    grid-template-columns: 1fr;
+  }
+
+  .id-logo-preview-wrap {
+    flex-wrap: wrap;
+  }
+
+  .attendance-audit-table,
+  .table-wrap,
+  .modal-card,
+  .panel {
+    overflow-x: auto;
+  }
+
+  table,
+  .attendance-audit-table table,
+  .manual-table {
+    min-width: 680px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 10px;
+  }
+
+  .brand-block {
+    gap: 8px;
+  }
+
+  .brand-block h1 {
+    font-size: 0.98rem;
+  }
+
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-title-row h2 {
+    font-size: 1.5rem;
+  }
+
+  .mobile-quick-bar {
+    padding: 7px 0;
+  }
+
+  .attendance-ops-actions,
+  .employee-ops-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .modal-backdrop {
+    padding: 8px;
+  }
+
+  .modal-card {
+    padding: 10px;
+    max-height: 92vh;
   }
 }

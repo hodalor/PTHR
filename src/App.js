@@ -653,6 +653,15 @@ function App({ initialModuleId }) {
     return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
   }, [currentUser, isSuperAdmin, normalizedCurrentUserRole]);
 
+  const mobileModuleOptions = useMemo(
+    () =>
+      sidebarSections
+        .flatMap((section) => section.items)
+        .filter((item) => allowedModulesByRole.has(item.id))
+        .map((item) => ({ id: item.id, label: item.label })),
+    [allowedModulesByRole]
+  );
+
   useEffect(() => {
     let cancelled = false;
     const checkHealth = async () => {
@@ -5345,6 +5354,38 @@ function App({ initialModuleId }) {
             </div>
           </div>
         </header>
+
+        {!isSettingsPage ? (
+          <div className="mobile-quick-bar">
+            <div className="mobile-quick-bar-row">
+              <label>
+                <span>Module</span>
+                <select
+                  className="filter-select"
+                  value={activeModuleId}
+                  onChange={(event) => handleModuleChange(event.target.value)}
+                >
+                  {mobileModuleOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {showMainModuleTable ? (
+                <label>
+                  <span>Quick Search</span>
+                  <input
+                    className="search-input"
+                    placeholder="Search records..."
+                    value={searchText}
+                    onChange={(event) => setSearchText(event.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         <main className="content-grid">
           {isSettingsPage ? (
