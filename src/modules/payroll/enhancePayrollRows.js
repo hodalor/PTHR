@@ -67,6 +67,9 @@ export const enhancePayrollRows = ({
     acc[key] = (acc[key] || 0) + amount;
     return acc;
   }, {});
+  const overtimeMinutesByEmployee = {};
+  const overtimeAmountByEmployee = {};
+  const shiftConfigs = Array.isArray(appSettings.shifts) ? appSettings.shifts : [];
   const nowDate = getTodayIsoDate();
   const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
   const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
@@ -133,6 +136,35 @@ export const enhancePayrollRows = ({
         noClockOutPenaltyByEmployee[key] = noClockOutPenaltyByEmployee[key] || 0;
       }
     }
+    const overtimeMinutesFromRow = Math.max(0, Number(attendanceRow.overtimeMinutes) || 0);
+    const overtimeAmountFromRow = Math.max(0, toNumberValue(attendanceRow.overtimeAmount));
+    if (overtimeMinutesFromRow > 0 || overtimeAmountFromRow > 0) {
+      overtimeMinutesByEmployee[key] = (overtimeMinutesByEmployee[key] || 0) + overtimeMinutesFromRow;
+      overtimeAmountByEmployee[key] = (overtimeAmountByEmployee[key] || 0) + overtimeAmountFromRow;
+      return;
+    }
+    if (!hasClockOut) {
+      return;
+    }
+    const shiftName = String(attendanceRow.shift || matchedEmployee?.assignedShift || '').trim().toLowerCase();
+    const shiftConfig =
+      shiftConfigs.find((shift) => String(shift?.name || '').trim().toLowerCase() === shiftName) || null;
+    if (!shiftConfig || !shiftConfig.overtimeEnabled) {
+      return;
+    }
+    const configuredShiftEndMinutes = toMinutesFromClock(shiftConfig.shiftEnd);
+    const checkOutMinutes = toMinutesFromClock(attendanceSummary.checkOut);
+    if (configuredShiftEndMinutes === null || checkOutMinutes === null) {
+      return;
+    }
+    const overtimeStartMinutes = configuredShiftEndMinutes + Math.max(0, Number(shiftConfig.overtimeStartAfterMinutes) || 0);
+    const overtimeMinutes = Math.max(0, checkOutMinutes - overtimeStartMinutes);
+    if (overtimeMinutes <= 0) {
+      return;
+    }
+    const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftConfig.overtimePayPerMinute) || 0);
+    overtimeMinutesByEmployee[key] = (overtimeMinutesByEmployee[key] || 0) + overtimeMinutes;
+    overtimeAmountByEmployee[key] = (overtimeAmountByEmployee[key] || 0) + overtimeAmount;
   });
   const clearedByPenaltyAndEmployee = penaltyAdjustmentRows.reduce((acc, row) => {
     const key = `${String(row.employeeId || '').trim()}|${String(row.penaltyType || '').trim()}`;
@@ -198,6 +230,8 @@ export const enhancePayrollRows = ({
     const netNoClockOutPenalty = Math.max(0, noClockOutPenalty - noClockOutClearance);
     const netAbsentPenalty = Math.max(0, absentPenalty - absentClearance);
     const totalAttendancePenalty = netLateDeduction + netNoClockInPenalty + netNoClockOutPenalty + netAbsentPenalty;
+    const overtimeMinutes = overtimeMinutesByEmployee[key] || 0;
+    const overtimeEarnings = overtimeAmountByEmployee[key] || 0;
     const loanSummary = loanSummaryByEmployee[key] || {
       totalBalance: 0,
       activeCount: 0,
@@ -214,6 +248,8 @@ export const enhancePayrollRows = ({
       noClockOutPenalty: netNoClockOutPenalty.toFixed(2),
       absentPenalty: netAbsentPenalty.toFixed(2),
       totalAttendancePenalty: totalAttendancePenalty.toFixed(2),
+      overtimeMinutes: String(overtimeMinutes),
+      overtimeEarnings: overtimeEarnings.toFixed(2),
       payableAfterLate: Math.max(0, basicPay - totalAttendancePenalty).toFixed(2),
       loanSummary: loanSummaryLabel,
       loanCount: String(loanSummary.activeCount || 0),

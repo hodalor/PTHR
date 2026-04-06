@@ -59,6 +59,8 @@ export const computePayrollPreviewValues = (values, appSettings) => {
   const noClockOutPenalty = toNumberValue(values.noClockOutPenalty);
   const absentPenalty = toNumberValue(values.absentPenalty);
   const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
+  const overtimeEarnings = toNumberValue(values.overtimeEarnings);
+  const totalEarnings = grossPay + overtimeEarnings;
   const statutoryRules = appSettings.statutoryRules || {};
   const calcStatutory = (mode, value) => {
     const numeric = Math.max(0, Number(value) || 0);
@@ -77,9 +79,11 @@ export const computePayrollPreviewValues = (values, appSettings) => {
     grossPay >= taxMinAmount ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0) : 0;
   const otherDeduction = toNumberValue(values.otherDeduction);
   const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-  const netPayable = grossPay - totalDeductions;
+  const netPayable = totalEarnings - totalDeductions;
   return {
     grossPay,
+    overtimeEarnings,
+    totalEarnings,
     totalAttendancePenalty,
     totalDeductions,
     netPayable,
@@ -122,4 +126,3 @@ export const buildPayrollFormValuesFromEmployee = (employee, previousValues = {}
     status: previousValues.status || employee.employmentState || 'Processing',
   };
 };
-

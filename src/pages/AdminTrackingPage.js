@@ -1,15 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
-
-const mapEmployeeToPoint = (employee, bounds) => {
-  const latRange = bounds.maxLat - bounds.minLat || 0.000001;
-  const lngRange = bounds.maxLng - bounds.minLng || 0.000001;
-  const normalizedLat = (bounds.maxLat - employee.lat) / latRange;
-  const normalizedLng = (employee.lng - bounds.minLng) / lngRange;
-  return {
-    x: Math.max(0, Math.min(100, normalizedLng * 100)),
-    y: Math.max(0, Math.min(100, normalizedLat * 100)),
-  };
-};
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 const resolveMarkerColor = (status) => {
   if (status === 'INSIDE') {
@@ -21,21 +12,44 @@ const resolveMarkerColor = (status) => {
   if (status === 'OFFLINE') {
     return '#f4b400';
   }
+  if (status === 'LOCATION_OFF') {
+    return '#7e57c2';
+  }
   return '#8b97c4';
 };
 
 export default function AdminTrackingPage() {
+  const [trackingTab, setTrackingTab] = useState('overview');
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
   const [alerts, setAlerts] = useState([]);
   const [alertsError, setAlertsError] = useState('');
+  const [riskEvents, setRiskEvents] = useState([]);
+  const [riskEventsError, setRiskEventsError] = useState('');
+  const [riskTypeFilter, setRiskTypeFilter] = useState('All');
+  const [riskSearchText, setRiskSearchText] = useState('');
+  const [riskFromDate, setRiskFromDate] = useState('');
+  const [riskToDate, setRiskToDate] = useState('');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [movementTrail, setMovementTrail] = useState([]);
   const [trailLoading, setTrailLoading] = useState(false);
   const [trailError, setTrailError] = useState('');
   const [resolvedAddress, setResolvedAddress] = useState('');
   const [addressLoading, setAddressLoading] = useState(false);
+  const [isEmployeeDetailModalOpen, setIsEmployeeDetailModalOpen] = useState(false);
+  const [isFullMapModalOpen, setIsFullMapModalOpen] = useState(false);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [playbackRunning, setPlaybackRunning] = useState(true);
+  const overviewMapElementRef = useRef(null);
+  const overviewMapRef = useRef(null);
+  const overviewLayerRef = useRef(null);
+  const fullMapElementRef = useRef(null);
+  const fullMapRef = useRef(null);
+  const fullLayerRef = useRef(null);
+  const detailMapElementRef = useRef(null);
+  const detailMapRef = useRef(null);
+  const detailLayerRef = useRef(null);
 
   const employeesWithCoordinates = useMemo(
     () =>
@@ -69,17 +83,22 @@ export default function AdminTrackingPage() {
           return;
         }
         setTrackingLoading(true);
-        const [trackingResponse, alertsResponse] = await Promise.all([
+        const [trackingResponse, alertsResponse, riskEventsResponse] = await Promise.all([
           fetch('http://localhost:8000/api/tracking/employees'),
           fetch('http://localhost:8000/api/tracking/alerts/whatsapp'),
+          fetch('http://localhost:8000/api/tracking/events?limit=300'),
         ]);
         if (!trackingResponse.ok) {
           throw new Error('Failed to load tracking data');
         }
         const trackingData = await trackingResponse.json();
         let alertsData = null;
+        let eventsData = null;
         if (alertsResponse.ok) {
           alertsData = await alertsResponse.json();
+        }
+        if (riskEventsResponse.ok) {
+          eventsData = await riskEventsResponse.json();
         }
         if (!cancelled) {
           const employees = Array.isArray(trackingData.employees) ? trackingData.employees : [];
@@ -88,11 +107,16 @@ export default function AdminTrackingPage() {
             setAlerts(alertsData.alerts);
             setAlertsError('');
           }
+          if (eventsData && Array.isArray(eventsData.events)) {
+            setRiskEvents(eventsData.events);
+            setRiskEventsError('');
+          }
           setTrackingError('');
         }
       } catch (error) {
         if (!cancelled) {
           setTrackingError('Unable to load tracking data');
+          setRiskEventsError('Unable to load risk events');
         }
       } finally {
         if (!cancelled) {
@@ -101,7 +125,7 @@ export default function AdminTrackingPage() {
       }
     };
     fetchTracking();
-    intervalId = setInterval(fetchTracking, 3000);
+    intervalId = setInterval(fetchTracking, 1500);
     return () => {
       cancelled = true;
       if (intervalId) {
@@ -120,7 +144,7 @@ export default function AdminTrackingPage() {
         setTrailLoading(true);
         setTrailError('');
         const response = await fetch(
-          `http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=80`
+          `http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=200`
         );
         if (!response.ok) {
           throw new Error('Failed to load movement trail');
@@ -141,7 +165,7 @@ export default function AdminTrackingPage() {
       }
     };
     fetchTrail();
-    const intervalId = setInterval(fetchTrail, 3000);
+    const intervalId = setInterval(fetchTrail, 1500);
     return () => {
       cancelled = true;
       clearInterval(intervalId);
@@ -185,66 +209,286 @@ export default function AdminTrackingPage() {
     };
   }, [selectedEmployee]);
 
-  const allMapPoints = useMemo(() => {
-    const trailPoints = movementTrail.filter(
-      (row) => typeof row.lat === 'number' && !Number.isNaN(row.lat) && typeof row.lng === 'number' && !Number.isNaN(row.lng)
-    );
-    return [...employeesWithCoordinates, ...trailPoints];
-  }, [employeesWithCoordinates, movementTrail]);
-
-  const mapBounds = useMemo(() => {
-    if (allMapPoints.length === 0) {
-      return null;
-    }
-    let minLat = allMapPoints[0].lat;
-    let maxLat = allMapPoints[0].lat;
-    let minLng = allMapPoints[0].lng;
-    let maxLng = allMapPoints[0].lng;
-    allMapPoints.forEach((point) => {
-      if (point.lat < minLat) {
-        minLat = point.lat;
-      }
-      if (point.lat > maxLat) {
-        maxLat = point.lat;
-      }
-      if (point.lng < minLng) {
-        minLng = point.lng;
-      }
-      if (point.lng > maxLng) {
-        maxLng = point.lng;
-      }
-    });
-    return { minLat, maxLat, minLng, maxLng };
-  }, [allMapPoints]);
-
-  const mapMarkers = useMemo(() => {
-    if (!mapBounds) {
-      return [];
-    }
-    return employeesWithCoordinates.map((employee) => {
-      const { x, y } = mapEmployeeToPoint(employee, mapBounds);
-      return {
-        id: employee.employeeId,
-        employee,
-        x,
-        y,
-        color: resolveMarkerColor(employee.status),
-      };
-    });
-  }, [employeesWithCoordinates, mapBounds]);
-
-  const trailPath = useMemo(() => {
-    if (!mapBounds) {
-      return [];
-    }
+  const trailCoordinates = useMemo(() => {
     return movementTrail
       .filter(
         (row) => typeof row.lat === 'number' && !Number.isNaN(row.lat) && typeof row.lng === 'number' && !Number.isNaN(row.lng)
       )
-      .map((row) => mapEmployeeToPoint(row, mapBounds));
-  }, [mapBounds, movementTrail]);
+      .map((row, index) => ({
+        lat: row.lat,
+        lng: row.lng,
+        orderTs: new Date(row.recordedAt || row.createdAt || row.lastSeen || '').getTime() || index,
+      }))
+      .sort((left, right) => left.orderTs - right.orderTs)
+      .map((row) => [row.lat, row.lng]);
+  }, [movementTrail]);
 
-  const latestTrailPoint = trailPath[trailPath.length - 1] || null;
+  const playbackPath = useMemo(() => {
+    if (!isFullMapModalOpen || trailCoordinates.length === 0) {
+      return trailCoordinates;
+    }
+    return trailCoordinates.slice(0, Math.max(1, playbackIndex + 1));
+  }, [isFullMapModalOpen, playbackIndex, trailCoordinates]);
+
+  useEffect(() => {
+    if (!isFullMapModalOpen) {
+      return;
+    }
+    setPlaybackIndex(0);
+    setPlaybackRunning(true);
+  }, [isFullMapModalOpen, selectedEmployeeId]);
+
+  useEffect(() => {
+    if (!isFullMapModalOpen || !playbackRunning || trailCoordinates.length <= 1) {
+      return;
+    }
+    const intervalId = setInterval(() => {
+      setPlaybackIndex((prev) => (prev + 1 >= trailCoordinates.length ? prev : prev + 1));
+    }, 650);
+    return () => clearInterval(intervalId);
+  }, [isFullMapModalOpen, playbackRunning, trailCoordinates.length]);
+
+  const riskTypeOptions = useMemo(() => {
+    const values = new Set(
+      riskEvents
+        .map((event) => String(event.riskType || '').trim())
+        .filter(Boolean)
+    );
+    return ['All', ...Array.from(values)];
+  }, [riskEvents]);
+
+  const filteredRiskEvents = useMemo(() => {
+    const query = riskSearchText.trim().toLowerCase();
+    const fromTime = riskFromDate ? new Date(`${riskFromDate}T00:00:00`).getTime() : null;
+    const toTime = riskToDate ? new Date(`${riskToDate}T23:59:59`).getTime() : null;
+    return [...riskEvents]
+      .filter((event) => {
+        const matchesType = riskTypeFilter === 'All' || String(event.riskType || '') === String(riskTypeFilter);
+        const eventTime = new Date(event.createdAt || '').getTime();
+        const matchesFrom = fromTime === null || (Number.isFinite(eventTime) && eventTime >= fromTime);
+        const matchesTo = toTime === null || (Number.isFinite(eventTime) && eventTime <= toTime);
+        const matchesQuery =
+          !query ||
+          String(event.fullName || '').toLowerCase().includes(query) ||
+          String(event.employeeId || '').toLowerCase().includes(query) ||
+          String(event.riskType || '').toLowerCase().includes(query) ||
+          String(event.details || '').toLowerCase().includes(query);
+        return matchesType && matchesFrom && matchesTo && matchesQuery;
+      })
+      .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+  }, [riskEvents, riskTypeFilter, riskSearchText, riskFromDate, riskToDate]);
+
+  const getSeverityStyle = (severityValue) => {
+    const normalized = String(severityValue || '').toLowerCase();
+    if (normalized === 'high') {
+      return { backgroundColor: '#ffe7ec', color: '#9a1f33', border: '1px solid #ffc0cb' };
+    }
+    if (normalized === 'medium') {
+      return { backgroundColor: '#fff2df', color: '#8a4c0f', border: '1px solid #ffd39c' };
+    }
+    return { backgroundColor: '#eaf2ff', color: '#27467f', border: '1px solid #c9dbff' };
+  };
+
+  const downloadRiskEventsCsv = () => {
+    if (filteredRiskEvents.length === 0) {
+      return;
+    }
+    const headers = ['Event ID', 'Time', 'Employee ID', 'Employee', 'Risk Type', 'Severity', 'Status', 'Details'];
+    const toCell = (value) => {
+      const text = String(value ?? '');
+      if (/[",\n]/.test(text)) {
+        return `"${text.replaceAll('"', '""')}"`;
+      }
+      return text;
+    };
+    const lines = [
+      headers.join(','),
+      ...filteredRiskEvents.map((event) =>
+        [
+          event.id,
+          event.createdAt,
+          event.employeeId,
+          event.fullName,
+          event.riskType,
+          event.severity,
+          event.status,
+          event.details,
+        ]
+          .map(toCell)
+          .join(',')
+      ),
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `tracking-risk-events-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.URL.revokeObjectURL(url);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (overviewMapRef.current) {
+        overviewMapRef.current.remove();
+        overviewMapRef.current = null;
+      }
+      if (fullMapRef.current) {
+        fullMapRef.current.remove();
+        fullMapRef.current = null;
+      }
+      if (detailMapRef.current) {
+        detailMapRef.current.remove();
+        detailMapRef.current = null;
+      }
+    };
+  }, []);
+
+  const paintMap = useCallback(({
+    mapRef,
+    mapElementRef,
+    layerRef,
+    height = 400,
+    focusEmployeeId = '',
+    showAllEmployees = true,
+    pathCoordinates = [],
+    enableFitBounds = true,
+  }) => {
+    const element = mapElementRef.current;
+    if (!element) {
+      return;
+    }
+    const fallbackCenter = [37.421998, -122.084];
+    const focusedEmployee =
+      employeesWithCoordinates.find((item) => item.employeeId === focusEmployeeId) || selectedEmployee || employeesWithCoordinates[0];
+    const center =
+      focusedEmployee && typeof focusedEmployee.lat === 'number' && typeof focusedEmployee.lng === 'number'
+        ? [focusedEmployee.lat, focusedEmployee.lng]
+        : fallbackCenter;
+    if (!mapRef.current) {
+      mapRef.current = L.map(element, {
+        zoomControl: true,
+        attributionControl: true,
+      }).setView(center, 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors',
+      }).addTo(mapRef.current);
+    }
+    const map = mapRef.current;
+    map.invalidateSize();
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
+    }
+    const layerGroup = L.layerGroup();
+    const markerSource = showAllEmployees
+      ? employeesWithCoordinates
+      : employeesWithCoordinates.filter((employee) => employee.employeeId === focusEmployeeId);
+    markerSource.forEach((employee) => {
+      const isSelected = employee.employeeId === focusEmployeeId;
+      L.circleMarker([employee.lat, employee.lng], {
+        radius: isSelected ? 9 : 7,
+        weight: isSelected ? 3 : 2,
+        color: '#ffffff',
+        fillColor: resolveMarkerColor(employee.status),
+        fillOpacity: 0.95,
+      })
+        .bindPopup(`${employee.fullName} (${employee.employeeId}) • ${employee.status || 'UNKNOWN'}`)
+        .on('click', () => setSelectedEmployeeId(employee.employeeId))
+        .addTo(layerGroup);
+    });
+    if (pathCoordinates.length > 1) {
+      L.polyline(pathCoordinates, {
+        color: '#0a73d9',
+        weight: 4,
+        opacity: 0.92,
+      }).addTo(layerGroup);
+      const previousPoint = pathCoordinates[pathCoordinates.length - 2];
+      const lastPoint = pathCoordinates[pathCoordinates.length - 1];
+      const deltaLat = lastPoint[0] - previousPoint[0];
+      const deltaLng = lastPoint[1] - previousPoint[1];
+      const headingDeg = (Math.atan2(deltaLng, deltaLat) * 180) / Math.PI;
+      L.marker(lastPoint, {
+        icon: L.divIcon({
+          className: 'tracking-heading-icon',
+          html: `<div style="transform: rotate(${headingDeg}deg); color:#0a73d9; font-size:18px; font-weight:700; line-height:1;">▲</div>`,
+          iconSize: [20, 20],
+          iconAnchor: [10, 10],
+        }),
+      }).addTo(layerGroup);
+      L.circleMarker(lastPoint, {
+        radius: 8,
+        weight: 3,
+        color: '#0a73d9',
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+      }).addTo(layerGroup);
+    }
+    layerGroup.addTo(map);
+    layerRef.current = layerGroup;
+    if (enableFitBounds) {
+      const boundsCoordinates = [
+        ...markerSource.map((employee) => [employee.lat, employee.lng]),
+        ...pathCoordinates,
+      ];
+      if (boundsCoordinates.length > 0) {
+        map.fitBounds(boundsCoordinates, { padding: [40, 40], maxZoom: 17 });
+      } else {
+        map.setView(center, 14);
+      }
+    } else {
+      map.panTo(center);
+    }
+    element.style.height = `${height}px`;
+  }, [employeesWithCoordinates, selectedEmployee]);
+
+  useEffect(() => {
+    paintMap({
+      mapRef: overviewMapRef,
+      mapElementRef: overviewMapElementRef,
+      layerRef: overviewLayerRef,
+      height: 400,
+      focusEmployeeId: selectedEmployeeId,
+      showAllEmployees: true,
+      pathCoordinates: trailCoordinates,
+      enableFitBounds: true,
+    });
+  }, [employeesWithCoordinates, paintMap, selectedEmployeeId, trailCoordinates]);
+
+  useEffect(() => {
+    if (!isFullMapModalOpen) {
+      return;
+    }
+    paintMap({
+      mapRef: fullMapRef,
+      mapElementRef: fullMapElementRef,
+      layerRef: fullLayerRef,
+      height: 620,
+      focusEmployeeId: selectedEmployeeId,
+      showAllEmployees: true,
+      pathCoordinates: playbackPath,
+      enableFitBounds: false,
+    });
+  }, [employeesWithCoordinates, isFullMapModalOpen, paintMap, playbackPath, selectedEmployeeId]);
+
+  useEffect(() => {
+    if (!isEmployeeDetailModalOpen || !selectedEmployee) {
+      return;
+    }
+    paintMap({
+      mapRef: detailMapRef,
+      mapElementRef: detailMapElementRef,
+      layerRef: detailLayerRef,
+      height: 280,
+      focusEmployeeId: selectedEmployee.employeeId,
+      showAllEmployees: false,
+      pathCoordinates: trailCoordinates,
+      enableFitBounds: true,
+    });
+  }, [isEmployeeDetailModalOpen, paintMap, selectedEmployee, trailCoordinates]);
 
   return (
     <section className="panel">
@@ -255,6 +499,24 @@ export default function AdminTrackingPage() {
         </div>
       </header>
       <div className="attendance-audit-wrap">
+        <div className="attendance-ops-actions" style={{ justifyContent: 'flex-start', marginBottom: 8 }}>
+          <button
+            type="button"
+            className={`neutral-btn ${trackingTab === 'overview' ? 'active' : ''}`}
+            onClick={() => setTrackingTab('overview')}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            className={`neutral-btn ${trackingTab === 'risk-events' ? 'active' : ''}`}
+            onClick={() => setTrackingTab('risk-events')}
+          >
+            Risk Events
+          </button>
+        </div>
+        {trackingTab === 'overview' ? (
+          <>
         <div className="attendance-audit-head">
           <h4>Live Presence Monitor</h4>
           <div className="attendance-audit-filters">
@@ -265,103 +527,34 @@ export default function AdminTrackingPage() {
           <div className="employee-ops-card" style={{ flex: 1, minHeight: 280 }}>
             <div className="employee-ops-header">
               <h5>Live Map View</h5>
-              <span>
-                {employeesWithCoordinates.length > 0
-                  ? `${employeesWithCoordinates.length} devices with location`
-                  : 'No coordinates yet'}
-              </span>
+              <div className="employee-ops-actions">
+                <span>
+                  {employeesWithCoordinates.length > 0
+                    ? `${employeesWithCoordinates.length} devices with location`
+                    : 'No coordinates yet'}
+                </span>
+                <button type="button" className="neutral-btn" onClick={() => setIsFullMapModalOpen(true)}>
+                  Full Map
+                </button>
+              </div>
             </div>
             <div
+              ref={overviewMapElementRef}
               style={{
                 position: 'relative',
                 width: '100%',
-                height: 320,
+                height: 400,
                 borderRadius: 10,
-                background: 'radial-gradient(circle at 50% 50%, rgba(10,115,217,0.12), rgba(10,115,217,0.04))',
                 overflow: 'hidden',
+                border: '1px solid #d9e6fb',
+                background: '#ecf2ff',
               }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  backgroundImage:
-                    'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                  backgroundSize: '36px 36px',
-                  opacity: 0.5,
-                }}
-              />
-              {mapMarkers.length === 0 ? (
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 13,
-                    color: '#444',
-                  }}
-                >
-                  Waiting for location updates from mobile app
-                </div>
-              ) : (
-                <>
-                  <svg
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                    style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
-                  >
-                    {trailPath.length > 1 ? (
-                      <polyline
-                        points={trailPath.map((point) => `${point.x},${point.y}`).join(' ')}
-                        fill="none"
-                        stroke="rgba(10,115,217,0.8)"
-                        strokeWidth="0.7"
-                      />
-                    ) : null}
-                  </svg>
-                  {mapMarkers.map((marker) => (
-                    <button
-                      type="button"
-                      key={marker.id}
-                      onClick={() => setSelectedEmployeeId(marker.id)}
-                      style={{
-                        position: 'absolute',
-                        width: 16,
-                        height: 16,
-                        borderRadius: '50%',
-                        border: marker.id === selectedEmployeeId ? '2px solid #ffffff' : 'none',
-                        backgroundColor: marker.color,
-                        transform: 'translate(-50%, -50%)',
-                        left: `${marker.x}%`,
-                        top: `${marker.y}%`,
-                        boxShadow: '0 0 0 6px rgba(0,0,0,0.16)',
-                        cursor: 'pointer',
-                      }}
-                      title={`${marker.employee.fullName} (${marker.employee.employeeId}) • ${marker.employee.status || 'UNKNOWN'}`}
-                    />
-                  ))}
-                  {latestTrailPoint ? (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        width: 18,
-                        height: 18,
-                        borderRadius: '50%',
-                        border: '3px solid rgba(10,115,217,0.8)',
-                        backgroundColor: '#ffffff',
-                        transform: 'translate(-50%, -50%)',
-                        left: `${latestTrailPoint.x}%`,
-                        top: `${latestTrailPoint.y}%`,
-                        boxShadow: '0 0 0 10px rgba(10,115,217,0.2)',
-                        pointerEvents: 'none',
-                      }}
-                    />
-                  ) : null}
-                </>
-              )}
-            </div>
+            />
+            {employeesWithCoordinates.length === 0 ? (
+              <p className="form-error" style={{ marginTop: 8 }}>
+                Waiting for location updates from mobile app. Make sure employee tracking is active and location permission is granted.
+              </p>
+            ) : null}
             <div className="employee-ops-list">
               <div className="employee-ops-row">
                 <div>
@@ -383,70 +576,43 @@ export default function AdminTrackingPage() {
                     Offline
                   </span>
                 </div>
+                <div className="employee-ops-actions">
+                  <span>
+                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: '#7e57c2', marginRight: 6 }} />
+                    Location Off
+                  </span>
+                </div>
               </div>
             </div>
           </div>
           <div className="employee-ops-card" style={{ flex: 1, minHeight: 280 }}>
             <div className="employee-ops-header">
-              <h5>Selected Employee Details</h5>
-              <span>{selectedEmployee ? selectedEmployee.employeeId : 'No selection'}</span>
+              <h5>Live Summary</h5>
+              <span>{trackingEmployees.length} employee device(s)</span>
             </div>
             <div className="employee-ops-list">
-              {selectedEmployee ? (
-                <>
-                  <div className="employee-ops-row">
-                    <div>
-                      <p>{selectedEmployee.fullName}</p>
-                      <span>{selectedEmployee.status || 'UNKNOWN'} • Last seen {selectedEmployee.lastSeen || '—'}</span>
-                    </div>
-                    <div className="employee-ops-actions">
-                      <span>{typeof selectedEmployee.distanceMeters === 'number' ? `${Math.round(selectedEmployee.distanceMeters)} m` : '—'}</span>
-                    </div>
-                  </div>
-                  <div className="employee-ops-row">
-                    <div>
-                      <p>Coordinates</p>
-                      <span>
-                        {typeof selectedEmployee.lat === 'number' ? selectedEmployee.lat.toFixed(6) : '—'},{' '}
-                        {typeof selectedEmployee.lng === 'number' ? selectedEmployee.lng.toFixed(6) : '—'}
-                      </span>
-                    </div>
-                    <div className="employee-ops-actions">
-                      {typeof selectedEmployee.lat === 'number' && typeof selectedEmployee.lng === 'number' ? (
-                        <a
-                          href={`https://www.google.com/maps?q=${selectedEmployee.lat},${selectedEmployee.lng}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open in Maps
-                        </a>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="employee-ops-row">
-                    <div>
-                      <p>Address</p>
-                      <span>
-                        {selectedEmployee.locationAddress || selectedEmployee.locationLabel || resolvedAddress || (addressLoading ? 'Resolving location...' : 'Address not available yet')}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="employee-ops-row">
-                    <div>
-                      <p>Movement Trail</p>
-                      <span>{trailLoading ? 'Loading trail...' : `${movementTrail.length} movement points`}</span>
-                    </div>
-                  </div>
-                  {trailError ? <p className="form-error">{trailError}</p> : null}
-                </>
-              ) : (
-                <div className="employee-ops-row">
-                  <div>
-                    <p>Select an employee</p>
-                    <span>Click a map marker or table row to load full movement details.</span>
-                  </div>
+              <div className="employee-ops-row">
+                <div>
+                  <p>Selected</p>
+                  <span>
+                    {selectedEmployee
+                      ? `${selectedEmployee.fullName} (${selectedEmployee.employeeId})`
+                      : 'Click a row to inspect details'}
+                  </span>
                 </div>
-              )}
+                <div className="employee-ops-actions">
+                  <span>{selectedEmployee?.status || '—'}</span>
+                </div>
+              </div>
+              <div className="employee-ops-row">
+                <div>
+                  <p>Movement</p>
+                  <span>{trailLoading ? 'Loading trail...' : `${movementTrail.length} movement point(s)`}</span>
+                </div>
+                <div className="employee-ops-actions">
+                  <span>{trailError ? 'Trail error' : 'Ready'}</span>
+                </div>
+              </div>
               <div className="employee-ops-header">
                 <h5>WhatsApp Alerts</h5>
                 <span>{alerts.length > 0 ? `${alerts.length} alert${alerts.length === 1 ? '' : 's'}` : 'No alerts yet'}</span>
@@ -491,12 +657,13 @@ export default function AdminTrackingPage() {
                 <th>Last Seen</th>
                 <th>WiFi</th>
                 <th>Flags</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {trackingLoading ? (
                 <tr>
-                  <td colSpan={6}>Loading tracking data...</td>
+                  <td colSpan={7}>Loading tracking data...</td>
                 </tr>
               ) : trackingEmployees.length > 0 ? (
                 trackingEmployees.map((employee) => (
@@ -524,17 +691,343 @@ export default function AdminTrackingPage() {
                           ? ' • GPS Suspicious'
                           : 'GPS Suspicious'
                         : ''}
+                      {employee.networkRisk
+                        ? employee.outsidePremises || employee.offline || !employee.wifiValid || employee.gpsSpoofSuspected
+                          ? ' • Network Risk'
+                          : 'Network Risk'
+                        : ''}
+                      {employee.locationDisabled
+                        ? employee.outsidePremises || employee.offline || !employee.wifiValid || employee.gpsSpoofSuspected || employee.networkRisk
+                          ? ' • Location Off'
+                          : 'Location Off'
+                        : ''}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedEmployeeId(employee.employeeId);
+                          setIsEmployeeDetailModalOpen(true);
+                        }}
+                      >
+                        View Details
+                      </button>
                     </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6}>No tracking data available.</td>
+                  <td colSpan={7}>No tracking data available.</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+        {isFullMapModalOpen ? (
+          <div className="modal-backdrop" onClick={() => setIsFullMapModalOpen(false)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()} style={{ width: 'min(1240px, 98vw)' }}>
+              <div className="modal-header">
+                <h3>Live Movement Map</h3>
+                <div className="attendance-ops-actions">
+                  <button type="button" className="neutral-btn" onClick={() => setPlaybackRunning((prev) => !prev)}>
+                    {playbackRunning ? 'Pause Playback' : 'Resume Playback'}
+                  </button>
+                  <button type="button" className="neutral-btn" onClick={() => setPlaybackIndex(0)}>
+                    Restart
+                  </button>
+                  <button type="button" className="neutral-btn" onClick={() => setIsFullMapModalOpen(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div
+                ref={fullMapElementRef}
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: 620,
+                  borderRadius: 12,
+                  overflow: 'hidden',
+                  border: '1px solid #d9e6fb',
+                  background: '#ecf2ff',
+                }}
+              />
+              <div className="employee-ops-list" style={{ marginTop: 12 }}>
+                <div className="employee-ops-row">
+                  <div>
+                    <p>Playback Progress</p>
+                    <span>
+                      {trailCoordinates.length > 0
+                        ? `${Math.min(playbackIndex + 1, trailCoordinates.length)} of ${trailCoordinates.length} movement points`
+                        : 'No movement points'}
+                    </span>
+                  </div>
+                  <div className="employee-ops-actions">
+                    <span>{selectedEmployee ? `${selectedEmployee.fullName} (${selectedEmployee.employeeId})` : 'No employee selected'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {isEmployeeDetailModalOpen && selectedEmployee ? (
+          <div className="modal-backdrop" onClick={() => setIsEmployeeDetailModalOpen(false)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()} style={{ width: 'min(980px, 96vw)' }}>
+              <div className="modal-header">
+                <h3>
+                  {selectedEmployee.fullName} ({selectedEmployee.employeeId})
+                </h3>
+                <button type="button" className="neutral-btn" onClick={() => setIsEmployeeDetailModalOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <div className="attendance-ops-grid">
+                <div className="employee-ops-card" style={{ minHeight: 260 }}>
+                  <div className="employee-ops-header">
+                    <h5>Live Detail</h5>
+                    <span>{selectedEmployee.status || 'UNKNOWN'}</span>
+                  </div>
+                  <div className="employee-ops-row" style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div
+                        style={{
+                          width: 38,
+                          height: 38,
+                          borderRadius: '50%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: '#2d5cd6',
+                          color: '#ffffff',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {String(selectedEmployee.fullName || 'U')
+                          .charAt(0)
+                          .toUpperCase()}
+                      </div>
+                      <div>
+                        <p style={{ margin: 0, fontWeight: 700 }}>{selectedEmployee.fullName}</p>
+                        <span>{selectedEmployee.employeeId}</span>
+                      </div>
+                    </div>
+                    <div className="employee-ops-actions">
+                      <span>{selectedEmployee.status || 'UNKNOWN'}</span>
+                    </div>
+                  </div>
+                  <div
+                    ref={detailMapElementRef}
+                    style={{
+                      width: '100%',
+                      height: 280,
+                      borderRadius: 10,
+                      overflow: 'hidden',
+                      border: '1px solid #d9e6fb',
+                      background: '#ecf2ff',
+                      marginBottom: 10,
+                    }}
+                  />
+                  <div className="employee-ops-list">
+                    <div className="employee-ops-row">
+                      <div>
+                        <p>Last Seen</p>
+                        <span>{selectedEmployee.lastSeen || '—'}</span>
+                      </div>
+                      <div className="employee-ops-actions">
+                        <span>{typeof selectedEmployee.distanceMeters === 'number' ? `${Math.round(selectedEmployee.distanceMeters)} m` : '—'}</span>
+                      </div>
+                    </div>
+                    <div className="employee-ops-row">
+                      <div>
+                        <p>Coordinates</p>
+                        <span>
+                          {typeof selectedEmployee.lat === 'number' ? selectedEmployee.lat.toFixed(6) : '—'},{' '}
+                          {typeof selectedEmployee.lng === 'number' ? selectedEmployee.lng.toFixed(6) : '—'}
+                        </span>
+                      </div>
+                      <div className="employee-ops-actions">
+                        {typeof selectedEmployee.lat === 'number' && typeof selectedEmployee.lng === 'number' ? (
+                          <a href={`https://www.google.com/maps?q=${selectedEmployee.lat},${selectedEmployee.lng}`} target="_blank" rel="noreferrer">
+                            Open in Maps
+                          </a>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="employee-ops-row">
+                      <div>
+                        <p>Resolved Address</p>
+                        <span>
+                          {selectedEmployee.locationAddress ||
+                            selectedEmployee.locationLabel ||
+                            resolvedAddress ||
+                            (addressLoading ? 'Resolving location...' : 'Address not available yet')}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="employee-ops-card" style={{ minHeight: 260 }}>
+                  <div className="employee-ops-header">
+                    <h5>Movement Trail</h5>
+                    <span>{trailLoading ? 'Loading...' : `${movementTrail.length} points`}</span>
+                  </div>
+                  <div className="attendance-audit-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Time</th>
+                          <th>Latitude</th>
+                          <th>Longitude</th>
+                          <th>Accuracy</th>
+                          <th>Map</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {movementTrail.length > 0 ? (
+                          movementTrail
+                            .slice()
+                            .reverse()
+                            .slice(0, 40)
+                            .map((point, index) => (
+                              <tr key={point.id || `${point.time}-${index}`}>
+                                <td>{index + 1}</td>
+                                <td>{point.recordedAt || point.lastSeen || point.createdAt || '—'}</td>
+                                <td>{typeof point.lat === 'number' ? point.lat.toFixed(6) : '—'}</td>
+                                <td>{typeof point.lng === 'number' ? point.lng.toFixed(6) : '—'}</td>
+                                <td>{typeof point.accuracy === 'number' ? `${Math.round(point.accuracy)} m` : '—'}</td>
+                                <td>
+                                  {typeof point.lat === 'number' && typeof point.lng === 'number' ? (
+                                    <a href={`https://www.google.com/maps?q=${point.lat},${point.lng}`} target="_blank" rel="noreferrer">
+                                      Open
+                                    </a>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                        ) : (
+                          <tr>
+                            <td colSpan={6}>{trailLoading ? 'Loading movement...' : 'No movement records found.'}</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  {trailError ? <p className="form-error">{trailError}</p> : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+          </>
+        ) : (
+          <div className="employee-ops-card">
+            <div className="employee-ops-header">
+              <h5>Risk Events Ledger</h5>
+              <div className="employee-ops-actions">
+                <span>{filteredRiskEvents.length} event(s)</span>
+                <button type="button" className="neutral-btn" onClick={downloadRiskEventsCsv}>
+                  Export CSV
+                </button>
+              </div>
+            </div>
+            <div className="attendance-audit-filters">
+              <label>
+                <span>Risk Type</span>
+                <select value={riskTypeFilter} onChange={(event) => setRiskTypeFilter(event.target.value)}>
+                  {riskTypeOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Search</span>
+                <input
+                  value={riskSearchText}
+                  onChange={(event) => setRiskSearchText(event.target.value)}
+                  placeholder="Employee, ID, risk type, details"
+                />
+              </label>
+              <label>
+                <span>From Date</span>
+                <input type="date" value={riskFromDate} onChange={(event) => setRiskFromDate(event.target.value)} />
+              </label>
+              <label>
+                <span>To Date</span>
+                <input type="date" value={riskToDate} onChange={(event) => setRiskToDate(event.target.value)} />
+              </label>
+              <div className="attendance-ops-actions" style={{ alignSelf: 'end' }}>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => {
+                    setRiskTypeFilter('All');
+                    setRiskSearchText('');
+                    setRiskFromDate('');
+                    setRiskToDate('');
+                  }}
+                >
+                  Reset Filters
+                </button>
+              </div>
+            </div>
+            {riskEventsError ? <p className="form-error">{riskEventsError}</p> : null}
+            <div className="attendance-audit-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Employee</th>
+                    <th>Risk Type</th>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRiskEvents.length > 0 ? (
+                    filteredRiskEvents.map((eventRow) => (
+                      <tr key={eventRow.id}>
+                        <td>{eventRow.createdAt || '—'}</td>
+                        <td>
+                          {eventRow.fullName} ({eventRow.employeeId || '—'})
+                        </td>
+                        <td>{eventRow.riskType || '—'}</td>
+                        <td>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              borderRadius: 999,
+                              padding: '3px 10px',
+                              fontWeight: 700,
+                              fontSize: 12,
+                              ...getSeverityStyle(eventRow.severity),
+                            }}
+                          >
+                            {String(eventRow.severity || 'low').toUpperCase()}
+                          </span>
+                        </td>
+                        <td>{eventRow.status || '—'}</td>
+                        <td>{eventRow.details || '—'}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6}>No risk events found for the selected filter.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

@@ -9,6 +9,7 @@ import LoanRecordsPage from './pages/LoanRecordsPage';
 import LoanManagementPage from './pages/LoanManagementPage';
 import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
+import ManualPage from './pages/ManualPage';
 import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
 import SidebarNav from './app/SidebarNav';
 import LeaveApprovalPanel from './modules/leave/LeaveApprovalPanel';
@@ -531,6 +532,9 @@ function App({ initialModuleId }) {
         shiftEnd: '17:00',
         graceInMinutes: 15,
         graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
       },
       {
         id: 'SHIFT-EVENING',
@@ -539,6 +543,9 @@ function App({ initialModuleId }) {
         shiftEnd: '22:00',
         graceInMinutes: 10,
         graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
       },
     ],
     payrollWorkingDays: 26,
@@ -590,6 +597,7 @@ function App({ initialModuleId }) {
       officeWifiBssids: [],
       officeIpRanges: [],
       offlineMinutesThreshold: 15,
+      locationOffAlertEnabled: true,
     },
     mobileApp: {
       enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
@@ -597,6 +605,7 @@ function App({ initialModuleId }) {
       allowClockOut: true,
       requireLocationOnClock: true,
       autoSendLocationOnClock: true,
+      autoStartTrackingOnClockIn: true,
       allowLoanView: true,
       allowLoanRequest: true,
       allowLeaveView: true,
@@ -621,6 +630,7 @@ function App({ initialModuleId }) {
   });
 
   const isSettingsPage = activeModuleId === 'settings';
+  const isManualPage = activeModuleId === 'manual';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
 
   const normalizedCurrentUserRole = String(currentUser?.role || '').toLowerCase();
@@ -637,9 +647,9 @@ function App({ initialModuleId }) {
       return new Set(currentUser.allowedModules);
     }
     if (normalizedCurrentUserRole === 'employee') {
-      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
+      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
     }
-    return new Set(['employee-management', 'attendance-time', 'leave-management']);
+    return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
   }, [currentUser, isSuperAdmin, normalizedCurrentUserRole]);
 
   useEffect(() => {
@@ -861,6 +871,10 @@ function App({ initialModuleId }) {
               data.offlineMinutesThreshold === null || data.offlineMinutesThreshold === undefined
                 ? prev.trackingRules.offlineMinutesThreshold
                 : data.offlineMinutesThreshold,
+            locationOffAlertEnabled:
+              data.locationOffAlertEnabled === undefined
+                ? prev.trackingRules.locationOffAlertEnabled
+                : Boolean(data.locationOffAlertEnabled),
           },
         }));
         setTrackingSettingsError('');
@@ -1066,6 +1080,10 @@ function App({ initialModuleId }) {
               data.settings.offlineMinutesThreshold === undefined
                 ? prev.trackingRules.offlineMinutesThreshold
                 : data.settings.offlineMinutesThreshold,
+            locationOffAlertEnabled:
+              data.settings.locationOffAlertEnabled === undefined
+                ? prev.trackingRules.locationOffAlertEnabled
+                : Boolean(data.settings.locationOffAlertEnabled),
           },
         }));
       }
@@ -1222,22 +1240,6 @@ function App({ initialModuleId }) {
     [modalBarcodeValue]
   );
 
-  const totalModules = useMemo(
-    () => sidebarSections.reduce((acc, section) => acc + section.items.length, 0),
-    []
-  );
-  const totalRows = useMemo(
-    () => Object.values(moduleRowsState).reduce((acc, records) => acc + records.length, 0),
-    [moduleRowsState]
-  );
-  const activeStatusCount = useMemo(
-    () =>
-      Object.values(moduleRowsState)
-        .flat()
-        .filter((row) => String(row.status || '').toLowerCase() === 'active').length,
-    [moduleRowsState]
-  );
-
   const visibleFormFields = useMemo(() => {
     if (!activeModuleConfig) {
       return [];
@@ -1269,6 +1271,9 @@ function App({ initialModuleId }) {
               shiftEnd,
               graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
               graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+              overtimeEnabled: Boolean(shift?.overtimeEnabled),
+              overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
+              overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
             };
           })
           .filter(Boolean)
@@ -1288,6 +1293,9 @@ function App({ initialModuleId }) {
             (toMinutesFromClock(appSettings.attendanceReportTime) ?? 0)
         ),
         graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
       },
     ];
   }, [
@@ -2423,12 +2431,17 @@ function App({ initialModuleId }) {
       const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
       const shiftEndMinutes = toMinutesFromClock(shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd) ?? 0;
       const clockOutGraceMinutes = Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0);
+      const overtimeStartAfterMinutes = Math.max(0, Number(shiftConfig?.overtimeStartAfterMinutes) || 0);
       return {
         shiftName: shiftConfig?.name || shiftName,
         reportMinutes,
         lateAfterMinutes,
         shiftEndMinutes,
         shiftEndWithGraceMinutes: shiftEndMinutes + clockOutGraceMinutes,
+        overtimeEnabled: Boolean(shiftConfig?.overtimeEnabled),
+        overtimeStartAfterMinutes,
+        overtimeStartMinutes: shiftEndMinutes + overtimeStartAfterMinutes,
+        overtimePayPerMinute: Math.max(0, Number(shiftConfig?.overtimePayPerMinute) || 0),
       };
     },
     [
@@ -2501,6 +2514,11 @@ function App({ initialModuleId }) {
       const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
       const leftEarly =
         hasClockOut && shiftSchedule.shiftEndMinutes > 0 && checkOutMinutes < shiftSchedule.shiftEndMinutes;
+      const overtimeMinutes =
+        hasClockOut && shiftSchedule.overtimeEnabled
+          ? Math.max(0, (checkOutMinutes ?? 0) - shiftSchedule.overtimeStartMinutes)
+          : 0;
+      const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
       const lateDeduction = toNumberValue(attendanceRow?.deductionAmount);
       const countMissingClockIn =
         !isExempt &&
@@ -2569,6 +2587,8 @@ function App({ initialModuleId }) {
         dailyStatus,
         isLate,
         leftEarly,
+        overtimeMinutes,
+        overtimeAmount,
         penalties,
       };
     });
@@ -3110,7 +3130,8 @@ function App({ initialModuleId }) {
     !hideModuleTableForAttendanceEmployee &&
     (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
     activeModuleId !== 'leave-management' &&
-    activeModuleId !== 'monitoring-tracking';
+    activeModuleId !== 'monitoring-tracking' &&
+    activeModuleId !== 'manual';
   const fingerprintConnectionState = useMemo(() => {
     if (appSettings.fingerprintIntegration.mode === 'simulation') {
       return 'Simulation Ready';
@@ -3222,6 +3243,72 @@ function App({ initialModuleId }) {
       setToasts((prev) => prev.filter((toast) => toast.id !== toastId));
     }, 3200);
   };
+  const handleAssignEmployeeShift = useCallback(
+    async (employeeId, shiftName) => {
+      const normalizedEmployeeId = String(employeeId || '').trim();
+      const normalizedShiftName = String(shiftName || '').trim();
+      if (!normalizedEmployeeId || !normalizedShiftName) {
+        showToast('Employee and shift are required.', 'error');
+        return false;
+      }
+      const shiftExists = attendanceShiftOptions.some(
+        (shift) => String(shift.name || '').trim() === normalizedShiftName
+      );
+      if (!shiftExists) {
+        showToast(`Shift "${normalizedShiftName}" does not exist in settings.`, 'error');
+        return false;
+      }
+      const currentRows = moduleRowsState['employee-management'] || [];
+      const existingEmployee = currentRows.find((row) => String(row.id || '').trim() === normalizedEmployeeId);
+      if (!existingEmployee) {
+        showToast('Employee record not found.', 'error');
+        return false;
+      }
+      const nextRow = {
+        ...existingEmployee,
+        assignedShift: normalizedShiftName,
+      };
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'employee-management': (prev['employee-management'] || []).map((row) =>
+          String(row.id || '').trim() === normalizedEmployeeId ? nextRow : row
+        ),
+      }));
+      try {
+        const response = await fetch(
+          `http://localhost:8000/api/modules/employee-management/${encodeURIComponent(normalizedEmployeeId)}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(nextRow),
+          }
+        );
+        if (!response.ok) {
+          throw new Error('Failed to save shift assignment');
+        }
+        const data = await response.json();
+        const saved = data?.record || nextRow;
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'employee-management': (prev['employee-management'] || []).map((row) =>
+            String(row.id || '').trim() === normalizedEmployeeId ? saved : row
+          ),
+        }));
+        showToast(`Shift updated for ${saved.fullName || normalizedEmployeeId}.`, 'success');
+        return true;
+      } catch (error) {
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'employee-management': (prev['employee-management'] || []).map((row) =>
+            String(row.id || '').trim() === normalizedEmployeeId ? existingEmployee : row
+          ),
+        }));
+        showToast('Unable to save shift assignment.', 'error');
+        return false;
+      }
+    },
+    [attendanceShiftOptions, moduleRowsState]
+  );
   const moduleAdapter = useModuleAdapter({
     activeModuleId,
     activeModuleConfig,
@@ -3479,9 +3566,17 @@ function App({ initialModuleId }) {
       },
       [...existingClockings, nextClocking]
     );
+    const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow: matchedRow, employee: selectedAttendanceEmployee });
+    const checkOutMinutes = toMinutesFromClock(checkOutTime) ?? 0;
+    const overtimeMinutes = shiftSchedule.overtimeEnabled
+      ? Math.max(0, checkOutMinutes - shiftSchedule.overtimeStartMinutes)
+      : 0;
+    const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
     const normalizedUpdatedRow = {
       ...matchedRow,
       ...updatedRow,
+      overtimeMinutes,
+      overtimeAmount: overtimeAmount.toFixed(2),
     };
 
     setModuleRowsState((prev) => {
@@ -5214,20 +5309,6 @@ function App({ initialModuleId }) {
                 Sign out
               </button>
             </div>
-            <div className="stats">
-              <article className="stat-card">
-                <span className="stat-value">{totalModules}</span>
-                <span className="stat-label">Modules</span>
-              </article>
-              <article className="stat-card">
-                <span className="stat-value">{totalRows}</span>
-                <span className="stat-label">Data Rows</span>
-              </article>
-              <article className="stat-card">
-                <span className="stat-value">{activeStatusCount}</span>
-                <span className="stat-label">Active Records</span>
-              </article>
-            </div>
             <div
               style={{
                 marginTop: 8,
@@ -5428,6 +5509,9 @@ function App({ initialModuleId }) {
                                       shiftEnd: prev.attendanceShiftEnd || '17:00',
                                       graceInMinutes: 15,
                                       graceOutMinutes: 0,
+                                      overtimeEnabled: false,
+                                      overtimeStartAfterMinutes: 0,
+                                      overtimePayPerMinute: 0,
                                     },
                                   ],
                                 };
@@ -5440,6 +5524,9 @@ function App({ initialModuleId }) {
                           </button>
                         </div>
                       </div>
+                      <p className="muted-note">
+                        Shift rules apply only to employees assigned to that shift. Configure overtime per shift using toggle, start-after minutes, and pay per minute.
+                      </p>
                       <div className="attendance-audit-table">
                         <table>
                           <thead>
@@ -5449,6 +5536,9 @@ function App({ initialModuleId }) {
                               <th>Time Out</th>
                               <th>Grace In (min)</th>
                               <th>Grace Out (min)</th>
+                              <th>Overtime</th>
+                              <th>OT Start After (min)</th>
+                              <th>OT Pay / Min</th>
                               <th>Actions</th>
                             </tr>
                           </thead>
@@ -5562,6 +5652,66 @@ function App({ initialModuleId }) {
                                         shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
                                           item.id === shift.id || itemIndex === index
                                             ? { ...item, graceOutMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="filter-select"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimeEnabled ? 'on' : 'off'}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimeEnabled: event.target.value === 'on' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  >
+                                    <option value="off">Off</option>
+                                    <option value="on">On</option>
+                                  </select>
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimeStartAfterMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimeStartAfterMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.001"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimePayPerMinute}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimePayPerMinute: Math.max(0, Number(event.target.value) || 0) }
                                             : item
                                         ),
                                       }))
@@ -5895,6 +6045,10 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <p style={{ marginTop: -4, color: '#4b6090', fontSize: 12 }}>
+                      VPN does not change GPS coordinates, but it can hide real network origin. Use Office WiFi and Office IP ranges together
+                      to flag network-risk when VPN/proxy is used.
+                    </p>
                     <label className="inline-field">
                       <span>Monitor Activity</span>
                       <input
@@ -5954,6 +6108,22 @@ function App({ initialModuleId }) {
                             trackingRules: {
                               ...prev.trackingRules,
                               whatsappAlertsEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Alert When Location Is Turned Off</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.locationOffAlertEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              locationOffAlertEnabled: event.target.checked,
                             },
                           }))
                         }
@@ -6078,6 +6248,22 @@ function App({ initialModuleId }) {
                             mobileApp: {
                               ...prev.mobileApp,
                               autoSendLocationOnClock: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Auto Start Tracking On Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.autoStartTrackingOnClockIn)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              autoStartTrackingOnClockIn: event.target.checked,
                             },
                           }))
                         }
@@ -6810,12 +6996,26 @@ function App({ initialModuleId }) {
                 ) : null}
               </div>
             </section>
+          ) : isManualPage ? (
+            <section className="panel table-panel">
+              <div className="panel-title-row">
+                <div>
+                  <h2>Manual</h2>
+                  <p>Detailed system usage guide for admin and mobile workflows.</p>
+                </div>
+              </div>
+              <ManualPage />
+            </section>
           ) : (
             <section className="panel table-panel">
               <div className="panel-title-row">
                 <div>
                   <h2>{activeModuleConfig.title}</h2>
-                  <p>{activeModuleConfig.entityLabel} registry and operations table</p>
+                  <p>
+                    {showMainModuleTable
+                      ? `${activeModuleConfig.entityLabel} registry and operations table • ${filteredRows.length} visible row(s)`
+                      : `${activeModuleConfig.entityLabel} registry and operations table`}
+                  </p>
                 </div>
                 {activeModuleId !== 'attendance-time' && activeModuleId !== 'user-management' ? (
                   <div className="panel-title-actions">
@@ -6888,6 +7088,7 @@ function App({ initialModuleId }) {
                   setSelectedPerformanceEmployeeId={setSelectedPerformanceEmployeeId}
                   getCurrentClockValue={getCurrentClockValue}
                   currentUser={currentUser}
+                  handleAssignEmployeeShift={handleAssignEmployeeShift}
                 />
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}

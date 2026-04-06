@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { filterEmployeesBySearch } from '../utils/employeeSearch';
 
 export default function AttendanceTimePage({
@@ -59,6 +59,7 @@ export default function AttendanceTimePage({
   setSelectedPerformanceEmployeeId,
   getCurrentClockValue,
   currentUser,
+  handleAssignEmployeeShift,
 }) {
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
@@ -67,10 +68,18 @@ export default function AttendanceTimePage({
   const [complianceSort, setComplianceSort] = useState({ key: 'employee', direction: 'asc' });
   const [penaltySort, setPenaltySort] = useState({ key: 'date', direction: 'desc' });
   const [performanceSort, setPerformanceSort] = useState({ key: 'attendanceScore', direction: 'desc' });
-  const shiftOptions =
-    Array.isArray(appSettings.shifts) && appSettings.shifts.length > 0
-      ? appSettings.shifts.map((shift) => String(shift?.name || '').trim()).filter(Boolean)
-      : ['Default'];
+  const [shiftAssignmentSort, setShiftAssignmentSort] = useState({ key: 'fullName', direction: 'asc' });
+  const [shiftAssignmentDepartmentFilter, setShiftAssignmentDepartmentFilter] = useState('All');
+  const [shiftAssignmentShiftFilter, setShiftAssignmentShiftFilter] = useState('All');
+  const [shiftAssignmentSearchText, setShiftAssignmentSearchText] = useState('');
+  const [shiftAssignmentSavingId, setShiftAssignmentSavingId] = useState('');
+  const shiftOptions = useMemo(
+    () =>
+      Array.isArray(appSettings.shifts) && appSettings.shifts.length > 0
+        ? appSettings.shifts.map((shift) => String(shift?.name || '').trim()).filter(Boolean)
+        : ['Default'],
+    [appSettings.shifts]
+  );
   const toggleSort = (currentSort, setSort, key) => {
     setSort((prev) =>
       prev.key === key
@@ -78,7 +87,7 @@ export default function AttendanceTimePage({
         : { key, direction: 'asc' }
     );
   };
-  const compareValues = (left, right, direction) => {
+  const compareValues = useCallback((left, right, direction) => {
     const leftValue = left ?? '';
     const rightValue = right ?? '';
     const leftNumber = Number(leftValue);
@@ -88,7 +97,7 @@ export default function AttendanceTimePage({
       ? leftNumber - rightNumber
       : String(leftValue).localeCompare(String(rightValue));
     return direction === 'asc' ? base : -base;
-  };
+  }, []);
   const sortArrow = (state, key) => {
     if (state.key !== key) {
       return '';
@@ -102,7 +111,7 @@ export default function AttendanceTimePage({
       }
       return compareValues(a?.[complianceSort.key], b?.[complianceSort.key], complianceSort.direction);
     });
-  }, [attendanceComplianceFilteredRows, complianceSort]);
+  }, [attendanceComplianceFilteredRows, compareValues, complianceSort]);
   const sortedPenaltyRows = useMemo(() => {
     return [...attendancePenaltyFilteredRows].sort((a, b) => {
       if (penaltySort.key === 'status') {
@@ -112,12 +121,45 @@ export default function AttendanceTimePage({
       }
       return compareValues(a?.[penaltySort.key], b?.[penaltySort.key], penaltySort.direction);
     });
-  }, [attendancePenaltyFilteredRows, penaltySort]);
+  }, [attendancePenaltyFilteredRows, compareValues, penaltySort]);
   const sortedPerformanceRows = useMemo(() => {
     return [...attendancePerformanceRows].sort((a, b) =>
       compareValues(a?.[performanceSort.key], b?.[performanceSort.key], performanceSort.direction)
     );
-  }, [attendancePerformanceRows, performanceSort]);
+  }, [attendancePerformanceRows, compareValues, performanceSort]);
+  const shiftAssignmentDepartmentOptions = useMemo(() => {
+    const departments = new Set(
+      (employeeBaseRows || [])
+        .map((row) => String(row.department || '').trim())
+        .filter(Boolean)
+    );
+    return ['All', ...Array.from(departments).sort((a, b) => String(a).localeCompare(String(b)))];
+  }, [employeeBaseRows]);
+  const shiftAssignmentRows = useMemo(() => {
+    const query = String(shiftAssignmentSearchText || '').trim().toLowerCase();
+    return (employeeBaseRows || [])
+      .filter((row) => {
+        const department = String(row.department || '').trim() || 'Unassigned';
+        const assignedShift = String(row.assignedShift || '').trim() || shiftOptions[0] || 'Default';
+        const matchesDepartment = shiftAssignmentDepartmentFilter === 'All' || department === shiftAssignmentDepartmentFilter;
+        const matchesShift = shiftAssignmentShiftFilter === 'All' || assignedShift === shiftAssignmentShiftFilter;
+        const matchesSearch =
+          !query ||
+          String(row.fullName || '').toLowerCase().includes(query) ||
+          String(row.id || '').toLowerCase().includes(query) ||
+          department.toLowerCase().includes(query);
+        return matchesDepartment && matchesShift && matchesSearch;
+      })
+      .sort((a, b) => compareValues(a?.[shiftAssignmentSort.key], b?.[shiftAssignmentSort.key], shiftAssignmentSort.direction));
+  }, [
+    compareValues,
+    employeeBaseRows,
+    shiftAssignmentDepartmentFilter,
+    shiftAssignmentSearchText,
+    shiftAssignmentShiftFilter,
+    shiftAssignmentSort,
+    shiftOptions,
+  ]);
 
   useEffect(() => {
     if (attendanceViewTab !== 'tracking') {
@@ -205,6 +247,13 @@ export default function AttendanceTimePage({
               onClick={() => setAttendanceViewTab('tracking')}
             >
               Live Tracking
+            </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'shifts' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('shifts')}
+            >
+              Shift Assignment
             </button>
           </>
         ) : null}
@@ -728,6 +777,130 @@ export default function AttendanceTimePage({
                 ) : (
                   <tr>
                     <td colSpan={7}>No performance records for the selected filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'shifts' ? (
+        <div className="attendance-audit-wrap">
+          <div className="attendance-audit-head">
+            <h4>Shift Assignment</h4>
+            <div className="attendance-audit-filters">
+              <label>
+                <span>Department</span>
+                <select
+                  className="filter-select"
+                  value={shiftAssignmentDepartmentFilter}
+                  onChange={(event) => setShiftAssignmentDepartmentFilter(event.target.value)}
+                >
+                  {shiftAssignmentDepartmentOptions.map((department) => (
+                    <option key={department} value={department}>
+                      {department}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Shift</span>
+                <select
+                  className="filter-select"
+                  value={shiftAssignmentShiftFilter}
+                  onChange={(event) => setShiftAssignmentShiftFilter(event.target.value)}
+                >
+                  <option value="All">All</option>
+                  {shiftOptions.map((shiftName) => (
+                    <option key={shiftName} value={shiftName}>
+                      {shiftName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Search</span>
+                <input
+                  placeholder="Name, ID or department"
+                  value={shiftAssignmentSearchText}
+                  onChange={(event) => setShiftAssignmentSearchText(event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="attendance-audit-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'fullName')}
+                    >
+                      Employee{sortArrow(shiftAssignmentSort, 'fullName')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'department')}
+                    >
+                      Department{sortArrow(shiftAssignmentSort, 'department')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'assignedShift')}
+                    >
+                      Assigned Shift{sortArrow(shiftAssignmentSort, 'assignedShift')}
+                    </button>
+                  </th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shiftAssignmentRows.length > 0 ? (
+                  shiftAssignmentRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        {row.fullName} ({row.id})
+                      </td>
+                      <td>{row.department || 'Unassigned'}</td>
+                      <td>
+                        <select
+                          className="filter-select"
+                          value={String(row.assignedShift || shiftOptions[0] || 'Default')}
+                          disabled={shiftAssignmentSavingId === row.id}
+                          onChange={async (event) => {
+                            const nextShift = event.target.value;
+                            if (nextShift === String(row.assignedShift || '')) {
+                              return;
+                            }
+                            setShiftAssignmentSavingId(row.id);
+                            try {
+                              await handleAssignEmployeeShift(row.id, nextShift);
+                            } finally {
+                              setShiftAssignmentSavingId('');
+                            }
+                          }}
+                        >
+                          {shiftOptions.map((shiftName) => (
+                            <option key={shiftName} value={shiftName}>
+                              {shiftName}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>{shiftAssignmentSavingId === row.id ? 'Saving...' : 'Ready'}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4}>No employees found for selected filters.</td>
                   </tr>
                 )}
               </tbody>

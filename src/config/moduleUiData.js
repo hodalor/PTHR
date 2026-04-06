@@ -27,6 +27,7 @@ export const sidebarSections = [
     items: [
       { id: 'user-management', label: 'User Management' },
       { id: 'settings', label: 'Settings' },
+      { id: 'manual', label: 'Manual' },
     ],
   },
 ];
@@ -457,6 +458,9 @@ export const moduleUiData = {
       { key: 'housingAllowance', label: 'Housing Allowance', type: 'number' },
       { key: 'foodAllowance', label: 'Food Allowance', type: 'number' },
       { key: 'grossPay', label: 'GROSS', type: 'number' },
+      { key: 'overtimeMinutes', label: 'Overtime Minutes', type: 'number' },
+      { key: 'overtimeEarnings', label: 'Overtime Earnings', type: 'number' },
+      { key: 'totalEarnings', label: 'Total Earnings', type: 'number' },
       { key: 'napsaDeduction', label: 'NAPSA Deduction', type: 'number' },
       { key: 'nhimaDeduction', label: 'NHIMA Deduction', type: 'number' },
       { key: 'taxDeduction', label: 'Tax Deduction', type: 'number' },
@@ -493,6 +497,9 @@ export const moduleUiData = {
       { key: 'housingAllowance', label: 'Housing Allowance' },
       { key: 'foodAllowance', label: 'Food Allowance' },
       { key: 'grossPay', label: 'GROSS' },
+      { key: 'overtimeMinutes', label: 'OT Minutes' },
+      { key: 'overtimeEarnings', label: 'OT Earnings' },
+      { key: 'totalEarnings', label: 'Total Earnings' },
       { key: 'napsaDeduction', label: 'NAPSA Deduction' },
       { key: 'nhimaDeduction', label: 'NHIMA Deduction' },
       { key: 'taxDeduction', label: 'Tax Deduction' },

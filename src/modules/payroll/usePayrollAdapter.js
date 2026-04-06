@@ -25,7 +25,18 @@ const payrollDetailSections = [
   {
     id: 'pay-allowances',
     title: 'Pay & Allowances',
-    fields: ['basicPay', 'monthlyBonuses', 'transportAllowance', 'housingAllowance', 'foodAllowance', 'grossPay', 'workingDays'],
+    fields: [
+      'basicPay',
+      'monthlyBonuses',
+      'transportAllowance',
+      'housingAllowance',
+      'foodAllowance',
+      'grossPay',
+      'overtimeMinutes',
+      'overtimeEarnings',
+      'totalEarnings',
+      'workingDays',
+    ],
   },
   {
     id: 'deductions-penalties',
@@ -254,6 +265,8 @@ export const usePayrollAdapter = ({
         bankAccountNumber: formValues.bankAccountNumber || matchedEmployeeFromSearch.bankAccountNumber || '',
         month: formatPayrollPeriodLabel(formValues.month),
         grossPay: payrollPreviewValues.grossPay,
+        overtimeEarnings: payrollPreviewValues.overtimeEarnings,
+        totalEarnings: payrollPreviewValues.totalEarnings,
         totalAttendancePenalty: payrollPreviewValues.totalAttendancePenalty,
         totalDeductions: payrollPreviewValues.totalDeductions,
         netPayable: payrollPreviewValues.netPayable,

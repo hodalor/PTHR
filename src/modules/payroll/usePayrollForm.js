@@ -48,6 +48,8 @@ export const usePayrollForm = ({ active, appSettings, employeeBaseRows, formValu
     const preview = computePayrollPreviewValues(formValues, appSettings);
     return {
       grossPay: formatMoneyValue(preview.grossPay),
+      overtimeEarnings: formatMoneyValue(preview.overtimeEarnings),
+      totalEarnings: formatMoneyValue(preview.totalEarnings),
       totalAttendancePenalty: formatMoneyValue(preview.totalAttendancePenalty),
       totalDeductions: formatMoneyValue(preview.totalDeductions),
       netPayable: formatMoneyValue(preview.netPayable),
@@ -63,4 +65,3 @@ export const usePayrollForm = ({ active, appSettings, employeeBaseRows, formValu
     payrollPreviewValues,
   };
 };
-
