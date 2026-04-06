@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
+import { toApiUrl } from './config/api';
 import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
@@ -656,7 +657,7 @@ function App({ initialModuleId }) {
     let cancelled = false;
     const checkHealth = async () => {
       try {
-        const response = await fetch('http://localhost:8000/health');
+        const response = await fetch(toApiUrl('http://localhost:8000/health'));
         if (!response.ok) {
           throw new Error('Health check failed');
         }
@@ -690,7 +691,7 @@ function App({ initialModuleId }) {
     setLoginError('');
     setLoginLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -749,7 +750,7 @@ function App({ initialModuleId }) {
     let cancelled = false;
     const loadModuleRows = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`));
         if (!response.ok) {
           return;
         }
@@ -785,7 +786,7 @@ function App({ initialModuleId }) {
     employeeModuleLoadingRef.current = true;
     const loadEmployees = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/modules/employee-management');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'));
         if (!response.ok) {
           return;
         }
@@ -813,7 +814,7 @@ function App({ initialModuleId }) {
     const fetchTrackingSettings = async () => {
       try {
         setTrackingSettingsLoading(true);
-        const response = await fetch('http://localhost:8000/api/tracking/settings');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'));
         if (!response.ok) {
           throw new Error('Failed to load tracking settings');
         }
@@ -892,7 +893,7 @@ function App({ initialModuleId }) {
     const fetchAttendanceSettings = async () => {
       try {
         setAttendanceSettingsLoading(true);
-        const response = await fetch('http://localhost:8000/api/settings/attendance');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'));
         if (!response.ok) {
           throw new Error('Failed to load attendance settings');
         }
@@ -948,7 +949,7 @@ function App({ initialModuleId }) {
         setAttendanceSettingsSavedMessage('');
         setAttendanceSettingsError('');
         const payload = buildAttendanceSettingsPayload(nextSettings || appSettings);
-        const response = await fetch('http://localhost:8000/api/settings/attendance', {
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -982,7 +983,7 @@ function App({ initialModuleId }) {
     const fetchMobileSettings = async () => {
       try {
         setMobileSettingsLoading(true);
-        const response = await fetch('http://localhost:8000/api/mobile/settings');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'));
         if (!response.ok) {
           throw new Error('Failed to load mobile settings');
         }
@@ -1013,7 +1014,7 @@ function App({ initialModuleId }) {
       setTrackingSettingsSaving(true);
       setTrackingSettingsSavedMessage('');
       setTrackingSettingsError('');
-      const response = await fetch('http://localhost:8000/api/tracking/settings', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1100,7 +1101,7 @@ function App({ initialModuleId }) {
       setMobileSettingsSaving(true);
       setMobileSettingsSavedMessage('');
       setMobileSettingsError('');
-      const response = await fetch('http://localhost:8000/api/mobile/settings', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3276,7 +3277,7 @@ function App({ initialModuleId }) {
       }));
       try {
         const response = await fetch(
-          `http://localhost:8000/api/modules/employee-management/${encodeURIComponent(normalizedEmployeeId)}`,
+          toApiUrl(`http://localhost:8000/api/modules/employee-management/${encodeURIComponent(normalizedEmployeeId)}`),
           {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -3499,8 +3500,8 @@ function App({ initialModuleId }) {
     try {
       const url =
         existingRowIndex >= 0
-          ? `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(newRow.id)}`
-          : 'http://localhost:8000/api/modules/attendance-time';
+          ? toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(newRow.id)}`)
+          : toApiUrl('http://localhost:8000/api/modules/attendance-time');
       const method = existingRowIndex >= 0 ? 'PUT' : 'POST';
       await fetch(url, {
         method,
@@ -3594,7 +3595,7 @@ function App({ initialModuleId }) {
 
     try {
       await fetch(
-        `http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(normalizedUpdatedRow.id)}`,
+        toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(normalizedUpdatedRow.id)}`),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -3694,7 +3695,7 @@ function App({ initialModuleId }) {
     setLeaveApprovalSavingId(leaveId);
     try {
       const response = await fetch(
-        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -3765,7 +3766,7 @@ function App({ initialModuleId }) {
     setLeaveApprovalSavingId(leaveId);
     try {
       const response = await fetch(
-        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -3838,7 +3839,7 @@ function App({ initialModuleId }) {
     setLeaveApprovalSavingId(leaveId);
     try {
       const response = await fetch(
-        `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`,
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -3915,7 +3916,7 @@ function App({ initialModuleId }) {
     };
     setLoanApprovalSavingId(loanId);
     try {
-      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nextRow),
@@ -3982,7 +3983,7 @@ function App({ initialModuleId }) {
     };
     setLoanApprovalSavingId(loanId);
     try {
-      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nextRow),
@@ -4048,7 +4049,7 @@ function App({ initialModuleId }) {
     };
     setLoanApprovalSavingId(loanId);
     try {
-      const response = await fetch(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`, {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(nextRow),
@@ -4227,7 +4228,7 @@ function App({ initialModuleId }) {
       return;
     }
     if (activeModuleId !== 'attendance-penalty-adjustments') {
-      fetch(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`, {
+      fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`), {
         method: 'DELETE',
       }).catch(() => {});
     }
@@ -4458,8 +4459,8 @@ function App({ initialModuleId }) {
       try {
         const url =
           editRowId === 'new'
-            ? 'http://localhost:8000/api/modules/leave-management'
-            : `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`;
+            ? toApiUrl('http://localhost:8000/api/modules/leave-management')
+            : toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`);
         const method = editRowId === 'new' ? 'POST' : 'PUT';
         const response = await fetch(url, {
           method,
@@ -4570,8 +4571,8 @@ function App({ initialModuleId }) {
       try {
         const url =
           editRowId === 'new'
-            ? `http://localhost:8000/api/modules/${activeModuleId}`
-            : `http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`;
+            ? toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`)
+            : toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`);
         const method = editRowId === 'new' ? 'POST' : 'PUT';
         const response = await fetch(url, {
           method,
@@ -5250,7 +5251,7 @@ function App({ initialModuleId }) {
             <button type="submit" className="primary-btn" disabled={loginLoading}>
               {loginLoading ? 'Signing In...' : 'Sign In'}
               </button>
-              {backendHealth.mongo !== 'connected' ? (
+              {backendHealth.status === 'error' ? (
                 <div className="login-hint">
                   Backend or database is not connected. Check the server before logging in.
                 </div>

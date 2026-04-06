@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { filterEmployeesBySearch } from '../utils/employeeSearch';
+import { toApiUrl } from '../config/api';
 
 export default function AttendanceTimePage({
   appSettings,
@@ -173,7 +174,7 @@ export default function AttendanceTimePage({
           return;
         }
         setTrackingLoading(true);
-        const response = await fetch('http://localhost:8000/api/tracking/employees');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/employees'));
         if (!response.ok) {
           throw new Error('Failed to load tracking data');
         }

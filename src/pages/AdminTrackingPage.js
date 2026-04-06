@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { toApiUrl } from '../config/api';
 
 const resolveMarkerColor = (status) => {
   if (status === 'INSIDE') {
@@ -84,9 +85,9 @@ export default function AdminTrackingPage() {
         }
         setTrackingLoading(true);
         const [trackingResponse, alertsResponse, riskEventsResponse] = await Promise.all([
-          fetch('http://localhost:8000/api/tracking/employees'),
-          fetch('http://localhost:8000/api/tracking/alerts/whatsapp'),
-          fetch('http://localhost:8000/api/tracking/events?limit=300'),
+          fetch(toApiUrl('http://localhost:8000/api/tracking/employees')),
+          fetch(toApiUrl('http://localhost:8000/api/tracking/alerts/whatsapp')),
+          fetch(toApiUrl('http://localhost:8000/api/tracking/events?limit=300')),
         ]);
         if (!trackingResponse.ok) {
           throw new Error('Failed to load tracking data');
@@ -144,7 +145,7 @@ export default function AdminTrackingPage() {
         setTrailLoading(true);
         setTrailError('');
         const response = await fetch(
-          `http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=200`
+          toApiUrl(`http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=200`)
         );
         if (!response.ok) {
           throw new Error('Failed to load movement trail');
@@ -182,9 +183,9 @@ export default function AdminTrackingPage() {
       try {
         setAddressLoading(true);
         const response = await fetch(
-          `http://localhost:8000/api/tracking/reverse-geocode?lat=${encodeURIComponent(selectedEmployee.lat)}&lng=${encodeURIComponent(
+          toApiUrl(`http://localhost:8000/api/tracking/reverse-geocode?lat=${encodeURIComponent(selectedEmployee.lat)}&lng=${encodeURIComponent(
             selectedEmployee.lng
-          )}`
+          )}`)
         );
         if (!response.ok) {
           throw new Error('Reverse geocode failed');
