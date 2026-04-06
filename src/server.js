@@ -52,6 +52,9 @@ const defaultAttendanceSettings = {
       shiftEnd: '17:00',
       graceInMinutes: 15,
       graceOutMinutes: 0,
+      overtimeEnabled: false,
+      overtimeStartAfterMinutes: 0,
+      overtimePayPerMinute: 0,
     },
   ],
 };
@@ -67,6 +70,9 @@ function normalizeAttendanceSettings(payload) {
           shiftEnd: String(shift?.shiftEnd || '').trim(),
           graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
           graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+          overtimeEnabled: Boolean(shift?.overtimeEnabled),
+          overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
+          overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
         }))
         .filter(
           (shift) =>
@@ -92,6 +98,145 @@ function normalizeAttendanceSettings(payload) {
     attendanceFixedEmployeeId: String(source.attendanceFixedEmployeeId || ''),
     shifts: shifts.length > 0 ? shifts : defaultAttendanceSettings.shifts,
   };
+}
+
+function toMinutesFromClock(value) {
+  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function formatWorkedDuration(checkIn, checkOut) {
+  const start = toMinutesFromClock(checkIn);
+  const end = toMinutesFromClock(checkOut);
+  if (start === null || end === null || end <= start) {
+    return '';
+  }
+  const diff = end - start;
+  const hours = Math.floor(diff / 60);
+  const minutes = diff % 60;
+  return `${hours}h ${minutes}m`;
+}
+
+function normalizeAttendanceClockings(row) {
+  const fromClockings = Array.isArray(row?.clockings)
+    ? row.clockings
+        .map((clocking) => ({
+          id: String(clocking?.id || ''),
+          mode: clocking?.mode === 'clock-out' ? 'clock-out' : 'clock-in',
+          time: String(clocking?.time || '').trim(),
+          lat: typeof clocking?.lat === 'number' ? clocking.lat : undefined,
+          lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
+          accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
+          source: String(clocking?.source || row?.source || 'System'),
+          createdAt: String(clocking?.createdAt || ''),
+        }))
+        .filter((clocking) => /^\d{1,2}:\d{2}$/.test(clocking.time))
+    : [];
+  if (fromClockings.length > 0) {
+    return fromClockings.sort((left, right) => left.time.localeCompare(right.time));
+  }
+  const fallback = [];
+  if (/^\d{1,2}:\d{2}$/.test(String(row?.checkIn || ''))) {
+    fallback.push({
+      id: `CLK-IN-${Date.now()}`,
+      mode: 'clock-in',
+      time: String(row.checkIn).trim(),
+      lat: typeof row?.checkInLat === 'number' ? row.checkInLat : undefined,
+      lng: typeof row?.checkInLng === 'number' ? row.checkInLng : undefined,
+      accuracy: typeof row?.checkInAccuracy === 'number' ? row.checkInAccuracy : null,
+      source: String(row?.source || 'System'),
+      createdAt: String(row?.date || ''),
+    });
+  }
+  if (/^\d{1,2}:\d{2}$/.test(String(row?.checkOut || ''))) {
+    fallback.push({
+      id: `CLK-OUT-${Date.now()}`,
+      mode: 'clock-out',
+      time: String(row.checkOut).trim(),
+      lat: typeof row?.checkOutLat === 'number' ? row.checkOutLat : undefined,
+      lng: typeof row?.checkOutLng === 'number' ? row.checkOutLng : undefined,
+      accuracy: typeof row?.checkOutAccuracy === 'number' ? row.checkOutAccuracy : null,
+      source: String(row?.source || 'System'),
+      createdAt: String(row?.date || ''),
+    });
+  }
+  return fallback.sort((left, right) => left.time.localeCompare(right.time));
+}
+
+function enrichAttendanceRecordWithContext(payload, context) {
+  const source = payload || {};
+  const employeeId = String(source.employeeId || '').trim();
+  const employeeName = String(source.employee || '').trim();
+  const settings = context?.settings || defaultAttendanceSettings;
+  const employee =
+    context?.employeeById?.get(employeeId) ||
+    context?.employeeByEmployeeId?.get(employeeId) ||
+    context?.employeeByName?.get(employeeName) ||
+    null;
+  if (!employeeId && !employeeName && !employee) {
+    return source;
+  }
+  const shiftName = String(source.shift || employee?.assignedShift || settings.shifts?.[0]?.name || 'Default').trim();
+  const shiftConfig =
+    settings.shifts.find(
+      (shift) => String(shift?.name || '').trim().toLowerCase() === shiftName.toLowerCase()
+    ) || settings.shifts[0];
+  const clockings = normalizeAttendanceClockings(source);
+  const firstClockIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
+  const lastClockOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+  const checkIn = firstClockIn?.time || String(source.checkIn || '').trim();
+  const checkOut = lastClockOut?.time || String(source.checkOut || '').trim();
+  const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || settings.attendanceReportTime);
+  const lateAfterMinutes =
+    reportMinutes === null ? null : reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
+  const checkInMinutes = toMinutesFromClock(checkIn);
+  const lateMinutes =
+    lateAfterMinutes === null || checkInMinutes === null ? 0 : Math.max(0, checkInMinutes - lateAfterMinutes);
+  const existingStatus = String(source.status || '').trim();
+  const status =
+    checkInMinutes === null
+      ? existingStatus || 'Absent'
+      : lateMinutes > 0
+        ? 'Late'
+        : existingStatus === 'On Leave'
+          ? 'On Leave'
+          : 'On Time';
+  return {
+    ...source,
+    shift: shiftConfig?.name || shiftName,
+    checkIn,
+    checkOut,
+    workedHours: checkIn && checkOut ? formatWorkedDuration(checkIn, checkOut) : String(source.workedHours || ''),
+    lateMinutes: String(lateMinutes),
+    status,
+    clockings,
+  };
+}
+
+async function enrichAttendanceRecord(db, payload) {
+  const source = payload || {};
+  const employeeId = String(source.employeeId || '').trim();
+  const employeeName = String(source.employee || '').trim();
+  const [settingsRecord, employee] = await Promise.all([
+    db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+    db.collection('employees').findOne({
+      $or: [{ id: employeeId }, { employeeId }, { fullName: employeeName }],
+    }),
+  ]);
+  return enrichAttendanceRecordWithContext(source, {
+    settings: normalizeAttendanceSettings(settingsRecord?.value),
+    employeeById: new Map(employee?.id ? [[String(employee.id), employee]] : []),
+    employeeByEmployeeId: new Map(employee?.employeeId ? [[String(employee.employeeId), employee]] : []),
+    employeeByName: new Map(employee?.fullName ? [[String(employee.fullName), employee]] : []),
+  });
 }
 
 let mongoClient;
@@ -246,7 +391,38 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       return;
     }
     const records = await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
-    res.json({ records });
+    if (moduleId !== 'attendance-time') {
+      res.json({ records });
+      return;
+    }
+    const [settingsRecord, employees] = await Promise.all([
+      req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+      req.db.collection('employees').find({}).toArray(),
+    ]);
+    const employeeById = new Map();
+    const employeeByEmployeeId = new Map();
+    const employeeByName = new Map();
+    for (const employee of employees) {
+      if (employee?.id) {
+        employeeById.set(String(employee.id), employee);
+      }
+      if (employee?.employeeId) {
+        employeeByEmployeeId.set(String(employee.employeeId), employee);
+      }
+      if (employee?.fullName) {
+        employeeByName.set(String(employee.fullName), employee);
+      }
+    }
+    const settings = normalizeAttendanceSettings(settingsRecord?.value);
+    const normalizedRecords = records.map((row) =>
+      enrichAttendanceRecordWithContext(row, {
+        settings,
+        employeeById,
+        employeeByEmployeeId,
+        employeeByName,
+      })
+    );
+    res.json({ records: normalizedRecords });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load records' });
   }
@@ -260,10 +436,11 @@ app.post('/api/modules/:moduleId', async (req, res) => {
       res.status(404).json({ error: 'Unknown module' });
       return;
     }
+    const incoming = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, req.body) : req.body;
     const payload = {
-      ...req.body,
+      ...incoming,
       moduleId,
-      createdAt: req.body.createdAt || new Date().toISOString(),
+      createdAt: incoming.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     const result = await collection.insertOne(payload);
@@ -285,17 +462,22 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
       res.status(404).json({ error: 'Unknown module' });
       return;
     }
+    const existingRecord = await collection.findOne({ id: recordId });
+    if (!existingRecord) {
+      res.status(404).json({ error: 'Record not found' });
+      return;
+    }
     const { _id, ...requestBody } = req.body || {};
+    const mergedRequest = { ...existingRecord, ...requestBody };
+    const normalized = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, mergedRequest) : mergedRequest;
+    const normalizedWithoutId = { ...(normalized || {}) };
+    delete normalizedWithoutId._id;
     const update = {
-      ...requestBody,
+      ...normalizedWithoutId,
       moduleId,
       updatedAt: new Date().toISOString(),
     };
     const result = await collection.updateOne({ id: recordId }, { $set: update });
-    if (!result.matchedCount) {
-      res.status(404).json({ error: 'Record not found' });
-      return;
-    }
     const updated = await collection.findOne({ id: recordId });
     if (moduleId === 'employee-management') {
       await syncEmployeeUser(req.db, updated);

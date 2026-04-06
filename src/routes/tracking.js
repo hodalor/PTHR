@@ -16,6 +16,7 @@ const defaultSettings = {
   officeWifiBssids: [],
   officeIpRanges: [],
   offlineMinutesThreshold: 15,
+  locationOffAlertEnabled: true,
 };
 
 let trackingSettings = { ...defaultSettings };
@@ -23,6 +24,7 @@ let trackingSettings = { ...defaultSettings };
 const employeeState = new Map();
 const movementLogs = [];
 const whatsappAlerts = [];
+const riskEvents = [];
 
 function toNumber(value) {
   const num = Number(value);
@@ -57,6 +59,9 @@ function classifyStatus(record, settings, now) {
   if (deltaMs > offlineMs) {
     return 'OFFLINE';
   }
+  if (record.locationDisabled) {
+    return 'LOCATION_OFF';
+  }
   if (settings.geofenceEnabled && record.insideGeofence === false) {
     return 'OUTSIDE';
   }
@@ -75,6 +80,23 @@ function recordWhatsappAlert(record, reason) {
   whatsappAlerts.push(alert);
 }
 
+function recordRiskEvent({ employeeId, fullName, riskType, severity = 'high', details = '', status = '' }) {
+  const event = {
+    id: `${employeeId || 'unknown'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    employeeId: employeeId || null,
+    fullName: fullName || employeeId || 'Unknown',
+    riskType: String(riskType || '').trim() || 'unknown',
+    severity: String(severity || 'high'),
+    status: String(status || ''),
+    details: String(details || ''),
+    createdAt: new Date().toISOString(),
+  };
+  riskEvents.push(event);
+  if (riskEvents.length > 5000) {
+    riskEvents.splice(0, riskEvents.length - 5000);
+  }
+}
+
 function validateWifi(settings, wifiSsid) {
   if (!settings.wifiValidationEnabled) {
     return true;
@@ -87,6 +109,45 @@ function validateWifi(settings, wifiSsid) {
     return false;
   }
   return settings.officeWifiSsids.some((allowed) => String(allowed || '').toLowerCase() === ssid);
+}
+
+function ipv4ToInt(ipAddress) {
+  const parts = String(ipAddress || '')
+    .trim()
+    .split('.')
+    .map((value) => Number(value));
+  if (parts.length !== 4 || parts.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return null;
+  }
+  return ((parts[0] << 24) >>> 0) + ((parts[1] << 16) >>> 0) + ((parts[2] << 8) >>> 0) + (parts[3] >>> 0);
+}
+
+function isIpInCidr(ipAddress, cidr) {
+  const [rangeIp, prefixRaw] = String(cidr || '').split('/');
+  const ipNum = ipv4ToInt(ipAddress);
+  const rangeNum = ipv4ToInt(rangeIp);
+  if (ipNum === null || rangeNum === null) {
+    return false;
+  }
+  const prefix = Number(prefixRaw);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+    return false;
+  }
+  if (prefix === 0) {
+    return true;
+  }
+  const mask = (0xffffffff << (32 - prefix)) >>> 0;
+  return (ipNum & mask) === (rangeNum & mask);
+}
+
+function validateOfficeIp(settings, ipAddress) {
+  if (!Array.isArray(settings.officeIpRanges) || settings.officeIpRanges.length === 0) {
+    return true;
+  }
+  if (!ipAddress) {
+    return false;
+  }
+  return settings.officeIpRanges.some((cidr) => isIpInCidr(ipAddress, cidr));
 }
 
 router.post('/location', (req, res) => {
@@ -103,6 +164,7 @@ router.post('/location', (req, res) => {
     ipAddress,
     accuracy,
     isMockLocation,
+    locationDisabled,
     activity,
   } = req.body || {};
 
@@ -132,8 +194,11 @@ router.post('/location', (req, res) => {
   }
 
   const wifiValid = validateWifi(trackingSettings, wifiSsid);
+  const ipValid = validateOfficeIp(trackingSettings, ipAddress);
   const accuracyNum = toNumber(accuracy);
   const gpsSpoofSuspected = Boolean(isMockLocation) || (accuracyNum !== null && accuracyNum > 80);
+  const locationDisabledFlag = Boolean(locationDisabled);
+  const networkRisk = (!wifiValid && trackingSettings.wifiValidationEnabled) || !ipValid;
 
   const lastSeen = now.toISOString();
 
@@ -155,6 +220,9 @@ router.post('/location', (req, res) => {
     insideGeofence,
     wifiValid,
     gpsSpoofSuspected,
+    ipValid,
+    networkRisk,
+    locationDisabled: locationDisabledFlag,
     lastSeen,
     lastActivity: activity || null,
   };
@@ -169,6 +237,73 @@ router.post('/location', (req, res) => {
     if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
       recordWhatsappAlert(record, 'offline-threshold');
     }
+    if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF' && trackingSettings.locationOffAlertEnabled) {
+      recordWhatsappAlert(record, 'location-disabled');
+    }
+    if (record.networkRisk && !previousRecord?.networkRisk) {
+      recordWhatsappAlert(record, 'network-risk');
+    }
+  }
+
+  if (status === 'OUTSIDE' && previousStatus !== 'OUTSIDE') {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'outside-premises',
+      severity: 'high',
+      details: `Employee moved outside geofence (${Math.round(distanceMeters || 0)}m from office).`,
+      status,
+    });
+  }
+  if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'offline-threshold',
+      severity: 'medium',
+      details: 'No location updates within offline threshold.',
+      status,
+    });
+  }
+  if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'location-disabled',
+      severity: 'high',
+      details: 'Employee device reported location services disabled.',
+      status,
+    });
+  }
+  if (gpsSpoofSuspected && !previousRecord?.gpsSpoofSuspected) {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'gps-spoof-suspected',
+      severity: 'high',
+      details: 'Mock location flag or abnormal GPS accuracy detected.',
+      status,
+    });
+  }
+  if (!wifiValid && previousRecord?.wifiValid !== false) {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'wifi-mismatch',
+      severity: 'medium',
+      details: `Current WiFi "${wifiSsid || 'unknown'}" is not in allowed office SSIDs.`,
+      status,
+    });
+  }
+  if (networkRisk && !previousRecord?.networkRisk) {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'network-risk',
+      severity: 'high',
+      details: `IP ${ipAddress || 'unknown'} is outside office ranges or trusted network policy.`,
+      status,
+    });
   }
 
   employeeState.set(employeeId, record);
@@ -184,9 +319,52 @@ router.post('/location', (req, res) => {
     locationAddress: locationAddress || null,
     wifiSsid: wifiSsid || null,
     ipAddress: ipAddress || null,
+    networkRisk,
+    locationDisabled: locationDisabledFlag,
   });
 
   return res.json({ ok: true, status, distanceMeters });
+});
+
+router.post('/location-status', (req, res) => {
+  const now = new Date();
+  const { employeeId, fullName, locationDisabled, reason, activity } = req.body || {};
+  if (!employeeId) {
+    return res.status(400).json({ ok: false, error: 'employeeId is required' });
+  }
+  const previousRecord = employeeState.get(employeeId) || {};
+  const nextRecord = {
+    ...previousRecord,
+    employeeId,
+    fullName: fullName || previousRecord.fullName || employeeId,
+    locationDisabled: Boolean(locationDisabled),
+    locationIssueReason: String(reason || ''),
+    lastSeen: now.toISOString(),
+    lastActivity: activity || previousRecord.lastActivity || null,
+  };
+  const previousStatus = previousRecord ? classifyStatus(previousRecord, trackingSettings, now) : null;
+  const status = classifyStatus(nextRecord, trackingSettings, now);
+  nextRecord.status = status;
+  if (
+    trackingSettings.whatsappAlertsEnabled &&
+    trackingSettings.locationOffAlertEnabled &&
+    status === 'LOCATION_OFF' &&
+    previousStatus !== 'LOCATION_OFF'
+  ) {
+    recordWhatsappAlert(nextRecord, 'location-disabled');
+  }
+  if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || previousRecord.fullName || employeeId,
+      riskType: 'location-disabled',
+      severity: 'high',
+      details: String(reason || 'Device location permission/state disabled'),
+      status,
+    });
+  }
+  employeeState.set(employeeId, nextRecord);
+  return res.json({ ok: true, status });
 });
 
 router.get('/employees', (req, res) => {
@@ -211,7 +389,10 @@ router.get('/employees', (req, res) => {
       outsidePremises,
       offline,
       wifiValid: record.wifiValid,
+      ipValid: record.ipValid,
+      networkRisk: record.networkRisk,
       gpsSpoofSuspected: record.gpsSpoofSuspected,
+      locationDisabled: record.locationDisabled,
     };
   });
 
@@ -225,6 +406,20 @@ router.get('/movement/:employeeId', (req, res) => {
     .filter((row) => String(row.employeeId || '') === String(employeeId || ''))
     .slice(-limit);
   res.json({ movement });
+});
+
+router.get('/events', (req, res) => {
+  const limit = Math.max(1, Math.min(1000, Number(req.query.limit) || 200));
+  const employeeId = String(req.query.employeeId || '').trim();
+  const riskType = String(req.query.riskType || '').trim().toLowerCase();
+  const rows = riskEvents
+    .filter((event) => {
+      const matchEmployee = !employeeId || String(event.employeeId || '') === employeeId;
+      const matchType = !riskType || String(event.riskType || '').toLowerCase() === riskType;
+      return matchEmployee && matchType;
+    })
+    .slice(-limit);
+  res.json({ events: rows });
 });
 
 router.get('/reverse-geocode', async (req, res) => {
@@ -302,6 +497,10 @@ router.post('/settings', (req, res) => {
       payload.offlineMinutesThreshold === null || payload.offlineMinutesThreshold === undefined
         ? trackingSettings.offlineMinutesThreshold
         : toNumber(payload.offlineMinutesThreshold) || trackingSettings.offlineMinutesThreshold,
+    locationOffAlertEnabled:
+      payload.locationOffAlertEnabled === undefined
+        ? trackingSettings.locationOffAlertEnabled
+        : Boolean(payload.locationOffAlertEnabled),
   };
 
   res.json({ ok: true, settings: trackingSettings });

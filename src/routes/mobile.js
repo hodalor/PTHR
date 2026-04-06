@@ -8,6 +8,7 @@ const defaultMobileSettings = {
   allowClockOut: true,
   requireLocationOnClock: true,
   autoSendLocationOnClock: true,
+  autoStartTrackingOnClockIn: true,
   allowLoanView: true,
   allowLoanRequest: true,
   allowLeaveView: true,
@@ -35,6 +36,10 @@ function normalizeMobileSettings(payload) {
       source.autoSendLocationOnClock === undefined
         ? defaultMobileSettings.autoSendLocationOnClock
         : Boolean(source.autoSendLocationOnClock),
+    autoStartTrackingOnClockIn:
+      source.autoStartTrackingOnClockIn === undefined
+        ? defaultMobileSettings.autoStartTrackingOnClockIn
+        : Boolean(source.autoStartTrackingOnClockIn),
     allowLoanView: source.allowLoanView === undefined ? defaultMobileSettings.allowLoanView : Boolean(source.allowLoanView),
     allowLoanRequest:
       source.allowLoanRequest === undefined ? defaultMobileSettings.allowLoanRequest : Boolean(source.allowLoanRequest),
