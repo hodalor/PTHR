@@ -5344,8 +5344,8 @@ function App({ initialModuleId }) {
                   }}
                 />
                 {backendHealth.mongo === 'connected'
-                  ? 'Connected to MongoDB Atlas'
-                  : 'Not connected to MongoDB Atlas'}
+                  ? 'Connected'
+                  : 'Not connected'}
               </span>
             </div>
           </div>
