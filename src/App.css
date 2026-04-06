@@ -389,7 +389,7 @@ body {
   .panel-title-actions {
     width: 100%;
     margin-left: 0;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .toolbar .search-input,
@@ -506,13 +506,14 @@ th {
   gap: 10px;
 }
 
-.sidebar-content.is-hidden {
-  display: none;
-}
-
 .sidebar-toggle-btn {
   margin-left: auto;
   flex-shrink: 0;
+}
+
+.mobile-sidebar-trigger,
+.mobile-sidebar-backdrop {
+  display: none;
 }
 
 tbody tr {
@@ -1113,6 +1114,7 @@ tbody tr:hover {
 .attendance-ops-actions {
   display: flex;
   gap: 8px;
+  justify-content: flex-end;
 }
 
 .attendance-subtabs {
@@ -2053,27 +2055,58 @@ tbody tr:hover {
     overflow: visible;
   }
 
-  .sidebar-shell {
-    position: sticky;
+  .mobile-sidebar-trigger {
+    display: inline-flex;
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    z-index: 42;
+    box-shadow: 0 8px 16px rgba(13, 38, 76, 0.2);
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    border: 0;
+    background: rgba(12, 25, 44, 0.42);
+    z-index: 39;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .mobile-sidebar-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar-shell.mobile-drawer {
+    position: fixed;
+    left: 0;
     top: 0;
-    z-index: 30;
-    height: auto;
-    max-height: none;
-    overflow: visible;
+    bottom: 0;
+    width: min(330px, 88vw);
+    height: 100dvh;
+    border-right: 1px solid #24384f;
+    transform: translateX(-102%);
+    transition: transform 0.22s ease;
+    z-index: 41;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 12px 10px;
   }
 
-  .sidebar-shell.mobile .brand-block {
-    border-bottom: 0;
-    padding-bottom: 0;
+  .sidebar-shell.mobile-drawer.open {
+    transform: translateX(0);
   }
 
-  .sidebar-shell.mobile .sidebar-content {
+  .sidebar-shell.mobile-drawer .brand-block {
+    border-bottom: 1px solid #2d4258;
+    padding-bottom: 10px;
+  }
+
+  .sidebar-shell.mobile-drawer .sidebar-content {
     margin-top: 10px;
-    border-top: 1px solid #2d4258;
-    padding-top: 10px;
-    max-height: min(68vh, 560px);
-    overflow: auto;
   }
 
   .app-shell {
@@ -2081,6 +2114,7 @@ tbody tr:hover {
     min-height: 0;
     overflow: visible;
     padding: 12px;
+    padding-top: 56px;
   }
 
   .hero {
@@ -2096,7 +2130,8 @@ tbody tr:hover {
 
 @media (max-width: 960px) {
   .hero {
-    flex-direction: column;
+    flex-direction: row;
+    justify-content: flex-end;
     gap: 12px;
   }
 
@@ -2115,14 +2150,15 @@ tbody tr:hover {
 
   .hero-right,
   .user-header-main {
-    width: 100%;
-    text-align: left;
-    align-items: flex-start;
+    width: auto;
+    text-align: right;
+    align-items: flex-end;
   }
 
   .user-header {
-    width: 100%;
+    width: auto;
     flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .content-grid {
@@ -2261,10 +2297,14 @@ tbody tr:hover {
     padding: 7px 0;
   }
 
-  .attendance-ops-actions,
+  .attendance-ops-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
   .employee-ops-actions {
     width: 100%;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .modal-backdrop {

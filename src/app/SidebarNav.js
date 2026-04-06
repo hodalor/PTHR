@@ -63,29 +63,50 @@ export default function SidebarNav({
   }, [activeModuleId, allowedModulesByRole, firstAllowedModuleId, setActiveModuleId]);
 
   return (
-    <aside className={`sidebar-shell ${isCompactLayout ? 'mobile' : ''}`} style={sidebarStyle}>
-      <div className="brand-block">
-        <div className="brand-logo">{appInitial}</div>
-        <div>
-          <h1>{appSettings.appName || 'PTHR'}</h1>
-          <p>HR Command Center</p>
+    <>
+      {isCompactLayout ? (
+        <button
+          type="button"
+          className="secondary-btn small mobile-sidebar-trigger"
+          onClick={() => setIsMobileMenuOpen(true)}
+        >
+          Menu
+        </button>
+      ) : null}
+      {isCompactLayout ? (
+        <button
+          type="button"
+          className={`mobile-sidebar-backdrop ${isMobileMenuOpen ? 'open' : ''}`}
+          onClick={() => setIsMobileMenuOpen(false)}
+          aria-label="Close menu"
+        />
+      ) : null}
+      <aside
+        className={`sidebar-shell ${isCompactLayout ? 'mobile-drawer' : ''} ${isCompactLayout && isMobileMenuOpen ? 'open' : ''}`}
+        style={sidebarStyle}
+      >
+        <div className="brand-block">
+          <div className="brand-logo">{appInitial}</div>
+          <div>
+            <h1>{appSettings.appName || 'PTHR'}</h1>
+            <p>HR Command Center</p>
+          </div>
+          {isCompactLayout ? (
+            <button
+              type="button"
+              className="secondary-btn small sidebar-toggle-btn"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Close
+            </button>
+          ) : null}
         </div>
-        {isCompactLayout ? (
-          <button
-            type="button"
-            className="secondary-btn small sidebar-toggle-btn"
-            onClick={() => setIsMobileMenuOpen((prev) => !prev)}
-          >
-            {isMobileMenuOpen ? 'Close' : 'Menu'}
-          </button>
-        ) : null}
-      </div>
-      <div className={`sidebar-content ${isCompactLayout && !isMobileMenuOpen ? 'is-hidden' : ''}`}>
-        {sidebarSections.map((section) => (
-          <div className="sidebar-section" key={section.title}>
-            <h2>{section.title}</h2>
-            <nav>
-              {section.items.map((item) => {
+        <div className="sidebar-content">
+          {sidebarSections.map((section) => (
+            <div className="sidebar-section" key={section.title}>
+              <h2>{section.title}</h2>
+              <nav>
+                {section.items.map((item) => {
               if (!allowedModulesByRole.has(item.id)) {
                 return null;
               }
@@ -196,11 +217,12 @@ export default function SidebarNav({
                   {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
                 </button>
               );
-              })}
-            </nav>
-          </div>
-        ))}
-      </div>
-    </aside>
+                })}
+              </nav>
+            </div>
+          ))}
+        </div>
+      </aside>
+    </>
   );
 }

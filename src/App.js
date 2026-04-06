@@ -5298,10 +5298,6 @@ function App({ initialModuleId }) {
 
       <div className="app-shell">
         <header className="hero">
-          <div>
-            <h1>{appSettings.appName || 'PTHR'} HR Management Workspace</h1>
-            <p>Complete UI implementation with CRUD actions, enterprise data tables, and smart filters.</p>
-          </div>
           <div className="hero-right">
             <div className="user-header">
               <div className="user-avatar">
