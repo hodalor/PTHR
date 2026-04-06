@@ -67,6 +67,28 @@ export const TrackingScreen = () => {
   const [loanMessage, setLoanMessage] = useState('');
   const [leaveMessage, setLeaveMessage] = useState('');
   const [trackingRefreshLoading, setTrackingRefreshLoading] = useState(false);
+  const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' | 'info' } | null>(null);
+
+  const showMobileToast = useCallback((message: string, tone: 'success' | 'error' | 'info' = 'info') => {
+    if (!message) {
+      return;
+    }
+    setToast({ message, tone });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timeoutId = setTimeout(() => setToast(null), 2600);
+    return () => clearTimeout(timeoutId);
+  }, [toast]);
+
+  useEffect(() => {
+    if (tracking.error) {
+      showMobileToast(tracking.error, 'error');
+    }
+  }, [showMobileToast, tracking.error]);
 
   const refreshDashboard = useCallback(async () => {
     if (!session) {
@@ -167,9 +189,12 @@ export const TrackingScreen = () => {
         return [savedRow, ...prev];
       });
       setClockMessage(mode === 'clock-in' ? 'Clock-in captured with location.' : 'Clock-out captured with location.');
+      showMobileToast(mode === 'clock-in' ? 'Thanks for clocking in.' : 'Clock-out captured successfully.', 'success');
       await tracking.refreshTrackingStatus();
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : 'Unable to complete attendance action');
+      const message = error instanceof Error ? error.message : 'Unable to complete attendance action';
+      setDashboardError(message);
+      showMobileToast(message, 'error');
     } finally {
       setClockLoadingMode('');
     }
@@ -187,9 +212,12 @@ export const TrackingScreen = () => {
       setLoanRows((prev) => [saved, ...prev]);
       setLoanForm(initialLoanForm);
       setLoanMessage('Loan request submitted for approval.');
+      showMobileToast('Loan applied successfully.', 'success');
       setSelectedModule('loan-records');
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : 'Unable to submit loan request');
+      const message = error instanceof Error ? error.message : 'Unable to submit loan request';
+      setDashboardError(message);
+      showMobileToast(message, 'error');
     } finally {
       setLoanSubmitting(false);
     }
@@ -207,9 +235,12 @@ export const TrackingScreen = () => {
       setLeaveRows((prev) => [saved, ...prev]);
       setLeaveForm(initialLeaveForm);
       setLeaveMessage('Leave request submitted for approval.');
+      showMobileToast('Leave request submitted successfully.', 'success');
       setSelectedModule('leave-management');
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : 'Unable to submit leave request');
+      const message = error instanceof Error ? error.message : 'Unable to submit leave request';
+      setDashboardError(message);
+      showMobileToast(message, 'error');
     } finally {
       setLeaveSubmitting(false);
     }
@@ -437,8 +468,11 @@ export const TrackingScreen = () => {
                   tracking.refreshSettings(),
                   tracking.refreshTrackingStatus(),
                 ]);
+                showMobileToast('Tracking panel refreshed.', 'info');
               } catch (error) {
-                setDashboardError(error instanceof Error ? error.message : 'Unable to refresh tracking state');
+                const message = error instanceof Error ? error.message : 'Unable to refresh tracking state';
+                setDashboardError(message);
+                showMobileToast(message, 'error');
               } finally {
                 setTrackingRefreshLoading(false);
               }
@@ -495,12 +529,22 @@ export const TrackingScreen = () => {
   );
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={dashboardLoading} onRefresh={refreshDashboard} tintColor={colors.text} />}
-    >
-      <View style={styles.hero}>
+    <View style={styles.container}>
+      {toast ? (
+        <View
+          style={[
+            styles.toastWrap,
+            toast.tone === 'success' ? styles.toastSuccess : toast.tone === 'error' ? styles.toastError : styles.toastInfo,
+          ]}
+        >
+          <Text style={styles.toastText}>{toast.message}</Text>
+        </View>
+      ) : null}
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={dashboardLoading} onRefresh={refreshDashboard} tintColor={colors.text} />}
+      >
+        <View style={styles.hero}>
         <View style={styles.heroTextWrap}>
           <Text style={styles.eyebrow}>Employee Mobile</Text>
           <Text style={styles.title}>{session?.user.fullName}</Text>
@@ -566,8 +610,9 @@ export const TrackingScreen = () => {
       {selectedModule === 'attendance-time' ? renderAttendanceModule() : null}
       {selectedModule === 'loan-records' ? renderLoanModule() : null}
       {selectedModule === 'leave-management' ? renderLeaveModule() : null}
-      {selectedModule === 'monitoring-tracking' ? renderTrackingModule() : null}
-    </ScrollView>
+        {selectedModule === 'monitoring-tracking' ? renderTrackingModule() : null}
+      </ScrollView>
+    </View>
   );
 };
 
@@ -833,5 +878,33 @@ const styles = StyleSheet.create({
   success: {
     color: colors.success,
     fontWeight: '600',
+  },
+  toastWrap: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    right: 16,
+    zIndex: 20,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+  },
+  toastText: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  toastSuccess: {
+    backgroundColor: '#174f32',
+    borderColor: '#1f8f55',
+  },
+  toastError: {
+    backgroundColor: '#5a1820',
+    borderColor: '#b33b45',
+  },
+  toastInfo: {
+    backgroundColor: '#14355e',
+    borderColor: colors.primary,
   },
 });

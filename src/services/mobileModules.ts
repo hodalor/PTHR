@@ -9,7 +9,13 @@ import {
   MobileSettings,
   TrackingSettings,
 } from '../types/app';
-import { captureCurrentLocation, requestForegroundLocationPermission, transmitLocation } from './tracking';
+import {
+  captureCurrentLocation,
+  requestForegroundLocationPermission,
+  requestTrackingPermissions,
+  startBackgroundTracking,
+  transmitLocation,
+} from './tracking';
 
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'];
 
@@ -19,6 +25,7 @@ const defaultMobileSettings: MobileSettings = {
   allowClockOut: true,
   requireLocationOnClock: true,
   autoSendLocationOnClock: true,
+  autoStartTrackingOnClockIn: true,
   allowLoanView: true,
   allowLoanRequest: true,
   allowLeaveView: true,
@@ -27,6 +34,19 @@ const defaultMobileSettings: MobileSettings = {
 };
 
 const nowDate = () => new Date().toISOString().slice(0, 10);
+const runWithTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
 
 const nowClock = () => {
   const current = new Date();
@@ -365,11 +385,19 @@ type AttendanceMutationInput = {
 };
 
 export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, trackingSettings, rows, mode }: AttendanceMutationInput) => {
-  await requestForegroundLocationPermission();
+  await runWithTimeout(
+    requestForegroundLocationPermission(),
+    8000,
+    'Location permission request timed out. Please try again.'
+  );
 
   let position = null;
   try {
-    position = await captureCurrentLocation();
+    position = await runWithTimeout(
+      captureCurrentLocation(),
+      10000,
+      'Unable to get GPS fix in time. Please retry clocking.'
+    );
   } catch (error) {
     if (settings.requireLocationOnClock) {
       throw new Error('Location is required before clocking can continue');
@@ -456,20 +484,48 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     : '/api/modules/attendance-time';
   const method = existingRow ? 'PUT' : 'POST';
 
-  await apiRequest(apiBaseUrl, endpoint, {
+  const persisted = await apiRequest<{ record?: AttendanceRecord }>(apiBaseUrl, endpoint, {
     method,
     body: payload,
   });
+  const persistedRecord = persisted?.record || payload;
 
-  if (position?.coords && settings.autoSendLocationOnClock) {
-    await transmitLocation({
-      apiBaseUrl,
-      session,
-      location: position.coords,
-      mocked: position.mocked,
-      activity: mode,
-    });
+  if (mode === 'clock-in' && settings.autoStartTrackingOnClockIn) {
+    void (async () => {
+      try {
+        await runWithTimeout(
+          requestTrackingPermissions(),
+          8000,
+          'Tracking permission request timed out.'
+        );
+        await runWithTimeout(
+          startBackgroundTracking({ apiBaseUrl, session }),
+          8000,
+          'Background tracking startup timed out.'
+        );
+      } catch (error) {
+      }
+    })();
   }
 
-  return payload;
+  if (position?.coords && settings.autoSendLocationOnClock) {
+    void (async () => {
+      try {
+        await runWithTimeout(
+          transmitLocation({
+            apiBaseUrl,
+            session,
+            location: position.coords,
+            mocked: position.mocked,
+            activity: mode,
+          }),
+          6000,
+          'Location sync timed out.'
+        );
+      } catch (error) {
+      }
+    })();
+  }
+
+  return persistedRecord;
 };

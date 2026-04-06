@@ -7,6 +7,7 @@ import {
   persistTrackingRuntime,
   requestForegroundLocationPermission,
   requestTrackingPermissions,
+  reportLocationStatus,
   startBackgroundTracking,
   stopBackgroundTracking,
   transmitLocation,
@@ -101,6 +102,16 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
       } catch (caughtError) {
         const errorMessage =
           caughtError instanceof Error ? caughtError.message : 'Failed to initialize tracking';
+        try {
+          await reportLocationStatus({
+            apiBaseUrl,
+            session,
+            locationDisabled: true,
+            reason: errorMessage,
+            activity: 'boot',
+          });
+        } catch (reportError) {
+        }
         setState((prev) => ({
           ...prev,
           error: errorMessage,
@@ -145,6 +156,16 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
     } catch (caughtError) {
       const errorMessage =
         caughtError instanceof Error ? caughtError.message : 'Failed to send location';
+      try {
+        await reportLocationStatus({
+          apiBaseUrl,
+          session,
+          locationDisabled: true,
+          reason: errorMessage,
+          activity: 'foreground',
+        });
+      } catch (reportError) {
+      }
       setState((prev) => ({
         ...prev,
         loading: isSilent ? prev.loading : false,

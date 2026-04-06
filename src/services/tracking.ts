@@ -21,6 +21,7 @@ const defaultTrackingSettings: TrackingSettings = {
   officeWifiBssids: [],
   officeIpRanges: [],
   offlineMinutesThreshold: 15,
+  locationOffAlertEnabled: true,
 };
 
 const normalizeTrackingSettings = (settings: Partial<TrackingSettings> | null | undefined): TrackingSettings => ({
@@ -38,6 +39,14 @@ type TrackingPayload = {
   session: AuthSession | null;
   location: Location.LocationObjectCoords;
   mocked?: boolean;
+  activity?: string;
+};
+
+type TrackingStatusPayload = {
+  apiBaseUrl: string;
+  session: AuthSession | null;
+  locationDisabled: boolean;
+  reason?: string;
   activity?: string;
 };
 
@@ -65,6 +74,7 @@ export const transmitLocation = async ({
         lng: location.longitude,
         accuracy: location.accuracy,
         isMockLocation: mocked,
+        locationDisabled: false,
         activity: activity || AppState.currentState,
         devicePlatform: Platform.OS,
       },
@@ -78,21 +88,74 @@ export const transmitLocation = async ({
   };
 };
 
+export const reportLocationStatus = async ({
+  apiBaseUrl,
+  session,
+  locationDisabled,
+  reason,
+  activity,
+}: TrackingStatusPayload): Promise<TrackingTransmissionResult> => {
+  if (!session?.user?.employeeId) {
+    throw new Error('No employee session available');
+  }
+  const response = await apiRequest<{ ok: boolean; status?: string }>(apiBaseUrl, '/api/tracking/location-status', {
+    method: 'POST',
+    token: session.token,
+    body: {
+      employeeId: session.user.employeeId,
+      fullName: session.user.fullName,
+      locationDisabled: Boolean(locationDisabled),
+      reason: reason || '',
+      activity: activity || AppState.currentState,
+      devicePlatform: Platform.OS,
+    },
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    distanceMeters: null,
+  };
+};
+
 export const persistTrackingRuntime = async (config: TrackingRuntimeConfig) => {
   await saveTrackingRuntime(config);
 };
 
 if (!TaskManager.isTaskDefined(LOCATION_TASK_NAME)) {
   TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
+    const runtime = await loadTrackingRuntime();
     if (error) {
+      if (runtime?.apiBaseUrl && runtime?.session) {
+        try {
+          await reportLocationStatus({
+            apiBaseUrl: runtime.apiBaseUrl,
+            session: runtime.session,
+            locationDisabled: true,
+            reason: error.message || 'Background location task error',
+            activity: 'background',
+          });
+        } catch (reportError) {
+        }
+      }
       return;
     }
-
-    const runtime = await loadTrackingRuntime();
     const locations = (data as { locations?: Location.LocationObject[] } | undefined)?.locations || [];
     const latestLocation = locations[locations.length - 1];
 
-    if (!runtime?.apiBaseUrl || !runtime.session || !latestLocation?.coords) {
+    if (!runtime?.apiBaseUrl || !runtime.session) {
+      return;
+    }
+    if (!latestLocation?.coords) {
+      try {
+        await reportLocationStatus({
+          apiBaseUrl: runtime.apiBaseUrl,
+          session: runtime.session,
+          locationDisabled: true,
+          reason: 'Background location unavailable',
+          activity: 'background',
+        });
+      } catch (reportError) {
+      }
       return;
     }
 
@@ -105,6 +168,16 @@ if (!TaskManager.isTaskDefined(LOCATION_TASK_NAME)) {
         activity: 'background',
       });
     } catch (taskError) {
+      try {
+        await reportLocationStatus({
+          apiBaseUrl: runtime.apiBaseUrl,
+          session: runtime.session,
+          locationDisabled: true,
+          reason: taskError instanceof Error ? taskError.message : 'Background transmission failed',
+          activity: 'background',
+        });
+      } catch (reportError) {
+      }
       return;
     }
   });

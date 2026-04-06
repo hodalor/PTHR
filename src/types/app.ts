@@ -26,6 +26,7 @@ export type TrackingSettings = {
   officeWifiBssids: string[];
   officeIpRanges: string[];
   offlineMinutesThreshold: number;
+  locationOffAlertEnabled: boolean;
 };
 
 export type TrackingTransmissionResult = {
@@ -46,6 +47,7 @@ export type MobileSettings = {
   allowClockOut: boolean;
   requireLocationOnClock: boolean;
   autoSendLocationOnClock: boolean;
+  autoStartTrackingOnClockIn: boolean;
   allowLoanView: boolean;
   allowLoanRequest: boolean;
   allowLeaveView: boolean;
