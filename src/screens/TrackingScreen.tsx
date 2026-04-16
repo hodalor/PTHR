@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useAuth } from '../context/AuthContext';
 import { useTrackingController } from '../hooks/useTrackingController';
 import { StatCard } from '../components/StatCard';
@@ -43,6 +44,8 @@ const initialLeaveForm = {
   endDate: todayIso(),
   reason: '',
 };
+const googleMapsApiKey = (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '').trim();
+const hasGoogleMapsKey = googleMapsApiKey.length > 0;
 const formatApprovalTrail = (row: { departmentApproval?: string; hrApproval?: string; managerApproval?: string }) =>
   `Dept ${row.departmentApproval || 'Pending'} • HR ${row.hrApproval || 'Pending'} • Mgr ${row.managerApproval || 'Pending'}`;
 
@@ -97,7 +100,7 @@ export const TrackingScreen = () => {
     setDashboardLoading(true);
     setDashboardError('');
     try {
-      const settings = await fetchMobileSettings(apiBaseUrl);
+      const settings = await fetchMobileSettings(apiBaseUrl, session);
       setMobileSettings(settings);
       const [profileResult, attendanceResult, loanResult, leaveResult] = await Promise.allSettled([
         fetchEmployeeProfile(apiBaseUrl, session),
@@ -507,6 +510,58 @@ export const TrackingScreen = () => {
         <Text style={styles.detailText}>
           Accuracy: {typeof tracking.latestCoordinates?.accuracy === 'number' ? `${Math.round(tracking.latestCoordinates.accuracy)} m` : '—'}
         </Text>
+        <Text style={styles.detailText}>
+          Trust: {tracking.latestCoordinates?.mocked ? 'Mocked/Fake (blocked)' : 'Real device GPS'}
+        </Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Live map</Text>
+        {typeof tracking.latestCoordinates?.latitude === 'number' && typeof tracking.latestCoordinates?.longitude === 'number' ? (
+          <MapView
+            style={styles.mapView}
+            provider={Platform.OS === 'android' && hasGoogleMapsKey ? PROVIDER_GOOGLE : undefined}
+            initialRegion={{
+              latitude: tracking.latestCoordinates.latitude,
+              longitude: tracking.latestCoordinates.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }}
+            region={{
+              latitude: tracking.latestCoordinates.latitude,
+              longitude: tracking.latestCoordinates.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }}
+          >
+            <Marker
+              coordinate={{
+                latitude: tracking.latestCoordinates.latitude,
+                longitude: tracking.latestCoordinates.longitude,
+              }}
+              title={session?.user.fullName || 'Employee'}
+              description={`Accuracy ${Math.round(tracking.latestCoordinates?.accuracy || 0)}m`}
+            />
+            {typeof tracking.settings?.officeLat === 'number' && typeof tracking.settings?.officeLng === 'number' ? (
+              <Marker
+                coordinate={{
+                  latitude: tracking.settings.officeLat,
+                  longitude: tracking.settings.officeLng,
+                }}
+                title="Office"
+                description="Configured office geofence center"
+                pinColor="#1976d2"
+              />
+            ) : null}
+          </MapView>
+        ) : (
+          <Text style={styles.detailText}>No location yet. Start tracking and send location to load map.</Text>
+        )}
+        <Text style={styles.mutedTiny}>
+          {hasGoogleMapsKey
+            ? 'Google Maps provider active.'
+            : 'No Google Maps key detected; using default native map provider.'}
+        </Text>
       </View>
 
       <View style={styles.card}>
@@ -906,5 +961,10 @@ const styles = StyleSheet.create({
   toastInfo: {
     backgroundColor: '#14355e',
     borderColor: colors.primary,
+  },
+  mapView: {
+    width: '100%',
+    height: 220,
+    borderRadius: 12,
   },
 });

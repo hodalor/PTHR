@@ -1,6 +1,6 @@
 import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
 import { defaultApiBaseUrl, resolveApiBaseUrl } from '../config/env';
-import { fetchCurrentUser, loginWithCredentials } from '../services/auth';
+import { fetchCurrentUser, loginWithCredentials, logoutSession } from '../services/auth';
 import {
   clearApiBaseUrl,
   clearAuthSession,
@@ -14,7 +14,7 @@ type AuthContextValue = {
   authReady: boolean;
   isAuthenticating: boolean;
   session: AuthSession | null;
-  login: (username: string, password: string) => Promise<void>;
+  login: (tenantId: string, username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -52,12 +52,12 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     restore();
   }, []);
 
-  const login = async (username: string, password: string) => {
+  const login = async (tenantId: string, username: string, password: string) => {
     const normalizedApiBaseUrl = resolveApiBaseUrl(defaultApiBaseUrl);
     updateApiBaseUrl(normalizedApiBaseUrl);
     setIsAuthenticating(true);
     try {
-      const nextSession = await loginWithCredentials(normalizedApiBaseUrl, username, password);
+      const nextSession = await loginWithCredentials(normalizedApiBaseUrl, tenantId, username, password);
       setSession(nextSession);
       await saveAuthSession(nextSession);
     } finally {
@@ -66,6 +66,12 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   };
 
   const logout = async () => {
+    if (session?.token) {
+      try {
+        await logoutSession(apiBaseUrl, session.token);
+      } catch (error) {
+      }
+    }
     setSession(null);
     await clearAuthSession();
   };

@@ -5,6 +5,7 @@ import { colors } from '../theme';
 
 export const LoginScreen = () => {
   const { apiBaseUrl, isAuthenticating, login } = useAuth();
+  const [tenantId, setTenantId] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -12,7 +13,7 @@ export const LoginScreen = () => {
   const handleLogin = async () => {
     setError('');
     try {
-      await login(identifier.trim(), password);
+      await login(tenantId.trim().toLowerCase(), identifier.trim(), password);
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'Unable to sign in');
     }
@@ -24,6 +25,19 @@ export const LoginScreen = () => {
         <Text style={styles.eyebrow}>PTHR Mobile</Text>
         <Text style={styles.title}>Live employee location tracking</Text>
         <Text style={styles.subtitle}>Sign in with employee ID or username, then keep background tracking active for iOS and Android.</Text>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Tenant ID</Text>
+          <TextInput
+            value={tenantId}
+            onChangeText={setTenantId}
+            placeholder="master or acme-ghana"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
+        </View>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Username or Employee ID</Text>

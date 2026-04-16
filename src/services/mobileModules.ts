@@ -185,9 +185,11 @@ const filterRowsForEmployee = <T extends { employeeId?: string; employee?: strin
   });
 };
 
-export const fetchMobileSettings = async (apiBaseUrl: string) => {
+export const fetchMobileSettings = async (apiBaseUrl: string, session: AuthSession) => {
   try {
-    const response = await apiRequest<Partial<MobileSettings>>(apiBaseUrl, '/api/mobile/settings');
+    const response = await apiRequest<Partial<MobileSettings>>(apiBaseUrl, '/api/mobile/settings', {
+      token: session.token,
+    });
     return {
       ...defaultMobileSettings,
       ...(response || {}),
@@ -201,7 +203,9 @@ export const fetchMobileSettings = async (apiBaseUrl: string) => {
 };
 
 export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSession) => {
-  const response = await apiRequest<{ records?: EmployeeProfile[] }>(apiBaseUrl, '/api/modules/employee-management');
+  const response = await apiRequest<{ records?: EmployeeProfile[] }>(apiBaseUrl, '/api/modules/employee-management', {
+    token: session.token,
+  });
   const rows = Array.isArray(response.records) ? response.records : [];
   const employeeId = String(session.user.employeeId || '').trim();
   const fullName = String(session.user.fullName || '').trim();
@@ -239,19 +243,25 @@ export const getAvailableEmployeeModules = (session: AuthSession, settings: Mobi
 };
 
 export const fetchEmployeeAttendanceRows = async (apiBaseUrl: string, session: AuthSession) => {
-  const response = await apiRequest<{ records?: AttendanceRecord[] }>(apiBaseUrl, '/api/modules/attendance-time');
+  const response = await apiRequest<{ records?: AttendanceRecord[] }>(apiBaseUrl, '/api/modules/attendance-time', {
+    token: session.token,
+  });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 };
 
 export const fetchEmployeeLoanRows = async (apiBaseUrl: string, session: AuthSession) => {
-  const response = await apiRequest<{ records?: LoanRecord[] }>(apiBaseUrl, '/api/modules/loan-records');
+  const response = await apiRequest<{ records?: LoanRecord[] }>(apiBaseUrl, '/api/modules/loan-records', {
+    token: session.token,
+  });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.issuedOn || '').localeCompare(String(a.issuedOn || '')));
 };
 
 export const fetchEmployeeLeaveRows = async (apiBaseUrl: string, session: AuthSession) => {
-  const response = await apiRequest<{ records?: LeaveRecord[] }>(apiBaseUrl, '/api/modules/leave-management');
+  const response = await apiRequest<{ records?: LeaveRecord[] }>(apiBaseUrl, '/api/modules/leave-management', {
+    token: session.token,
+  });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
 };
@@ -318,6 +328,7 @@ export const submitLoanRequest = async (
 
   const response = await apiRequest<{ record?: LoanRecord }>(apiBaseUrl, '/api/modules/loan-records', {
     method: 'POST',
+    token: session.token,
     body: payload,
   });
 
@@ -369,6 +380,7 @@ export const submitLeaveRequest = async (
 
   const response = await apiRequest<{ record?: LeaveRecord }>(apiBaseUrl, '/api/modules/leave-management', {
     method: 'POST',
+    token: session.token,
     body: payload,
   });
 

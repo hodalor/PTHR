@@ -5,6 +5,7 @@ React Native mobile app built with Expo for one shared codebase across iOS and A
 ## What it does
 
 - Signs employees in using the existing backend auth API
+- Requires tenant-aware login (`tenantId` + username/employee ID + password)
 - Sends live device location to `POST /api/tracking/location`
 - Reads tracking policy from `GET /api/tracking/settings`
 - Supports background location updates for attendance/live monitoring
@@ -28,6 +29,7 @@ cp .env.example .env
 
 ```env
 EXPO_PUBLIC_API_BASE_URL=https://pthr.onrender.com
+EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=your-google-maps-api-key
 ```
 
 4. Start Expo
@@ -107,6 +109,7 @@ npm run submit:ios
 - iOS background location requires permission approval and must be tested on a real device for the most accurate behavior.
 - Android background tracking works best on a physical device with battery optimization disabled for the app.
 - iOS simulator launch requires a full Xcode installation and selected command line tools.
+- Live tracking map falls back to the native provider when no Google Maps key is set. Set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` to enable Google provider.
 
 ## Backend endpoints used
 

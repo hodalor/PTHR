@@ -6,10 +6,10 @@ type LoginResponse = {
   user: AuthUser;
 };
 
-export const loginWithCredentials = async (apiBaseUrl: string, username: string, password: string) => {
+export const loginWithCredentials = async (apiBaseUrl: string, tenantId: string, username: string, password: string) => {
   const response = await apiRequest<LoginResponse>(apiBaseUrl, '/api/auth/login', {
     method: 'POST',
-    body: { username, password },
+    body: { tenantId, username, password },
   });
 
   const session: AuthSession = {
@@ -28,3 +28,9 @@ export const fetchCurrentUser = async (apiBaseUrl: string, token: string) => {
   return response.user;
 };
 
+export const logoutSession = async (apiBaseUrl: string, token: string) => {
+  await apiRequest<{ ok: boolean }>(apiBaseUrl, '/api/auth/logout', {
+    method: 'POST',
+    token,
+  });
+};

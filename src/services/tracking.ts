@@ -29,8 +29,8 @@ const normalizeTrackingSettings = (settings: Partial<TrackingSettings> | null | 
   ...(settings || {}),
 });
 
-export const fetchTrackingSettings = async (apiBaseUrl: string) => {
-  const response = await apiRequest<Partial<TrackingSettings>>(apiBaseUrl, '/api/tracking/settings');
+export const fetchTrackingSettings = async (apiBaseUrl: string, token: string) => {
+  const response = await apiRequest<Partial<TrackingSettings>>(apiBaseUrl, '/api/tracking/settings', { token });
   return normalizeTrackingSettings(response);
 };
 
@@ -210,9 +210,9 @@ export const startBackgroundTracking = async (runtime: TrackingRuntimeConfig) =>
   }
 
   await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-    accuracy: Location.Accuracy.Balanced,
-    timeInterval: 60000,
-    distanceInterval: 25,
+    accuracy: Location.Accuracy.Highest,
+    timeInterval: 12000,
+    distanceInterval: 10,
     pausesUpdatesAutomatically: false,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
@@ -241,14 +241,11 @@ export const captureCurrentLocation = async () => {
     return location;
   } catch (error) {
     const fallback = await Location.getLastKnownPositionAsync({
-      maxAge: 180000,
-      requiredAccuracy: 150,
+      maxAge: 60000,
+      requiredAccuracy: 50,
     });
     if (fallback) {
-      return {
-        ...fallback,
-        mocked: false,
-      };
+      return fallback;
     }
     throw new Error('Unable to get GPS fix. Turn on device location and retry.');
   }

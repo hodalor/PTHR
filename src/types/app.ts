@@ -4,6 +4,8 @@ export type AuthUser = {
   fullName: string;
   role: string;
   employeeId: string;
+  tenantId: string;
+  packageType?: string;
   allowedModules: string[];
 };
 

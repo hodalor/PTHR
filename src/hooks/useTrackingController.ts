@@ -31,7 +31,7 @@ type TrackingState = {
   latestStatus: string;
   distanceMeters: number | null;
   lastSentAt: string;
-  latestCoordinates: { latitude: number; longitude: number; accuracy: number | null } | null;
+  latestCoordinates: { latitude: number; longitude: number; accuracy: number | null; mocked: boolean } | null;
   error: string;
   loading: boolean;
   enabled: boolean;
@@ -53,12 +53,12 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
   const [state, setState] = useState<TrackingState>(initialState);
 
   const refreshSettings = useCallback(async () => {
-    if (!apiBaseUrl) {
+    if (!apiBaseUrl || !session?.token) {
       return;
     }
-    const settings = await fetchTrackingSettings(apiBaseUrl);
+    const settings = await fetchTrackingSettings(apiBaseUrl, session.token);
     setState((prev) => ({ ...prev, settings }));
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, session?.token]);
 
   const refreshTrackingStatus = useCallback(async () => {
     const enabled = await isBackgroundTrackingActive();
@@ -81,6 +81,9 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
         await Promise.all([refreshSettings(), refreshTrackingStatus()]);
         await requestForegroundLocationPermission();
         const position = await captureCurrentLocation();
+        if (position.mocked) {
+          throw new Error('Mock location detected. Disable fake GPS and retry.');
+        }
         const response = await transmitLocation({
           apiBaseUrl,
           session,
@@ -97,6 +100,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
             accuracy: position.coords.accuracy ?? null,
+            mocked: Boolean(position.mocked),
           },
         }));
       } catch (caughtError) {
@@ -134,6 +138,9 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
       await requestForegroundLocationPermission();
       await persistTrackingRuntime({ apiBaseUrl, session });
       const position = await captureCurrentLocation();
+      if (position.mocked) {
+        throw new Error('Mock location detected. Disable fake GPS and retry.');
+      }
       const response = await transmitLocation({
         apiBaseUrl,
         session,
@@ -151,6 +158,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy ?? null,
+          mocked: Boolean(position.mocked),
         },
       }));
     } catch (caughtError) {
