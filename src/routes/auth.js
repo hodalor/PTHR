@@ -413,6 +413,28 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
   }
 });
 
+router.delete('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
+  try {
+    const targetTenantId = normalizeTenantId(req.params.tenantId);
+    if (!targetTenantId || targetTenantId === 'master') {
+      res.status(400).json({ error: 'Cannot delete master tenant' });
+      return;
+    }
+    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId: targetTenantId });
+    if (!existingTenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    await req.masterDb.collection('tenants').deleteOne({ tenantId: targetTenantId });
+    if (existingTenant.dbName && req.getDbByName) {
+      await req.getDbByName(existingTenant.dbName).dropDatabase();
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to delete tenant' });
+  }
+});
+
 router.post('/login', async (req, res) => {
   try {
     const { tenantId, username, password } = req.body || {};

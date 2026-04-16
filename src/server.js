@@ -461,6 +461,7 @@ app.use(async (req, res, next) => {
       const resolved = await getTenantDatabase(masterDb, tenantId);
       return resolved.db;
     };
+    req.getDbByName = (dbName) => mongoClient.db(String(dbName || '').trim());
     req.db = tenantContext.db;
     req.db.bson = { ObjectId };
     next();
