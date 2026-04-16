@@ -19,12 +19,78 @@ const defaultSettings = {
   locationOffAlertEnabled: true,
 };
 
-let trackingSettings = { ...defaultSettings };
+const tenantRuntimeStore = new Map();
 
-const employeeState = new Map();
-const movementLogs = [];
-const whatsappAlerts = [];
-const riskEvents = [];
+function normalizeTrackingSettings(settings) {
+  return {
+    ...defaultSettings,
+    ...(settings || {}),
+    officeLat: settings?.officeLat === null || settings?.officeLat === undefined ? null : toNumber(settings.officeLat),
+    officeLng: settings?.officeLng === null || settings?.officeLng === undefined ? null : toNumber(settings.officeLng),
+    geofenceRadiusMeters: toNumber(settings?.geofenceRadiusMeters) || defaultSettings.geofenceRadiusMeters,
+    offlineMinutesThreshold: toNumber(settings?.offlineMinutesThreshold) || defaultSettings.offlineMinutesThreshold,
+    geofenceEnabled: settings?.geofenceEnabled === undefined ? defaultSettings.geofenceEnabled : Boolean(settings.geofenceEnabled),
+    wifiValidationEnabled:
+      settings?.wifiValidationEnabled === undefined ? defaultSettings.wifiValidationEnabled : Boolean(settings.wifiValidationEnabled),
+    activityMonitoringEnabled:
+      settings?.activityMonitoringEnabled === undefined
+        ? defaultSettings.activityMonitoringEnabled
+        : Boolean(settings.activityMonitoringEnabled),
+    randomSelfieEnabled:
+      settings?.randomSelfieEnabled === undefined ? defaultSettings.randomSelfieEnabled : Boolean(settings.randomSelfieEnabled),
+    antiGpsSpoofingEnabled:
+      settings?.antiGpsSpoofingEnabled === undefined
+        ? defaultSettings.antiGpsSpoofingEnabled
+        : Boolean(settings.antiGpsSpoofingEnabled),
+    whatsappAlertsEnabled:
+      settings?.whatsappAlertsEnabled === undefined
+        ? defaultSettings.whatsappAlertsEnabled
+        : Boolean(settings.whatsappAlertsEnabled),
+    locationOffAlertEnabled:
+      settings?.locationOffAlertEnabled === undefined
+        ? defaultSettings.locationOffAlertEnabled
+        : Boolean(settings.locationOffAlertEnabled),
+    officeWifiSsids: Array.isArray(settings?.officeWifiSsids) ? settings.officeWifiSsids : defaultSettings.officeWifiSsids,
+    officeWifiBssids: Array.isArray(settings?.officeWifiBssids) ? settings.officeWifiBssids : defaultSettings.officeWifiBssids,
+    officeIpRanges: Array.isArray(settings?.officeIpRanges) ? settings.officeIpRanges : defaultSettings.officeIpRanges,
+  };
+}
+
+function getTenantRuntime(tenantIdRaw) {
+  const tenantId = String(tenantIdRaw || 'master').trim().toLowerCase() || 'master';
+  if (!tenantRuntimeStore.has(tenantId)) {
+    tenantRuntimeStore.set(tenantId, {
+      employeeState: new Map(),
+      movementLogs: [],
+      whatsappAlerts: [],
+      riskEvents: [],
+    });
+  }
+  return tenantRuntimeStore.get(tenantId);
+}
+
+async function loadTrackingSettings(db) {
+  const settingsDoc = await db.collection('appSettings').findOne({ _id: 'tracking-rules' });
+  return normalizeTrackingSettings(settingsDoc?.value);
+}
+
+async function saveTrackingSettings(db, value) {
+  const normalized = normalizeTrackingSettings(value);
+  await db.collection('appSettings').updateOne(
+    { _id: 'tracking-rules' },
+    {
+      $set: {
+        value: normalized,
+        updatedAt: new Date().toISOString(),
+      },
+      $setOnInsert: {
+        createdAt: new Date().toISOString(),
+      },
+    },
+    { upsert: true }
+  );
+  return normalized;
+}
 
 function toNumber(value) {
   const num = Number(value);
@@ -68,7 +134,7 @@ function classifyStatus(record, settings, now) {
   return 'INSIDE';
 }
 
-function recordWhatsappAlert(record, reason) {
+function recordWhatsappAlert(runtime, record, reason) {
   const alert = {
     id: `${record.employeeId}-${Date.now()}`,
     employeeId: record.employeeId,
@@ -77,10 +143,10 @@ function recordWhatsappAlert(record, reason) {
     reason,
     createdAt: new Date().toISOString(),
   };
-  whatsappAlerts.push(alert);
+  runtime.whatsappAlerts.push(alert);
 }
 
-function recordRiskEvent({ employeeId, fullName, riskType, severity = 'high', details = '', status = '' }) {
+function recordRiskEvent(runtime, { employeeId, fullName, riskType, severity = 'high', details = '', status = '' }) {
   const event = {
     id: `${employeeId || 'unknown'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     employeeId: employeeId || null,
@@ -91,9 +157,9 @@ function recordRiskEvent({ employeeId, fullName, riskType, severity = 'high', de
     details: String(details || ''),
     createdAt: new Date().toISOString(),
   };
-  riskEvents.push(event);
-  if (riskEvents.length > 5000) {
-    riskEvents.splice(0, riskEvents.length - 5000);
+  runtime.riskEvents.push(event);
+  if (runtime.riskEvents.length > 5000) {
+    runtime.riskEvents.splice(0, runtime.riskEvents.length - 5000);
   }
 }
 
@@ -150,7 +216,10 @@ function validateOfficeIp(settings, ipAddress) {
   return settings.officeIpRanges.some((cidr) => isIpInCidr(ipAddress, cidr));
 }
 
-router.post('/location', (req, res) => {
+router.post('/location', async (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
+  const trackingSettings = await loadTrackingSettings(req.db);
   const now = new Date();
   const {
     employeeId,
@@ -201,7 +270,7 @@ router.post('/location', (req, res) => {
   const networkRisk = (!wifiValid && trackingSettings.wifiValidationEnabled) || !ipValid;
 
   if (trackingSettings.antiGpsSpoofingEnabled && Boolean(isMockLocation)) {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'gps-spoofing',
@@ -214,7 +283,7 @@ router.post('/location', (req, res) => {
 
   const lastSeen = now.toISOString();
 
-  const previousRecord = employeeState.get(employeeId) || null;
+  const previousRecord = runtime.employeeState.get(employeeId) || null;
   const previousStatus = previousRecord ? classifyStatus(previousRecord, trackingSettings, now) : null;
 
   const record = {
@@ -244,21 +313,21 @@ router.post('/location', (req, res) => {
 
   if (trackingSettings.whatsappAlertsEnabled) {
     if (status === 'OUTSIDE' && previousStatus !== 'OUTSIDE') {
-      recordWhatsappAlert(record, 'outside-premises');
+      recordWhatsappAlert(runtime, record, 'outside-premises');
     }
     if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
-      recordWhatsappAlert(record, 'offline-threshold');
+      recordWhatsappAlert(runtime, record, 'offline-threshold');
     }
     if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF' && trackingSettings.locationOffAlertEnabled) {
-      recordWhatsappAlert(record, 'location-disabled');
+      recordWhatsappAlert(runtime, record, 'location-disabled');
     }
     if (record.networkRisk && !previousRecord?.networkRisk) {
-      recordWhatsappAlert(record, 'network-risk');
+      recordWhatsappAlert(runtime, record, 'network-risk');
     }
   }
 
   if (status === 'OUTSIDE' && previousStatus !== 'OUTSIDE') {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'outside-premises',
@@ -268,7 +337,7 @@ router.post('/location', (req, res) => {
     });
   }
   if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'offline-threshold',
@@ -278,7 +347,7 @@ router.post('/location', (req, res) => {
     });
   }
   if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'location-disabled',
@@ -288,7 +357,7 @@ router.post('/location', (req, res) => {
     });
   }
   if (gpsSpoofSuspected && !previousRecord?.gpsSpoofSuspected) {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'gps-spoof-suspected',
@@ -298,7 +367,7 @@ router.post('/location', (req, res) => {
     });
   }
   if (!wifiValid && previousRecord?.wifiValid !== false) {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'wifi-mismatch',
@@ -308,7 +377,7 @@ router.post('/location', (req, res) => {
     });
   }
   if (networkRisk && !previousRecord?.networkRisk) {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'network-risk',
@@ -318,9 +387,9 @@ router.post('/location', (req, res) => {
     });
   }
 
-  employeeState.set(employeeId, record);
+  runtime.employeeState.set(employeeId, record);
 
-  movementLogs.push({
+  runtime.movementLogs.push({
     employeeId,
     lat: latNum,
     lng: lngNum,
@@ -334,17 +403,23 @@ router.post('/location', (req, res) => {
     networkRisk,
     locationDisabled: locationDisabledFlag,
   });
+  if (runtime.movementLogs.length > 5000) {
+    runtime.movementLogs.splice(0, runtime.movementLogs.length - 5000);
+  }
 
   return res.json({ ok: true, status, distanceMeters });
 });
 
-router.post('/location-status', (req, res) => {
+router.post('/location-status', async (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
+  const trackingSettings = await loadTrackingSettings(req.db);
   const now = new Date();
   const { employeeId, fullName, locationDisabled, reason, activity } = req.body || {};
   if (!employeeId) {
     return res.status(400).json({ ok: false, error: 'employeeId is required' });
   }
-  const previousRecord = employeeState.get(employeeId) || {};
+  const previousRecord = runtime.employeeState.get(employeeId) || {};
   const nextRecord = {
     ...previousRecord,
     employeeId,
@@ -363,10 +438,10 @@ router.post('/location-status', (req, res) => {
     status === 'LOCATION_OFF' &&
     previousStatus !== 'LOCATION_OFF'
   ) {
-    recordWhatsappAlert(nextRecord, 'location-disabled');
+    recordWhatsappAlert(runtime, nextRecord, 'location-disabled');
   }
   if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
-    recordRiskEvent({
+    recordRiskEvent(runtime, {
       employeeId,
       fullName: fullName || previousRecord.fullName || employeeId,
       riskType: 'location-disabled',
@@ -375,13 +450,16 @@ router.post('/location-status', (req, res) => {
       status,
     });
   }
-  employeeState.set(employeeId, nextRecord);
+  runtime.employeeState.set(employeeId, nextRecord);
   return res.json({ ok: true, status });
 });
 
-router.get('/employees', (req, res) => {
+router.get('/employees', async (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
+  const trackingSettings = await loadTrackingSettings(req.db);
   const now = new Date();
-  const employees = Array.from(employeeState.values()).map((record) => {
+  const employees = Array.from(runtime.employeeState.values()).map((record) => {
     const status = classifyStatus(record, trackingSettings, now);
     const outsidePremises = status === 'OUTSIDE';
     const offline = status === 'OFFLINE';
@@ -412,19 +490,23 @@ router.get('/employees', (req, res) => {
 });
 
 router.get('/movement/:employeeId', (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
   const { employeeId } = req.params;
   const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 120));
-  const movement = movementLogs
+  const movement = runtime.movementLogs
     .filter((row) => String(row.employeeId || '') === String(employeeId || ''))
     .slice(-limit);
   res.json({ movement });
 });
 
 router.get('/events', (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
   const limit = Math.max(1, Math.min(1000, Number(req.query.limit) || 200));
   const employeeId = String(req.query.employeeId || '').trim();
   const riskType = String(req.query.riskType || '').trim().toLowerCase();
-  const rows = riskEvents
+  const rows = runtime.riskEvents
     .filter((event) => {
       const matchEmployee = !employeeId || String(event.employeeId || '') === employeeId;
       const matchType = !riskType || String(event.riskType || '').toLowerCase() === riskType;
@@ -457,14 +539,15 @@ router.get('/reverse-geocode', async (req, res) => {
   }
 });
 
-router.get('/settings', (req, res) => {
-  res.json(trackingSettings);
+router.get('/settings', async (req, res) => {
+  const settings = await loadTrackingSettings(req.db);
+  res.json(settings);
 });
 
-router.post('/settings', (req, res) => {
+router.post('/settings', async (req, res) => {
+  const trackingSettings = await loadTrackingSettings(req.db);
   const payload = req.body || {};
-
-  trackingSettings = {
+  const nextSettings = {
     ...trackingSettings,
     officeLat:
       payload.officeLat === null || payload.officeLat === undefined ? trackingSettings.officeLat : toNumber(payload.officeLat),
@@ -515,7 +598,8 @@ router.post('/settings', (req, res) => {
         : Boolean(payload.locationOffAlertEnabled),
   };
 
-  res.json({ ok: true, settings: trackingSettings });
+  const savedSettings = await saveTrackingSettings(req.db, nextSettings);
+  res.json({ ok: true, settings: savedSettings });
 });
 
 router.post('/selfie', (req, res) => {
@@ -527,6 +611,8 @@ router.post('/selfie', (req, res) => {
 });
 
 router.post('/alerts/whatsapp', (req, res) => {
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
   const { employeeId, phoneNumber, message, reason } = req.body || {};
   if (!phoneNumber || !message) {
     return res.status(400).json({ ok: false, error: 'phoneNumber and message are required' });
@@ -539,12 +625,14 @@ router.post('/alerts/whatsapp', (req, res) => {
     reason: reason || 'manual',
     createdAt: new Date().toISOString(),
   };
-  whatsappAlerts.push(alert);
+  runtime.whatsappAlerts.push(alert);
   return res.json({ ok: true });
 });
 
 router.get('/alerts/whatsapp', (req, res) => {
-  res.json({ alerts: whatsappAlerts });
+  const tenantId = req.tenantId || 'master';
+  const runtime = getTenantRuntime(tenantId);
+  res.json({ alerts: runtime.whatsappAlerts });
 });
 
 module.exports = router;

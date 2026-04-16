@@ -20,7 +20,7 @@ const allModules = [
 
 const packageDefaults = {
   basic: {
-    modules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'],
+    modules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual', 'settings'],
     employeeLimit: 25,
     concurrentLoginLimit: 8,
   },
@@ -36,6 +36,7 @@ const packageDefaults = {
       'reports-analytics',
       'monitoring-tracking',
       'manual',
+      'settings',
     ],
     employeeLimit: 300,
     concurrentLoginLimit: 80,
