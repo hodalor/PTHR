@@ -3,6 +3,11 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toApiUrl } from '../config/api';
 
+const googleMapsTileKey = (process.env.REACT_APP_GOOGLE_MAPS_TILE_KEY || '').trim();
+const googleTileBaseUrl = googleMapsTileKey
+  ? `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=${encodeURIComponent(googleMapsTileKey)}`
+  : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}';
+
 const resolveMarkerColor = (status) => {
   if (status === 'INSIDE') {
     return '#0f9d58';
@@ -373,9 +378,10 @@ export default function AdminTrackingPage() {
         zoomControl: true,
         attributionControl: true,
       }).setView(center, 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors',
+      L.tileLayer(googleTileBaseUrl, {
+        subdomains: ['0', '1', '2', '3'],
+        maxZoom: 20,
+        attribution: '&copy; Google Maps',
       }).addTo(mapRef.current);
     }
     const map = mapRef.current;

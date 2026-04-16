@@ -12,6 +12,7 @@ cp .env.example .env
 
 ```env
 REACT_APP_API_BASE_URL=https://pthr.onrender.com
+REACT_APP_GOOGLE_MAPS_TILE_KEY=your-google-maps-tile-key
 ```
 
 The frontend reads this variable at build time. If this is missing, it falls back to `http://localhost:8000`.

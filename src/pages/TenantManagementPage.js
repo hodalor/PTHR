@@ -156,6 +156,40 @@ export default function TenantManagementPage({ authToken }) {
     }
   };
 
+  const handleDeleteTenant = async (tenant) => {
+    if (!authToken || !tenant?.tenantId || tenant.tenantId === 'master') {
+      return;
+    }
+    const shouldDelete = window.confirm(
+      `Delete tenant "${tenant.tenantId}"?\n\nThis will permanently delete the tenant database and all tenant data.`
+    );
+    if (!shouldDelete) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(
+        toApiUrl(`http://localhost:8000/api/auth/tenants/${encodeURIComponent(tenant.tenantId)}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        }
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to delete tenant');
+      }
+      await loadData();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete tenant');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <section className="panel">
       <div className="panel-title-row">
@@ -210,6 +244,15 @@ export default function TenantManagementPage({ authToken }) {
                   <td>
                     <button type="button" className="mini-btn" onClick={() => openEditModal(tenant)}>
                       Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      style={{ marginLeft: 8, background: '#ffe7ec', color: '#9a1f33' }}
+                      onClick={() => handleDeleteTenant(tenant)}
+                      disabled={saving || tenant.tenantId === 'master'}
+                    >
+                      Delete
                     </button>
                   </td>
                 </tr>
