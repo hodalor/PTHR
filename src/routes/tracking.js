@@ -200,6 +200,18 @@ router.post('/location', (req, res) => {
   const locationDisabledFlag = Boolean(locationDisabled);
   const networkRisk = (!wifiValid && trackingSettings.wifiValidationEnabled) || !ipValid;
 
+  if (trackingSettings.antiGpsSpoofingEnabled && Boolean(isMockLocation)) {
+    recordRiskEvent({
+      employeeId,
+      fullName: fullName || employeeId,
+      riskType: 'gps-spoofing',
+      severity: 'high',
+      details: 'Location update rejected because mock location is enabled on device.',
+      status: 'REJECTED',
+    });
+    return res.status(403).json({ ok: false, error: 'Mock location detected. Disable fake GPS and retry.' });
+  }
+
   const lastSeen = now.toISOString();
 
   const previousRecord = employeeState.get(employeeId) || null;

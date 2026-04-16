@@ -3,6 +3,13 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const {
+  normalizeTenantId,
+  resolvePackageModules,
+  resolveTenantGrantedModules,
+  resolveTenantEffectiveLimits,
+} = require('./tenancy');
 
 dotenv.config();
 
@@ -17,7 +24,9 @@ const { router: authRoutes, ensureSuperAdmin } = require('./routes/auth');
 
 const PORT = process.env.PORT || 8000;
 const MONGO_URI = process.env.MONGO_URI;
-const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hr';
+const MONGO_MASTER_DB_NAME = process.env.MONGO_DB_NAME || 'hr-master';
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
 
 const moduleCollections = {
   'employee-management': 'employees',
@@ -240,17 +249,66 @@ async function enrichAttendanceRecord(db, payload) {
 }
 
 let mongoClient;
+const tenantDbCache = new Map();
 
 async function connectToMongo() {
   if (!MONGO_URI) {
     throw new Error('MONGO_URI is not configured');
   }
   if (mongoClient && mongoClient.topology && mongoClient.topology.isConnected()) {
-    return mongoClient.db(MONGO_DB_NAME);
+    return mongoClient.db(MONGO_MASTER_DB_NAME);
   }
   mongoClient = new MongoClient(MONGO_URI);
   await mongoClient.connect();
-  return mongoClient.db(MONGO_DB_NAME);
+  return mongoClient.db(MONGO_MASTER_DB_NAME);
+}
+
+async function getTenantDatabase(masterDb, tenantIdRaw) {
+  const normalizedTenantId = normalizeTenantId(tenantIdRaw);
+  if (!normalizedTenantId) {
+    throw new Error('tenantId is required');
+  }
+  if (normalizedTenantId === 'master') {
+    return { tenantId: 'master', dbName: MONGO_MASTER_DB_NAME, db: masterDb };
+  }
+  if (tenantDbCache.has(normalizedTenantId)) {
+    return tenantDbCache.get(normalizedTenantId);
+  }
+  const tenant = await masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId, status: 'active' });
+  if (!tenant) {
+    throw new Error('Unknown or inactive tenant');
+  }
+  const tenantContext = {
+    tenantId: normalizedTenantId,
+    dbName: String(tenant.dbName || ''),
+    tenant,
+    db: mongoClient.db(String(tenant.dbName || '')),
+  };
+  tenantDbCache.set(normalizedTenantId, tenantContext);
+  return tenantContext;
+}
+
+function resolveTenantIdFromRequest(req) {
+  const fromHeader = req.headers['x-tenant-id'];
+  if (fromHeader) {
+    return normalizeTenantId(fromHeader);
+  }
+  const authHeader = req.headers.authorization || '';
+  const [, token] = authHeader.split(' ');
+  if (token) {
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      return normalizeTenantId(payload.tenantId) || 'master';
+    } catch (error) {
+    }
+  }
+  if (req.body && req.body.tenantId) {
+    return normalizeTenantId(req.body.tenantId);
+  }
+  if (req.query && req.query.tenantId) {
+    return normalizeTenantId(req.query.tenantId);
+  }
+  return 'master';
 }
 
 async function syncEmployeeUser(db, employee) {
@@ -326,11 +384,66 @@ function getModuleCollection(db, moduleId) {
   return db.collection(collectionName);
 }
 
+async function loadAuthUserFromRequest(req) {
+  const authHeader = req.headers.authorization || '';
+  const [, token] = authHeader.split(' ');
+  if (!token) {
+    return null;
+  }
+  let payload;
+  try {
+    payload = jwt.verify(token, JWT_SECRET);
+  } catch (error) {
+    return null;
+  }
+  const users = req.db.collection('users');
+  const user = await users.findOne({ _id: new ObjectId(payload.sub), isActive: true });
+  if (!user) {
+    return null;
+  }
+  if (payload.jti) {
+    const activeSession = await req.db.collection('authSessions').findOne({
+      tokenId: payload.jti,
+      revokedAt: null,
+      expiresAt: { $gt: new Date().toISOString() },
+    });
+    if (!activeSession) {
+      return null;
+    }
+  }
+  return { ...user, tokenPayload: payload };
+}
+
+function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
+  const role = String(user?.role || '').toLowerCase();
+  if (role === 'superadmin' && tenantId === 'master') {
+    return ['*'];
+  }
+  const packageModules = tenant ? resolvePackageModules(tenant.packageType) : [];
+  const tenantGrants = tenant
+    ? resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules)
+    : packageModules;
+  const requestedModules = Array.isArray(user.allowedModules)
+    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const baseline =
+    role === 'employee' && requestedModules.length === 0
+      ? defaultEmployeeModules
+      : requestedModules.length > 0
+        ? requestedModules
+        : tenantGrants;
+  const tenantSet = new Set(tenantGrants);
+  if (tenantSet.size === 0) {
+    return baseline;
+  }
+  return baseline.filter((moduleId) => tenantSet.has(moduleId));
+}
+
 app.get('/health', async (req, res) => {
   try {
-    const db = await connectToMongo();
-    await db.command({ ping: 1 });
-    res.json({ status: 'ok', service: 'hr-backend', mongo: 'connected' });
+    const masterDb = await connectToMongo();
+    await masterDb.command({ ping: 1 });
+    res.json({ status: 'ok', service: 'hr-backend', mongo: 'connected', mode: 'multitenant' });
   } catch (error) {
     res.status(500).json({ status: 'error', service: 'hr-backend', mongo: 'unavailable' });
   }
@@ -338,12 +451,21 @@ app.get('/health', async (req, res) => {
 
 app.use(async (req, res, next) => {
   try {
-    const db = await connectToMongo();
-    req.db = db;
+    const masterDb = await connectToMongo();
+    const requestedTenantId = resolveTenantIdFromRequest(req);
+    const tenantContext = await getTenantDatabase(masterDb, requestedTenantId || 'master');
+    req.masterDb = masterDb;
+    req.tenantId = tenantContext.tenantId;
+    req.tenant = tenantContext.tenant || null;
+    req.getTenantDb = async (tenantId) => {
+      const resolved = await getTenantDatabase(masterDb, tenantId);
+      return resolved.db;
+    };
+    req.db = tenantContext.db;
     req.db.bson = { ObjectId };
     next();
   } catch (error) {
-    res.status(500).json({ error: 'Database connection failed' });
+    res.status(500).json({ error: error.message || 'Database connection failed' });
   }
 });
 
@@ -379,6 +501,31 @@ app.post('/api/settings/attendance', async (req, res) => {
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save attendance settings' });
+  }
+});
+
+app.use('/api/modules/:moduleId', async (req, res, next) => {
+  try {
+    const user = await loadAuthUserFromRequest(req);
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const moduleId = req.params.moduleId;
+    if (String(user.role || '').toLowerCase() === 'superadmin' && req.tenantId === 'master') {
+      req.authUser = user;
+      next();
+      return;
+    }
+    const allowedModules = resolveUserAllowedModulesForTenant(user, req.tenant, req.tenantId);
+    if (!allowedModules.includes(moduleId)) {
+      res.status(403).json({ error: 'Forbidden: module not enabled for this tenant/user' });
+      return;
+    }
+    req.authUser = user;
+    next();
+  } catch (error) {
+    res.status(500).json({ error: 'Authorization check failed' });
   }
 });
 
@@ -435,6 +582,17 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     if (!collection) {
       res.status(404).json({ error: 'Unknown module' });
       return;
+    }
+    if (moduleId === 'employee-management' && req.tenantId !== 'master') {
+      const limits = resolveTenantEffectiveLimits(req.tenant || {});
+      const employeeLimit = Number(limits.employeeLimit) || 0;
+      if (employeeLimit > 0) {
+        const currentCount = await req.db.collection('employees').countDocuments({});
+        if (currentCount >= employeeLimit) {
+          res.status(403).json({ error: `Employee limit reached (${employeeLimit}) for this tenant plan.` });
+          return;
+        }
+      }
     }
     const incoming = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, req.body) : req.body;
     const payload = {
@@ -512,11 +670,29 @@ app.use('/api/tracking', trackingRoutes);
 
 async function start() {
   try {
-    const db = await connectToMongo();
-    app.locals.db = db;
-    await ensureSuperAdmin(db);
+    const masterDb = await connectToMongo();
+    app.locals.masterDb = masterDb;
+    await masterDb.collection('tenants').updateOne(
+      { tenantId: 'master' },
+      {
+        $set: {
+          name: 'Master Tenant',
+          packageType: 'enterprise',
+          dbName: MONGO_MASTER_DB_NAME,
+          grantedModules: [],
+          status: 'active',
+          updatedAt: new Date().toISOString(),
+        },
+        $setOnInsert: {
+          tenantId: 'master',
+          createdAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true }
+    );
+    await ensureSuperAdmin(masterDb);
     app.listen(PORT, () => {
-      console.log(`Connected to MongoDB Atlas database "${MONGO_DB_NAME}"`);
+      console.log(`Connected to MongoDB Atlas database "${MONGO_MASTER_DB_NAME}"`);
       console.log(`HR backend listening on port ${PORT}`);
     });
   } catch (error) {
