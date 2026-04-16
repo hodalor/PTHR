@@ -10,6 +10,7 @@ import LoanRecordsPage from './pages/LoanRecordsPage';
 import LoanManagementPage from './pages/LoanManagementPage';
 import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
+import TenantManagementPage from './pages/TenantManagementPage';
 import ManualPage from './pages/ManualPage';
 import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
 import SidebarNav from './app/SidebarNav';
@@ -484,7 +485,11 @@ function App({ initialModuleId }) {
   const [loanApprovalDrafts, setLoanApprovalDrafts] = useState({});
   const [loanApprovalSavingId, setLoanApprovalSavingId] = useState(null);
   const [toasts, setToasts] = useState([]);
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginForm, setLoginForm] = useState({
+    tenantId: storedAuth?.tenantId || storedAuth?.user?.tenantId || '',
+    username: '',
+    password: '',
+  });
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
@@ -706,6 +711,7 @@ function App({ initialModuleId }) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          tenantId: loginForm.tenantId.trim().toLowerCase(),
           username: loginForm.username.trim(),
           password: loginForm.password,
         }),
@@ -713,7 +719,7 @@ function App({ initialModuleId }) {
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         if (response.status === 401 || response.status === 400) {
-          setLoginError(data?.error || 'Invalid username or password');
+          setLoginError(data?.error || 'Invalid tenant ID, username, or password');
         } else {
           setLoginError(data?.error || 'Login failed');
         }
@@ -729,10 +735,11 @@ function App({ initialModuleId }) {
       const payload = {
         token: data.token,
         user: data.user,
+        tenantId: data.user.tenantId || loginForm.tenantId.trim().toLowerCase(),
         lastModuleId: activeModuleId,
       };
       storeAuth(payload);
-      setLoginForm({ username: '', password: '' });
+      setLoginForm((prev) => ({ ...prev, username: '', password: '' }));
       const firstAllowed = sidebarSections
         .flatMap((section) => section.items)
         .find((item) => allowedModulesByRole.has(item.id));
@@ -747,13 +754,27 @@ function App({ initialModuleId }) {
   };
 
   const handleLogout = () => {
+    fetch(toApiUrl('http://localhost:8000/api/auth/logout'), {
+      method: 'POST',
+      headers: authToken
+        ? {
+            Authorization: `Bearer ${authToken}`,
+          }
+        : undefined,
+    }).catch(() => null);
     setCurrentUser(null);
     setAuthToken('');
     clearAuth();
   };
 
   useEffect(() => {
-    if (!activeModuleId || isSettingsPage || activeModuleId === 'monitoring-tracking') {
+    if (
+      !activeModuleId ||
+      isSettingsPage ||
+      activeModuleId === 'monitoring-tracking' ||
+      activeModuleId === 'user-management' ||
+      activeModuleId === 'tenant-management'
+    ) {
       return;
     }
     let cancelled = false;
@@ -3141,6 +3162,8 @@ function App({ initialModuleId }) {
     (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
     activeModuleId !== 'leave-management' &&
     activeModuleId !== 'monitoring-tracking' &&
+    activeModuleId !== 'user-management' &&
+    activeModuleId !== 'tenant-management' &&
     activeModuleId !== 'manual';
   const fingerprintConnectionState = useMemo(() => {
     if (appSettings.fingerprintIntegration.mode === 'simulation') {
@@ -5236,6 +5259,18 @@ function App({ initialModuleId }) {
             <p>Sign in to continue.</p>
             <form onSubmit={handleLoginSubmit} className="login-form">
               <label>
+                  <span>Tenant ID</span>
+                  <input
+                    autoComplete="organization"
+                    value={loginForm.tenantId}
+                    onChange={(event) =>
+                      setLoginForm((prev) => ({ ...prev, tenantId: event.target.value }))
+                    }
+                    placeholder="master or acme-ghana"
+                    required
+                  />
+                </label>
+                <label>
                 <span>Username or Employee ID</span>
                 <input
                   autoComplete="username"
@@ -5347,6 +5382,23 @@ function App({ initialModuleId }) {
                   ? 'Connected'
                   : 'Not connected'}
               </span>
+              {typeof currentUser.subscriptionDaysRemaining === 'number' ? (
+                <span
+                  style={{
+                    marginLeft: 8,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '3px 10px',
+                    borderRadius: 999,
+                    fontSize: 12,
+                    backgroundColor: currentUser.subscriptionDaysRemaining <= 7 ? '#fff2df' : '#eaf2ff',
+                    color: currentUser.subscriptionDaysRemaining <= 7 ? '#8a4c0f' : '#1b3f8d',
+                  }}
+                >
+                  Subscription: {currentUser.subscriptionDaysRemaining >= 0 ? `${currentUser.subscriptionDaysRemaining} day(s)` : 'Expired'}
+                </span>
+              ) : null}
             </div>
           </div>
         </header>
@@ -7131,6 +7183,7 @@ function App({ initialModuleId }) {
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}
               {activeModuleId === 'user-management' ? <UserManagementPage authToken={authToken} /> : null}
+              {activeModuleId === 'tenant-management' ? <TenantManagementPage authToken={authToken} /> : null}
               {activeModuleId === 'leave-management' ? (
                 <LeaveManagementPage
                   appSettings={appSettings}

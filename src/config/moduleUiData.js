@@ -25,6 +25,7 @@ export const sidebarSections = [
   {
     title: 'System',
     items: [
+      { id: 'tenant-management', label: 'Tenant Management' },
       { id: 'user-management', label: 'User Management' },
       { id: 'settings', label: 'Settings' },
       { id: 'manual', label: 'Manual' },
@@ -707,6 +708,22 @@ export const moduleUiData = {
       { key: 'role', label: 'Role' },
       { key: 'allowedModules', label: 'Allowed Modules' },
       { key: 'isActive', label: 'Status' },
+    ],
+    rows: [],
+  },
+  'tenant-management': {
+    title: 'Tenant Management',
+    entityLabel: 'Tenant',
+    filterLabel: 'Package',
+    filterField: 'packageType',
+    formFields: [],
+    columns: [
+      { key: 'tenantId', label: 'Tenant ID' },
+      { key: 'name', label: 'Tenant Name' },
+      { key: 'packageType', label: 'Package' },
+      { key: 'dbName', label: 'Database' },
+      { key: 'status', label: 'Status' },
+      { key: 'createdAt', label: 'Created At' },
     ],
     rows: [],
   },

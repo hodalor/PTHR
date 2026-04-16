@@ -4,6 +4,27 @@ import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 
+const originalFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+  try {
+    const rawAuth = window.localStorage.getItem('pthr_auth');
+    const auth = rawAuth ? JSON.parse(rawAuth) : null;
+    const headers = new Headers(init.headers || {});
+    if (auth?.tenantId && !headers.has('X-Tenant-Id')) {
+      headers.set('X-Tenant-Id', String(auth.tenantId).trim().toLowerCase());
+    }
+    if (auth?.token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${auth.token}`);
+    }
+    return await originalFetch(input, {
+      ...init,
+      headers,
+    });
+  } catch (error) {
+    return originalFetch(input, init);
+  }
+};
+
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>

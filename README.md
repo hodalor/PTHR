@@ -42,3 +42,11 @@ npm run build
   - backend URL is correct and reachable
   - backend has started and database is connected
   - Netlify env variable is exactly `REACT_APP_API_BASE_URL`
+
+## Multi-tenant login
+
+- Login now requires:
+  - `Tenant ID`
+  - `Username or Employee ID`
+  - `Password`
+- Use `master` tenant for platform super-admin access.
