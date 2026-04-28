@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { sidebarSections } from '../config/moduleUiData';
+import { toApiUrl } from '../config/api';
 
 function UserManagementPage({ authToken }) {
   const [users, setUsers] = useState([]);
@@ -11,6 +12,7 @@ function UserManagementPage({ authToken }) {
     fullName: '',
     password: '',
     role: 'employee',
+    employeeId: '',
     allowedModules: [],
   });
 
@@ -27,7 +29,7 @@ function UserManagementPage({ authToken }) {
       setLoading(true);
       setError('');
       try {
-        const response = await fetch('http://localhost:8000/api/auth/users', {
+        const response = await fetch(toApiUrl('http://localhost:8000/api/auth/users'), {
           headers: {
             Authorization: `Bearer ${authToken}`,
           },
@@ -69,7 +71,7 @@ function UserManagementPage({ authToken }) {
     setSaving(true);
     setError('');
     try {
-      const response = await fetch('http://localhost:8000/api/auth/users', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/auth/users'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -80,6 +82,7 @@ function UserManagementPage({ authToken }) {
           fullName: formValues.fullName.trim(),
           password: formValues.password,
           role: formValues.role,
+          employeeId: formValues.employeeId.trim(),
           allowedModules: Array.isArray(formValues.allowedModules)
             ? formValues.allowedModules
             : String(formValues.allowedModules || '')
@@ -101,6 +104,7 @@ function UserManagementPage({ authToken }) {
           fullName: '',
           password: '',
           role: 'employee',
+          employeeId: '',
           allowedModules: [],
         });
       }
@@ -128,6 +132,13 @@ function UserManagementPage({ authToken }) {
               <input
                 value={formValues.username}
                 onChange={(event) => handleChange('username', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Employee ID (optional)</span>
+              <input
+                value={formValues.employeeId}
+                onChange={(event) => handleChange('employeeId', event.target.value)}
               />
             </label>
             <label>

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 
 export default function LoanRecordsPage({
   formValues,
@@ -6,22 +6,9 @@ export default function LoanRecordsPage({
   visibleFormFields,
   loanInstallmentPreview,
   renderFormFieldControl,
-  employeeBaseRows,
+  loanFormEmployeeMatches,
+  selectedLoanFormEmployee,
 }) {
-  const loanFormEmployeeMatches = useMemo(() => {
-    const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
-  }, [employeeBaseRows, formValues.loanEmployeeSearch]);
-
   const getFieldByKey = (key) => visibleFormFields.find((field) => field.key === key);
 
   const leftFieldKeys = ['employee', 'employeeId', 'type', 'amount', 'interestPercent'];
@@ -50,6 +37,15 @@ export default function LoanRecordsPage({
               }
             />
           </label>
+          {selectedLoanFormEmployee ? (
+            <div className="detail-cell">
+              <span>Selected Employee</span>
+              <strong>
+                {selectedLoanFormEmployee.fullName} ({selectedLoanFormEmployee.id})
+              </strong>
+              <span>{selectedLoanFormEmployee.department || 'Unassigned'}</span>
+            </div>
+          ) : null}
           {loanFormEmployeeMatches.length > 0 ? (
             <div className="row-actions">
               {loanFormEmployeeMatches.map((employee) => (

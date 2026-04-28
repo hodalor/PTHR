@@ -1,14 +1,25 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
+import { toApiUrl } from './config/api';
 import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
 import LeaveManagementPage from './pages/LeaveManagementPage';
-import PayrollPage from './pages/PayrollPage';
 import LoanRecordsPage from './pages/LoanRecordsPage';
+import LoanManagementPage from './pages/LoanManagementPage';
 import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
+import TenantManagementPage from './pages/TenantManagementPage';
+import ManualPage from './pages/ManualPage';
+import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
+import SidebarNav from './app/SidebarNav';
+import LeaveApprovalPanel from './modules/leave/LeaveApprovalPanel';
+import LoanApprovalPanel from './modules/loan/LoanApprovalPanel';
+import { toNumberValue } from './utils/number';
+import { useModuleAdapter } from './modules/adapters/useModuleAdapter';
+import { getModuleEnhancers } from './modules/adapters/moduleEnhancers';
+import { getEmployeePayrollProfile } from './utils/payrollProfile';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -96,12 +107,6 @@ const getMinutesBetweenClocks = (startClock, endClock) => {
   return endMinutes - startMinutes;
 };
 
-const toNumberValue = (value) => {
-  const sanitized = String(value || '').replace(/[^0-9.-]/g, '');
-  const numeric = Number(sanitized);
-  return Number.isFinite(numeric) ? numeric : 0;
-};
-
 const getCurrentClockValue = () => {
   const now = new Date();
   const hours = String(now.getHours()).padStart(2, '0');
@@ -159,6 +164,29 @@ const toIsoDateString = (date) => {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const isLeaveRejectedRecord = (row) => {
+  const departmentApproval = String(row?.departmentApproval || row?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(row?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(row?.managerApproval || row?.finalManagerApproval || row?.branchManagerApproval || '').trim().toLowerCase();
+  const status = String(row?.status || '').trim().toLowerCase();
+  return departmentApproval === 'rejected' || hrApproval === 'rejected' || managerApproval === 'rejected' || status === 'rejected';
+};
+
+const isLeaveFullyApprovedRecord = (row) => {
+  if (!row || isLeaveRejectedRecord(row)) {
+    return false;
+  }
+  const departmentApproval = String(row?.departmentApproval || row?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(row?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(row?.managerApproval || row?.finalManagerApproval || row?.branchManagerApproval || '').trim().toLowerCase();
+  return departmentApproval === 'approved' && hrApproval === 'approved' && managerApproval === 'approved';
+};
+
+const isLoanCountableRecord = (row) => {
+  const status = String(row?.status || '').trim().toLowerCase();
+  return status === 'active' || status === 'approved';
 };
 
 const overlapDaysInclusive = (startA, endA, startB, endB) => {
@@ -227,44 +255,6 @@ const blendHexToBlack = (hex, blackRatio) => {
   return `#${toChannel(1)}${toChannel(3)}${toChannel(5)}`;
 };
 
-const parseCsvLine = (line) => {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (char === '"') {
-      const nextChar = line[i + 1];
-      if (inQuotes && nextChar === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  result.push(current);
-  return result.map((value) => value.trim());
-};
-
-const parseCsv = (text) => {
-  const lines = String(text || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (!lines.length) {
-    return { headers: [], rows: [] };
-  }
-  const headers = parseCsvLine(lines[0]);
-  const rows = lines.slice(1).map((line) => parseCsvLine(line));
-  return { headers, rows };
-};
-
 const defaultIdentifierPresets = [
   {
     id: 'ghana',
@@ -277,36 +267,6 @@ const defaultIdentifierPresets = [
     name: 'Zambia (NAPSA/TPIN)',
     pensionLabel: 'NAPSA Number',
     taxLabel: 'TPIN',
-  },
-];
-
-const defaultEmployeeLoanRows = [
-  {
-    id: 'LON-100',
-    employee: 'Amina Yusuf',
-    type: 'Salary Advance',
-    amount: 'GHS 2,500',
-    issuedOn: '2026-01-18',
-    balance: 'GHS 1,200',
-    status: 'Active',
-  },
-  {
-    id: 'LON-101',
-    employee: 'Liam Osei',
-    type: 'Medical Loan',
-    amount: 'GHS 4,000',
-    issuedOn: '2025-12-05',
-    balance: 'GHS 600',
-    status: 'Active',
-  },
-  {
-    id: 'LON-102',
-    employee: 'Fatima Bello',
-    type: 'Emergency Loan',
-    amount: 'NGN 850,000',
-    issuedOn: '2025-09-12',
-    balance: 'NGN 0',
-    status: 'Closed',
   },
 ];
 
@@ -506,6 +466,10 @@ function App({ initialModuleId }) {
   const [attendancePerformanceSearchText, setAttendancePerformanceSearchText] = useState('');
   const [selectedPerformanceEmployeeId, setSelectedPerformanceEmployeeId] = useState('');
   const [attendanceDetailModal, setAttendanceDetailModal] = useState({ type: '', key: '' });
+  const [complianceReplayActive, setComplianceReplayActive] = useState(false);
+  const [complianceReplayIndex, setComplianceReplayIndex] = useState(0);
+  const [complianceReplaySpeed, setComplianceReplaySpeed] = useState(1);
+  const [complianceShowPointLabels, setComplianceShowPointLabels] = useState(true);
   const [leaveViewTab, setLeaveViewTab] = useState('requests');
   const [leaveRequestPageTab, setLeaveRequestPageTab] = useState('requests');
   const [leaveMenuExpanded, setLeaveMenuExpanded] = useState(false);
@@ -515,8 +479,20 @@ function App({ initialModuleId }) {
   const [leaveSortBy, setLeaveSortBy] = useState('date-desc');
   const [leaveActionMessage, setLeaveActionMessage] = useState('');
   const [leaveApprovalDrafts, setLeaveApprovalDrafts] = useState({});
+  const [leaveApprovalSavingId, setLeaveApprovalSavingId] = useState(null);
+  const [loanViewTab, setLoanViewTab] = useState('requests');
+  const [loanMenuExpanded, setLoanMenuExpanded] = useState(false);
+  const [loanSearchText, setLoanSearchText] = useState('');
+  const [loanStatusFilter, setLoanStatusFilter] = useState('All');
+  const [loanActionMessage, setLoanActionMessage] = useState('');
+  const [loanApprovalDrafts, setLoanApprovalDrafts] = useState({});
+  const [loanApprovalSavingId, setLoanApprovalSavingId] = useState(null);
   const [toasts, setToasts] = useState([]);
-  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginForm, setLoginForm] = useState({
+    tenantId: storedAuth?.tenantId || storedAuth?.user?.tenantId || '',
+    username: '',
+    password: '',
+  });
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
@@ -535,6 +511,14 @@ function App({ initialModuleId }) {
   const [trackingSettingsError, setTrackingSettingsError] = useState('');
   const [trackingSettingsSaving, setTrackingSettingsSaving] = useState(false);
   const [trackingSettingsSavedMessage, setTrackingSettingsSavedMessage] = useState('');
+  const [mobileSettingsLoading, setMobileSettingsLoading] = useState(false);
+  const [mobileSettingsError, setMobileSettingsError] = useState('');
+  const [mobileSettingsSaving, setMobileSettingsSaving] = useState(false);
+  const [mobileSettingsSavedMessage, setMobileSettingsSavedMessage] = useState('');
+  const [attendanceSettingsLoading, setAttendanceSettingsLoading] = useState(false);
+  const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
+  const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
+  const [attendanceSettingsSavedMessage, setAttendanceSettingsSavedMessage] = useState('');
   const [appSettings, setAppSettings] = useState({
     appName: 'PTHR',
     sidebarColor: '#0a73d9',
@@ -549,6 +533,30 @@ function App({ initialModuleId }) {
     attendanceLateAfter: '08:15',
     attendanceReportTime: '08:00',
     attendanceShiftEnd: '17:00',
+    shifts: [
+      {
+        id: 'SHIFT-MORNING',
+        name: 'Morning',
+        reportTime: '08:00',
+        shiftEnd: '17:00',
+        graceInMinutes: 15,
+        graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
+      },
+      {
+        id: 'SHIFT-EVENING',
+        name: 'Evening',
+        reportTime: '14:00',
+        shiftEnd: '22:00',
+        graceInMinutes: 10,
+        graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
+      },
+    ],
     payrollWorkingDays: 26,
     attendanceCalculationMode: 'auto',
     attendanceFixedDeductionPerMinute: 0.128,
@@ -568,6 +576,7 @@ function App({ initialModuleId }) {
       minTakeHomePercent: 45,
       maxLoanDeductionPercentOfGross: 35,
       defaultInterestPercentPerMonth: 5,
+      overduePenaltyPercentPerDay: 2,
     },
     idCardDesign: {
       companyName: 'PTHR',
@@ -597,6 +606,20 @@ function App({ initialModuleId }) {
       officeWifiBssids: [],
       officeIpRanges: [],
       offlineMinutesThreshold: 15,
+      locationOffAlertEnabled: true,
+    },
+    mobileApp: {
+      enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
+      allowClockIn: true,
+      allowClockOut: true,
+      requireLocationOnClock: true,
+      autoSendLocationOnClock: true,
+      autoStartTrackingOnClockIn: true,
+      allowLoanView: true,
+      allowLoanRequest: true,
+      allowLeaveView: true,
+      allowLeaveRequest: true,
+      allowTrackingView: true,
     },
     departments: [
       { name: 'Human Resources', code: 'HR' },
@@ -605,7 +628,8 @@ function App({ initialModuleId }) {
       { name: 'Operations', code: 'OP' },
     ],
   });
-  const payrollUploadInputRef = useRef(null);
+  const employeeModuleLoadingRef = useRef(false);
+  const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -615,9 +639,11 @@ function App({ initialModuleId }) {
   });
 
   const isSettingsPage = activeModuleId === 'settings';
+  const isManualPage = activeModuleId === 'manual';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
 
-  const isSuperAdmin = currentUser?.role === 'superadmin';
+  const normalizedCurrentUserRole = String(currentUser?.role || '').toLowerCase();
+  const isSuperAdmin = normalizedCurrentUserRole === 'superadmin';
 
   const allowedModulesByRole = useMemo(() => {
     if (!currentUser) {
@@ -626,20 +652,29 @@ function App({ initialModuleId }) {
     if (isSuperAdmin) {
       return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
     }
-    if (currentUser.role === 'employee') {
-      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking']);
-    }
     if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
       return new Set(currentUser.allowedModules);
     }
-    return new Set(['employee-management', 'attendance-time', 'leave-management']);
-  }, [currentUser, isSuperAdmin]);
+    if (normalizedCurrentUserRole === 'employee') {
+      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
+    }
+    return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
+  }, [currentUser, isSuperAdmin, normalizedCurrentUserRole]);
+
+  const mobileModuleOptions = useMemo(
+    () =>
+      sidebarSections
+        .flatMap((section) => section.items)
+        .filter((item) => allowedModulesByRole.has(item.id))
+        .map((item) => ({ id: item.id, label: item.label })),
+    [allowedModulesByRole]
+  );
 
   useEffect(() => {
     let cancelled = false;
     const checkHealth = async () => {
       try {
-        const response = await fetch('http://localhost:8000/health');
+        const response = await fetch(toApiUrl('http://localhost:8000/health'));
         if (!response.ok) {
           throw new Error('Health check failed');
         }
@@ -673,12 +708,13 @@ function App({ initialModuleId }) {
     setLoginError('');
     setLoginLoading(true);
     try {
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          tenantId: loginForm.tenantId.trim().toLowerCase(),
           username: loginForm.username.trim(),
           password: loginForm.password,
         }),
@@ -686,7 +722,7 @@ function App({ initialModuleId }) {
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         if (response.status === 401 || response.status === 400) {
-          setLoginError(data?.error || 'Invalid username or password');
+          setLoginError(data?.error || 'Invalid tenant ID, username, or password');
         } else {
           setLoginError(data?.error || 'Login failed');
         }
@@ -702,10 +738,11 @@ function App({ initialModuleId }) {
       const payload = {
         token: data.token,
         user: data.user,
+        tenantId: data.user.tenantId || loginForm.tenantId.trim().toLowerCase(),
         lastModuleId: activeModuleId,
       };
       storeAuth(payload);
-      setLoginForm({ username: '', password: '' });
+      setLoginForm((prev) => ({ ...prev, username: '', password: '' }));
       const firstAllowed = sidebarSections
         .flatMap((section) => section.items)
         .find((item) => allowedModulesByRole.has(item.id));
@@ -720,6 +757,14 @@ function App({ initialModuleId }) {
   };
 
   const handleLogout = () => {
+    fetch(toApiUrl('http://localhost:8000/api/auth/logout'), {
+      method: 'POST',
+      headers: authToken
+        ? {
+            Authorization: `Bearer ${authToken}`,
+          }
+        : undefined,
+    }).catch(() => null);
     setCurrentUser(null);
     setAuthToken('');
     clearAuth();
@@ -733,15 +778,25 @@ function App({ initialModuleId }) {
   }, [authToken]);
 
   useEffect(() => {
-    if (!activeModuleId || isSettingsPage || activeModuleId === 'monitoring-tracking') {
+    if (
+      !activeModuleId ||
+      isSettingsPage ||
+      activeModuleId === 'monitoring-tracking' ||
+      activeModuleId === 'user-management' ||
+      activeModuleId === 'tenant-management'
+    ) {
       return;
     }
     let cancelled = false;
     const loadModuleRows = async () => {
       try {
+<<<<<<< HEAD
         const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`, {
           headers: authHeaders,
         });
+=======
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`));
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
         if (!response.ok) {
           return;
         }
@@ -761,13 +816,55 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
+<<<<<<< HEAD
   }, [activeModuleId, authHeaders, isSettingsPage]);
+=======
+  }, [activeModuleId, isSettingsPage]);
+  const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+    if (employeeRowsCount > 0) {
+      return;
+    }
+    if (employeeModuleLoadingRef.current) {
+      return;
+    }
+    let cancelled = false;
+    employeeModuleLoadingRef.current = true;
+    const loadEmployees = async () => {
+      try {
+        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'));
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        const records = Array.isArray(data.records) ? data.records : [];
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'employee-management': records,
+        }));
+      } catch (error) {
+      } finally {
+        employeeModuleLoadingRef.current = false;
+      }
+    };
+    loadEmployees();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, employeeRowsCount]);
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
 
   useEffect(() => {
     const fetchTrackingSettings = async () => {
       try {
         setTrackingSettingsLoading(true);
-        const response = await fetch('http://localhost:8000/api/tracking/settings');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'));
         if (!response.ok) {
           throw new Error('Failed to load tracking settings');
         }
@@ -825,6 +922,10 @@ function App({ initialModuleId }) {
               data.offlineMinutesThreshold === null || data.offlineMinutesThreshold === undefined
                 ? prev.trackingRules.offlineMinutesThreshold
                 : data.offlineMinutesThreshold,
+            locationOffAlertEnabled:
+              data.locationOffAlertEnabled === undefined
+                ? prev.trackingRules.locationOffAlertEnabled
+                : Boolean(data.locationOffAlertEnabled),
           },
         }));
         setTrackingSettingsError('');
@@ -838,12 +939,132 @@ function App({ initialModuleId }) {
     fetchTrackingSettings();
   }, []);
 
+  useEffect(() => {
+    const fetchAttendanceSettings = async () => {
+      try {
+        setAttendanceSettingsLoading(true);
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'));
+        if (!response.ok) {
+          throw new Error('Failed to load attendance settings');
+        }
+        const data = await response.json();
+        setAppSettings((prev) => ({
+          ...prev,
+          attendanceLateAfter: String(data?.attendanceLateAfter || prev.attendanceLateAfter || '08:15'),
+          attendanceReportTime: String(data?.attendanceReportTime || prev.attendanceReportTime || '08:00'),
+          attendanceShiftEnd: String(data?.attendanceShiftEnd || prev.attendanceShiftEnd || '17:00'),
+          payrollWorkingDays: Math.max(1, Number(data?.payrollWorkingDays) || prev.payrollWorkingDays || 26),
+          attendanceCalculationMode: data?.attendanceCalculationMode === 'fixed' ? 'fixed' : 'auto',
+          attendanceFixedDeductionPerMinute: Math.max(
+            0,
+            Number(data?.attendanceFixedDeductionPerMinute) || prev.attendanceFixedDeductionPerMinute || 0
+          ),
+          attendanceFixedScope: ['all', 'department', 'individual'].includes(String(data?.attendanceFixedScope || ''))
+            ? String(data.attendanceFixedScope)
+            : prev.attendanceFixedScope || 'all',
+          attendanceFixedDepartment: String(data?.attendanceFixedDepartment || prev.attendanceFixedDepartment || ''),
+          attendanceFixedEmployeeId: String(data?.attendanceFixedEmployeeId || prev.attendanceFixedEmployeeId || ''),
+          shifts: Array.isArray(data?.shifts) && data.shifts.length > 0 ? data.shifts : prev.shifts,
+        }));
+        setAttendanceSettingsError('');
+      } catch (error) {
+        setAttendanceSettingsError('Unable to load attendance settings from backend');
+      } finally {
+        setAttendanceSettingsLoading(false);
+      }
+    };
+
+    fetchAttendanceSettings();
+  }, []);
+
+  const buildAttendanceSettingsPayload = useCallback((source) => {
+    return {
+      attendanceLateAfter: source.attendanceLateAfter,
+      attendanceReportTime: source.attendanceReportTime,
+      attendanceShiftEnd: source.attendanceShiftEnd,
+      payrollWorkingDays: source.payrollWorkingDays,
+      attendanceCalculationMode: source.attendanceCalculationMode,
+      attendanceFixedDeductionPerMinute: source.attendanceFixedDeductionPerMinute,
+      attendanceFixedScope: source.attendanceFixedScope,
+      attendanceFixedDepartment: source.attendanceFixedDepartment,
+      attendanceFixedEmployeeId: source.attendanceFixedEmployeeId,
+      shifts: Array.isArray(source.shifts) ? source.shifts : [],
+    };
+  }, []);
+
+  const saveAttendanceSettings = useCallback(
+    async (nextSettings) => {
+      try {
+        setAttendanceSettingsSaving(true);
+        setAttendanceSettingsSavedMessage('');
+        setAttendanceSettingsError('');
+        const payload = buildAttendanceSettingsPayload(nextSettings || appSettings);
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error('Failed to save attendance settings');
+        }
+        const data = await response.json();
+        if (data?.settings) {
+          setAppSettings((prev) => ({
+            ...prev,
+            ...buildAttendanceSettingsPayload({
+              ...prev,
+              ...data.settings,
+            }),
+          }));
+        }
+        setAttendanceSettingsSavedMessage('Attendance settings saved to backend');
+      } catch (error) {
+        setAttendanceSettingsError('Unable to save attendance settings to backend');
+      } finally {
+        setAttendanceSettingsSaving(false);
+      }
+    },
+    [appSettings, buildAttendanceSettingsPayload]
+  );
+
+  useEffect(() => {
+    const fetchMobileSettings = async () => {
+      try {
+        setMobileSettingsLoading(true);
+        const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'));
+        if (!response.ok) {
+          throw new Error('Failed to load mobile settings');
+        }
+        const data = await response.json();
+        setAppSettings((prev) => ({
+          ...prev,
+          mobileApp: {
+            ...prev.mobileApp,
+            ...(data || {}),
+            enabledModules: Array.isArray(data?.enabledModules)
+              ? data.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
+              : prev.mobileApp.enabledModules,
+          },
+        }));
+        setMobileSettingsError('');
+      } catch (error) {
+        setMobileSettingsError('Unable to load mobile settings from backend');
+      } finally {
+        setMobileSettingsLoading(false);
+      }
+    };
+
+    fetchMobileSettings();
+  }, []);
+
   const handleSaveTrackingSettings = async () => {
     try {
       setTrackingSettingsSaving(true);
       setTrackingSettingsSavedMessage('');
       setTrackingSettingsError('');
-      const response = await fetch('http://localhost:8000/api/tracking/settings', {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -910,6 +1131,10 @@ function App({ initialModuleId }) {
               data.settings.offlineMinutesThreshold === undefined
                 ? prev.trackingRules.offlineMinutesThreshold
                 : data.settings.offlineMinutesThreshold,
+            locationOffAlertEnabled:
+              data.settings.locationOffAlertEnabled === undefined
+                ? prev.trackingRules.locationOffAlertEnabled
+                : Boolean(data.settings.locationOffAlertEnabled),
           },
         }));
       }
@@ -918,6 +1143,40 @@ function App({ initialModuleId }) {
       setTrackingSettingsError('Unable to save tracking settings to backend');
     } finally {
       setTrackingSettingsSaving(false);
+    }
+  };
+
+  const handleSaveMobileSettings = async () => {
+    try {
+      setMobileSettingsSaving(true);
+      setMobileSettingsSavedMessage('');
+      setMobileSettingsError('');
+      const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(appSettings.mobileApp),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save mobile settings');
+      }
+      const data = await response.json();
+      setAppSettings((prev) => ({
+        ...prev,
+        mobileApp: {
+          ...prev.mobileApp,
+          ...(data?.settings || {}),
+          enabledModules: Array.isArray(data?.settings?.enabledModules)
+            ? data.settings.enabledModules.map((value) => String(value || '').trim()).filter(Boolean)
+            : prev.mobileApp.enabledModules,
+        },
+      }));
+      setMobileSettingsSavedMessage('Mobile settings saved to backend');
+    } catch (error) {
+      setMobileSettingsError('Unable to save mobile settings to backend');
+    } finally {
+      setMobileSettingsSaving(false);
     }
   };
 
@@ -949,193 +1208,21 @@ function App({ initialModuleId }) {
     if (activeModuleId === 'loan-records') {
       return loanRowsScopedByRole;
     }
-    if (activeModuleId !== 'payroll-management') {
-      return baseRows;
-    }
-    const employeeRows = moduleRowsState['employee-management'] || [];
-    const attendanceTimeRows = moduleRowsState['attendance-time'] || [];
-    const leaveRows = moduleRowsState['leave-management'] || [];
-    const penaltyAdjustmentRows = moduleRowsState['attendance-penalty-adjustments'] || [];
-    const loanRows = moduleRowsState['loan-records'] || [];
-    const lateMinutesByEmployee = attendanceTimeRows.reduce((acc, attendanceRow) => {
-      const employeeId = String(attendanceRow.employeeId || '').trim();
-      const employeeName = String(attendanceRow.employee || '').trim();
-      if (!employeeId && !employeeName) {
-        return acc;
-      }
-      const minutes = Math.max(0, Number(attendanceRow.lateMinutes) || 0);
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
-      acc[key] = (acc[key] || 0) + minutes;
-      return acc;
-    }, {});
-    const nowDate = getTodayIsoDate();
-    const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
-    const noClockInPenaltyByEmployee = {};
-    const noClockOutPenaltyByEmployee = {};
-    const absentPenaltyByEmployee = {};
-    attendanceTimeRows.forEach((attendanceRow) => {
-      const employeeId = String(attendanceRow.employeeId || '').trim();
-      const employeeName = String(attendanceRow.employee || '').trim();
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
-      if (!key) {
-        return;
-      }
-      const currentDate = String(attendanceRow.date || '');
-      const isPastDate = currentDate < nowDate;
-      const isNoonReached = isPastDate || (currentDate === nowDate && nowMinutes >= 12 * 60);
-      const isClockOutDeadlineReached = isPastDate;
-      const leaveMatch = leaveRows.find((leaveRow) => {
-        const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
-        const leaveEmployeeName = String(leaveRow.employee || '').trim();
-        const leaveStatus = String(leaveRow.status || '').toLowerCase();
-        const sameEmployee = leaveEmployeeId === key || leaveEmployeeName === String(matchedEmployee?.fullName || '');
-        return (
-          sameEmployee &&
-          (leaveStatus === 'approved' || leaveStatus === 'active') &&
-          String(leaveRow.startDate || '') <= currentDate &&
-          String(leaveRow.endDate || '') >= currentDate
-        );
+    const enhancers = getModuleEnhancers(activeModuleId);
+    if (enhancers && typeof enhancers.getRows === 'function') {
+      return enhancers.getRows({
+        baseRows,
+        moduleRowsState,
+        appSettings,
+        getTodayIsoDate,
+        getCurrentClockValue,
+        toMinutesFromClock,
+        getMinutesBetweenClocks,
+        isLoanCountableRecord,
       });
-      const employeeStatus = String(matchedEmployee?.status || '').toLowerCase();
-      const employeeStage = String(matchedEmployee?.employmentState || '').toLowerCase();
-      const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
-      const isExempt = isOffDuty || Boolean(leaveMatch);
-      if (isExempt) {
-        return;
-      }
-      const checkInMinutes = toMinutesFromClock(attendanceRow.checkIn);
-      const rawCheckOut = String(attendanceRow.checkOut || '');
-      const hasClockOut =
-        rawCheckOut !== '00:00' &&
-        rawCheckOut !== '24:00' &&
-        toMinutesFromClock(attendanceRow.checkOut) !== null &&
-        toMinutesFromClock(attendanceRow.checkOut) > (checkInMinutes ?? 0);
-      const missingClockIn = checkInMinutes === null && isNoonReached;
-      const missingClockOut = !hasClockOut && isClockOutDeadlineReached;
-      const missingCount = Number(missingClockIn) + Number(missingClockOut);
-      const payrollForEmployee =
-        baseRows.find((payrollRow) => String(payrollRow.employeeId || '').trim() === key) ||
-        baseRows.find((payrollRow) => String(payrollRow.employee || '').trim() === String(matchedEmployee?.fullName || ''));
-      const basicPay = toNumberValue(payrollForEmployee?.basicPay);
-      const workingDays = Math.max(1, Number(payrollForEmployee?.workingDays || appSettings.payrollWorkingDays) || 1);
-      const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
-      if (missingCount >= 2) {
-        absentPenaltyByEmployee[key] = (absentPenaltyByEmployee[key] || 0) + dailyWage;
-      } else if (missingClockIn) {
-        noClockInPenaltyByEmployee[key] = (noClockInPenaltyByEmployee[key] || 0) + dailyWage / 2;
-      } else if (missingClockOut) {
-        noClockOutPenaltyByEmployee[key] = (noClockOutPenaltyByEmployee[key] || 0) + dailyWage / 2;
-      }
-      if (checkInMinutes !== null && hasClockOut && shiftEndMinutes > 0) {
-        const checkOutMinutes = toMinutesFromClock(attendanceRow.checkOut) || 0;
-        if (checkOutMinutes < shiftEndMinutes) {
-          noClockOutPenaltyByEmployee[key] = noClockOutPenaltyByEmployee[key] || 0;
-        }
-      }
-    });
-    const clearedByPenaltyAndEmployee = penaltyAdjustmentRows.reduce((acc, row) => {
-      const key = `${String(row.employeeId || '').trim()}|${String(row.penaltyType || '').trim()}`;
-      acc[key] = (acc[key] || 0) + toNumberValue(row.clearedAmount);
-      return acc;
-    }, {});
-    const loanSummaryByEmployee = loanRows.reduce((acc, loanRow) => {
-      const employeeId = String(loanRow.employeeId || '').trim();
-      const employeeName = String(loanRow.employee || '').trim();
-      if (!employeeId && !employeeName) {
-        return acc;
-      }
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === employeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === employeeName);
-      const key = String(matchedEmployee?.id || employeeId || employeeName);
-      if (!key) {
-        return acc;
-      }
-      const status = String(loanRow.status || '').toLowerCase();
-      const isActive = status !== 'closed' && status !== 'settled';
-      const balance = toNumberValue(loanRow.balance || loanRow.amount);
-      const current = acc[key] || {
-        totalBalance: 0,
-        activeCount: 0,
-        totalCount: 0,
-      };
-      const next = {
-        totalBalance: current.totalBalance + (isActive ? balance : 0),
-        activeCount: current.activeCount + (isActive ? 1 : 0),
-        totalCount: current.totalCount + 1,
-      };
-      acc[key] = next;
-      return acc;
-    }, {});
-    const scheduledMinutes = Math.max(
-      1,
-      getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd)
-    );
-    return baseRows.map((payrollRow) => {
-      const payrollEmployeeId = String(payrollRow.employeeId || '').trim();
-      const payrollEmployeeName = String(payrollRow.employee || '').trim();
-      const matchedEmployee =
-        employeeRows.find((employeeRow) => String(employeeRow.id || '').trim() === payrollEmployeeId) ||
-        employeeRows.find((employeeRow) => String(employeeRow.fullName || '').trim() === payrollEmployeeName);
-      const key = String(matchedEmployee?.id || payrollEmployeeId || payrollEmployeeName);
-      const lateMinutes = lateMinutesByEmployee[key] || 0;
-      const basicPay = toNumberValue(payrollRow.basicPay);
-      const workingDays = Math.max(1, Number(payrollRow.workingDays || appSettings.payrollWorkingDays) || 1);
-      const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
-      const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
-      const fixedScope = String(appSettings.attendanceFixedScope || 'all');
-      const fixedApplies =
-        fixedScope === 'all' ||
-        (fixedScope === 'department' &&
-          String(matchedEmployee?.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
-        (fixedScope === 'individual' &&
-          String(matchedEmployee?.id || payrollEmployeeId || '') === String(appSettings.attendanceFixedEmployeeId || ''));
-      const minuteRate = appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
-      const lateDeduction = lateMinutes * minuteRate;
-      const noClockInPenalty = noClockInPenaltyByEmployee[key] || 0;
-      const noClockOutPenalty = noClockOutPenaltyByEmployee[key] || 0;
-      const absentPenalty = absentPenaltyByEmployee[key] || 0;
-      const lateClearance = clearedByPenaltyAndEmployee[`${key}|lateness`] || 0;
-      const noClockInClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-in`] || 0;
-      const noClockOutClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-out`] || 0;
-      const absentClearance = clearedByPenaltyAndEmployee[`${key}|absent`] || 0;
-      const netLateDeduction = Math.max(0, lateDeduction - lateClearance);
-      const netNoClockInPenalty = Math.max(0, noClockInPenalty - noClockInClearance);
-      const netNoClockOutPenalty = Math.max(0, noClockOutPenalty - noClockOutClearance);
-      const netAbsentPenalty = Math.max(0, absentPenalty - absentClearance);
-      const totalAttendancePenalty = netLateDeduction + netNoClockInPenalty + netNoClockOutPenalty + netAbsentPenalty;
-      const loanSummary = loanSummaryByEmployee[key] || {
-        totalBalance: 0,
-        activeCount: 0,
-        totalCount: 0,
-      };
-      const loanSummaryLabel =
-        loanSummary.activeCount > 0
-          ? `${loanSummary.activeCount} loan(s) • bal ${loanSummary.totalBalance.toFixed(2)}`
-          : '';
-      return {
-        ...payrollRow,
-        lateMinutes: String(lateMinutes),
-        deductionRatePerMinute: minuteRate.toFixed(3),
-        lateDeduction: netLateDeduction.toFixed(2),
-        noClockInPenalty: netNoClockInPenalty.toFixed(2),
-        noClockOutPenalty: netNoClockOutPenalty.toFixed(2),
-        absentPenalty: netAbsentPenalty.toFixed(2),
-        totalAttendancePenalty: totalAttendancePenalty.toFixed(2),
-        payableAfterLate: Math.max(0, basicPay - totalAttendancePenalty).toFixed(2),
-        loanSummary: loanSummaryLabel,
-        loanCount: String(loanSummary.activeCount || 0),
-        loanBalance: loanSummary.totalBalance ? loanSummary.totalBalance.toFixed(2) : '',
-      };
-    });
-  }, [activeModuleConfig, activeModuleId, appSettings, moduleRowsState]);
+    }
+    return baseRows;
+  }, [activeModuleConfig, activeModuleId, appSettings, loanRowsScopedByRole, moduleRowsState]);
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
   const modalRow = rows.find((row) => row.id === modalState.rowId) || null;
@@ -1173,23 +1260,9 @@ function App({ initialModuleId }) {
         { key: 'contractAlert', label: 'Contract Alert' },
       ];
     }
-    if (activeModuleId === 'payroll-management') {
-      if (!columns.some((column) => column.key === 'loanSummary')) {
-        const statusIndex = columns.findIndex((column) => column.key === 'status');
-        if (statusIndex === -1) {
-          columns = [
-            ...columns,
-            { key: 'loanSummary', label: 'Loans' },
-          ];
-        } else {
-          columns = [
-            ...columns.slice(0, statusIndex),
-            { key: 'loanSummary', label: 'Loans' },
-            ...columns.slice(statusIndex),
-          ];
-        }
-      }
-      return columns;
+    const enhancers = getModuleEnhancers(activeModuleId);
+    if (enhancers && typeof enhancers.augmentColumns === 'function') {
+      return enhancers.augmentColumns(columns);
     }
     return columns;
   }, [activeModuleConfig, activeModuleId]);
@@ -1218,22 +1291,6 @@ function App({ initialModuleId }) {
     [modalBarcodeValue]
   );
 
-  const totalModules = useMemo(
-    () => sidebarSections.reduce((acc, section) => acc + section.items.length, 0),
-    []
-  );
-  const totalRows = useMemo(
-    () => Object.values(moduleRowsState).reduce((acc, records) => acc + records.length, 0),
-    [moduleRowsState]
-  );
-  const activeStatusCount = useMemo(
-    () =>
-      Object.values(moduleRowsState)
-        .flat()
-        .filter((row) => String(row.status || '').toLowerCase() === 'active').length,
-    [moduleRowsState]
-  );
-
   const visibleFormFields = useMemo(() => {
     if (!activeModuleConfig) {
       return [];
@@ -1248,6 +1305,69 @@ function App({ initialModuleId }) {
     () => appSettings.employmentStages,
     [appSettings.employmentStages]
   );
+  const attendanceShiftOptions = useMemo(() => {
+    const normalized = Array.isArray(appSettings.shifts)
+      ? appSettings.shifts
+          .map((shift, index) => {
+            const name = String(shift?.name || '').trim();
+            const reportTime = String(shift?.reportTime || appSettings.attendanceReportTime || '08:00').trim();
+            const shiftEnd = String(shift?.shiftEnd || appSettings.attendanceShiftEnd || '17:00').trim();
+            if (!name || !/^\d{2}:\d{2}$/.test(reportTime) || !/^\d{2}:\d{2}$/.test(shiftEnd)) {
+              return null;
+            }
+            return {
+              id: String(shift?.id || `SHIFT-${index + 1}`),
+              name,
+              reportTime,
+              shiftEnd,
+              graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
+              graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+              overtimeEnabled: Boolean(shift?.overtimeEnabled),
+              overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
+              overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
+            };
+          })
+          .filter(Boolean)
+      : [];
+    if (normalized.length > 0) {
+      return normalized;
+    }
+    return [
+      {
+        id: 'SHIFT-DEFAULT',
+        name: 'Default',
+        reportTime: appSettings.attendanceReportTime || '08:00',
+        shiftEnd: appSettings.attendanceShiftEnd || '17:00',
+        graceInMinutes: Math.max(
+          0,
+          (toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0) -
+            (toMinutesFromClock(appSettings.attendanceReportTime) ?? 0)
+        ),
+        graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
+      },
+    ];
+  }, [
+    appSettings.attendanceLateAfter,
+    appSettings.attendanceReportTime,
+    appSettings.attendanceShiftEnd,
+    appSettings.shifts,
+  ]);
+  const resolveShiftConfig = useCallback(
+    (shiftName) => {
+      const normalizedName = String(shiftName || '').trim().toLowerCase();
+      const exact = attendanceShiftOptions.find(
+        (shift) => String(shift.name || '').trim().toLowerCase() === normalizedName
+      );
+      if (exact) {
+        return exact;
+      }
+      return attendanceShiftOptions[0] || null;
+    },
+    [attendanceShiftOptions]
+  );
   const getFieldLabel = (field) => {
     if (!field) {
       return '';
@@ -1261,7 +1381,6 @@ function App({ initialModuleId }) {
     return field.label;
   };
   const isEmployeeModule = activeModuleId === 'employee-management';
-  const isPayrollModule = activeModuleId === 'payroll-management';
   const employeeFormSections = useMemo(
     () =>
       isEmployeeModule
@@ -1292,7 +1411,6 @@ function App({ initialModuleId }) {
                 'bankName',
                 'bankAccountNumber',
                 'bankAccountName',
-                'accessAccount',
                 'bankBranchName',
                 'bankBranchCode',
                 'basicPay',
@@ -1315,7 +1433,11 @@ function App({ initialModuleId }) {
                 'emergencyContact2Name',
                 'emergencyContact2Phone',
                 'referee1',
+                'referee1Phone',
+                'referee1Email',
                 'referee2',
+                'referee2Phone',
+                'referee2Email',
               ],
             },
             {
@@ -1323,6 +1445,7 @@ function App({ initialModuleId }) {
               title: 'Employment & Documents',
               fields: [
                 'department',
+                'assignedShift',
                 'position',
                 'lineManager',
                 'leaveBalanceDays',
@@ -1341,72 +1464,6 @@ function App({ initialModuleId }) {
         : [],
     [isEmployeeModule]
   );
-  const payrollDetailSections = useMemo(
-    () =>
-      isPayrollModule
-        ? [
-            {
-              id: 'employee-period',
-              title: 'Employee & Period',
-              fields: ['month', 'employee', 'employeeId', 'status'],
-            },
-            {
-              id: 'statutory',
-              title: 'Statutory IDs',
-              fields: ['taxId', 'pensionId', 'nhimaNumber'],
-            },
-            {
-              id: 'wallet-bank',
-              title: 'Wallet & Bank',
-              fields: [
-                'accessAccount',
-                'mobileMoneyNumber',
-                'mobileMoneyNetwork',
-                'bankName',
-                'bankAccountName',
-                'bankAccountNumber',
-              ],
-            },
-            {
-              id: 'pay-allowances',
-              title: 'Pay & Allowances',
-              fields: [
-                'basicPay',
-                'monthlyBonuses',
-                'transportAllowance',
-                'housingAllowance',
-                'foodAllowance',
-                'grossPay',
-                'workingDays',
-              ],
-            },
-            {
-              id: 'deductions-penalties',
-              title: 'Deductions & Penalties',
-              fields: [
-                'napsaDeduction',
-                'nhimaDeduction',
-                'taxDeduction',
-                'otherDeduction',
-                'totalAttendancePenalty',
-                'lateMinutes',
-                'deductionRatePerMinute',
-                'lateDeduction',
-                'noClockInPenalty',
-                'noClockOutPenalty',
-                'absentPenalty',
-                'totalDeductions',
-              ],
-            },
-            {
-              id: 'summary',
-              title: 'Summary',
-              fields: ['netPayable'],
-            },
-          ]
-        : [],
-    [isPayrollModule]
-  );
   const employeeFormFieldMap = useMemo(() => {
     if (!isEmployeeModule) {
       return {};
@@ -1417,18 +1474,8 @@ function App({ initialModuleId }) {
     });
     return map;
   }, [isEmployeeModule, visibleFormFields]);
-  const payrollFormFieldMap = useMemo(() => {
-    if (!isPayrollModule || !activeModuleConfig) {
-      return {};
-    }
-    const map = {};
-    activeModuleConfig.formFields.forEach((field) => {
-      map[field.key] = field;
-    });
-    return map;
-  }, [activeModuleConfig, isPayrollModule]);
   const genericFormSections = useMemo(() => {
-    if (isEmployeeModule || isPayrollModule || !activeModuleConfig) {
+    if (isEmployeeModule || !activeModuleConfig) {
       return [];
     }
     const fields = visibleFormFields;
@@ -1457,7 +1504,7 @@ function App({ initialModuleId }) {
         fields: fields.slice(midpoint).map((field) => field.key),
       },
     ];
-  }, [activeModuleConfig, isEmployeeModule, isPayrollModule, visibleFormFields]);
+  }, [activeModuleConfig, isEmployeeModule, visibleFormFields]);
   const employeeStatusOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
@@ -1519,72 +1566,7 @@ function App({ initialModuleId }) {
     formValues.interestPercent,
     formValues.tenorMonths,
   ]);
-  const payrollFormLoans = useMemo(() => {
-    if (activeModuleId !== 'payroll-management') {
-      return [];
-    }
-    const employeeId = String(formValues.employeeId || '').trim();
-    const employeeName = String(formValues.employee || '').trim();
-    if (!employeeId && !employeeName) {
-      return [];
-    }
-    return loanRows
-      .filter((loanRow) => {
-        const loanEmployeeId = String(loanRow.employeeId || '').trim();
-        const loanEmployeeName = String(loanRow.employee || '').trim();
-        if (employeeId && loanEmployeeId) {
-          return loanEmployeeId === employeeId;
-        }
-        if (employeeId && !loanEmployeeId) {
-          return loanEmployeeName === employeeName;
-        }
-        if (!employeeId && employeeName) {
-          return loanEmployeeName === employeeName;
-        }
-        return false;
-      })
-      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
-  }, [activeModuleId, formValues.employee, formValues.employeeId, loanRows]);
-  const payrollLoansForModal = useMemo(() => {
-    if (activeModuleId !== 'payroll-management' || !modalRow) {
-      return [];
-    }
-    const employeeId = String(modalRow.employeeId || '').trim();
-    const employeeName = String(modalRow.employee || '').trim();
-    if (!employeeId && !employeeName) {
-      return [];
-    }
-    return loanRows
-      .filter((loanRow) => {
-        const loanEmployeeId = String(loanRow.employeeId || '').trim();
-        const loanEmployeeName = String(loanRow.employee || '').trim();
-        if (employeeId && loanEmployeeId) {
-          return loanEmployeeId === employeeId;
-        }
-        if (employeeId && !loanEmployeeId) {
-          return loanEmployeeName === employeeName;
-        }
-        if (!employeeId && employeeName) {
-          return loanEmployeeName === employeeName;
-        }
-        return false;
-      })
-      .sort((a, b) => new Date(b.issuedOn || '1900-01-01').getTime() - new Date(a.issuedOn || '1900-01-01').getTime());
-  }, [activeModuleId, loanRows, modalRow]);
   const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
-  const payrollFormEmployeeMatches = useMemo(() => {
-    const query = String(formValues.payrollEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
-  }, [employeeBaseRows, formValues.payrollEmployeeSearch]);
   const attendanceRows = useMemo(() => moduleRowsState['attendance-time'] || [], [moduleRowsState]);
   const fingerprintRows = useMemo(() => moduleRowsState.fingerprint || [], [moduleRowsState]);
   const leaveRequestRows = useMemo(
@@ -1653,29 +1635,96 @@ function App({ initialModuleId }) {
         .sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || ''))),
     [employeeBaseRows, leaveRows]
   );
+  const loanRequestRows = useMemo(() => {
+    const rowsForRole = loanRowsScopedByRole || [];
+    return rowsForRole
+      .map((loanRow) => {
+        const matchedEmployee =
+          employeeBaseRows.find((employee) => String(employee.id || '') === String(loanRow.employeeId || '')) ||
+          findExactEmployeeBySearch(employeeBaseRows, loanRow.employee) ||
+          null;
+        const statusLower = String(loanRow.status || '').trim().toLowerCase();
+        const departmentApproval =
+          loanRow.departmentApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const hrApproval =
+          loanRow.hrApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const managerApproval =
+          loanRow.managerApproval ||
+          (statusLower === 'approved' || statusLower === 'active' || statusLower === 'closed'
+            ? 'Approved'
+            : statusLower === 'rejected'
+              ? 'Rejected'
+              : 'Pending');
+        const normalizedStatus =
+          statusLower === 'closed'
+            ? 'Closed'
+            : departmentApproval === 'Rejected' || hrApproval === 'Rejected' || managerApproval === 'Rejected'
+              ? 'Rejected'
+              : departmentApproval === 'Pending'
+                ? 'Pending Department'
+                : hrApproval === 'Pending'
+                  ? 'Pending HR'
+                  : managerApproval === 'Pending'
+                    ? 'Pending Manager'
+                    : 'Approved';
+        const resolvedEmployeeId = resolveEmployeeKey(employeeBaseRows, loanRow.employeeId, loanRow.employee);
+        return {
+          ...loanRow,
+          employeeId: loanRow.employeeId || matchedEmployee?.id || resolvedEmployeeId || '',
+          employee: loanRow.employee || matchedEmployee?.fullName || '',
+          department: loanRow.department || matchedEmployee?.department || 'Unassigned',
+          departmentApproval,
+          departmentApprover: loanRow.departmentApprover || '',
+          departmentComment: loanRow.departmentComment || '',
+          departmentApprovedOn: loanRow.departmentApprovedOn || '',
+          hrApproval,
+          hrApprover: loanRow.hrApprover || '',
+          hrComment: loanRow.hrComment || '',
+          hrApprovedOn: loanRow.hrApprovedOn || '',
+          managerApproval,
+          managerApprover: loanRow.managerApprover || '',
+          managerComment: loanRow.managerComment || '',
+          managerApprovedOn: loanRow.managerApprovedOn || '',
+          status: normalizedStatus,
+        };
+      })
+      .sort((a, b) => String(b.issuedOn || '').localeCompare(String(a.issuedOn || '')));
+  }, [employeeBaseRows, loanRowsScopedByRole]);
   const leaveBalanceRows = useMemo(
     () =>
       employeeBaseRows.map((employee) => {
-        const payrollRows = moduleRowsState['payroll-management'] || [];
-        const payrollProfile =
-          payrollRows.find((row) => String(row.employeeId || '') === String(employee.id || '')) ||
-          payrollRows.find((row) => String(row.employee || '') === String(employee.fullName || ''));
         const approvedDays = leaveRequestRows
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
-              String(row.departmentApproval || '') === 'Approved' &&
-              String(row.managerApproval || '') === 'Approved' &&
-              String(row.hrApproval || '') === 'Approved'
+              isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
         const pendingDays = leaveRequestRows
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
-              String(row.status || '').toLowerCase().includes('pending')
+              !isLeaveRejectedRecord(row) &&
+              !isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
+        const employeeKey = resolveEmployeeKey(employeeBaseRows, employee.id, employee.fullName);
+        const payrollProfile = getEmployeePayrollProfile({
+          moduleRowsState,
+          employeeBaseRows,
+          employeeId: employeeKey,
+          employeeName: employee.fullName,
+        });
         const openingBalance = Math.max(0, toNumberValue(employee.leaveBalanceDays));
         const availableBalance = Math.max(0, openingBalance - approvedDays);
         const basicPay = Math.max(0, toNumberValue(payrollProfile?.basicPay));
@@ -1804,6 +1853,75 @@ function App({ initialModuleId }) {
     leaveStatusFilter,
     leaveViewTab,
   ]);
+  const getLoanViewStatus = useCallback(
+    (row, viewTab = loanViewTab) => {
+      if (viewTab === 'department') {
+        return String(row.departmentApproval || 'Pending');
+      }
+      if (viewTab === 'hr') {
+        return String(row.hrApproval || 'Pending');
+      }
+      if (viewTab === 'manager') {
+        return String(row.managerApproval || 'Pending');
+      }
+      return String(row.status || 'Pending');
+    },
+    [loanViewTab]
+  );
+  const loanStatusOptions = useMemo(() => {
+    const options = [
+      ...new Set(
+        loanRequestRows
+          .map((row) => getLoanViewStatus(row, loanViewTab))
+          .filter((value) => String(value || '').trim().length > 0)
+      ),
+    ];
+    return ['All', ...options.sort((a, b) => a.localeCompare(b))];
+  }, [getLoanViewStatus, loanRequestRows, loanViewTab]);
+  const loanRequestFilteredRows = useMemo(() => {
+    const query = loanSearchText.trim().toLowerCase();
+    let scopedRows = loanRequestRows.filter((row) => {
+      if (loanViewTab === 'hr') {
+        return String(row.departmentApproval || '') === 'Approved';
+      }
+      if (loanViewTab === 'manager') {
+        return String(row.departmentApproval || '') === 'Approved' && String(row.hrApproval || '') === 'Approved';
+      }
+      return true;
+    });
+    if (currentUser && currentUser.role === 'employee') {
+      const employeeId = String(currentUser.employeeId || '').trim();
+      const employeeName = String(currentUser.fullName || '').trim();
+      scopedRows = scopedRows.filter((row) => {
+        const rowEmployeeId = String(row.employeeId || '').trim();
+        const rowEmployeeName = String(row.employee || '').trim();
+        if (employeeId) {
+          return rowEmployeeId === employeeId;
+        }
+        if (employeeName) {
+          return rowEmployeeName === employeeName;
+        }
+        return false;
+      });
+    }
+    return scopedRows.filter((row) => {
+      const statusLabel = getLoanViewStatus(row);
+      const matchesStatus = loanStatusFilter === 'All' || String(statusLabel) === String(loanStatusFilter);
+      if (!matchesStatus) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return (
+        String(row.employee || '').toLowerCase().includes(query) ||
+        String(row.employeeId || '').toLowerCase().includes(query) ||
+        String(row.type || '').toLowerCase().includes(query) ||
+        String(row.department || '').toLowerCase().includes(query) ||
+        String(row.status || '').toLowerCase().includes(query)
+      );
+    });
+  }, [currentUser, getLoanViewStatus, loanRequestRows, loanSearchText, loanStatusFilter, loanViewTab]);
   const leaveBalanceFilteredRows = useMemo(() => {
     const query = leaveSearchText.trim().toLowerCase();
     const scopedRows = leaveBalanceRows.filter((row) => {
@@ -1851,35 +1969,55 @@ function App({ initialModuleId }) {
     }
     return filteredRows;
   }, [currentUser, leaveBalanceRows, leaveDepartmentFilter, leaveSearchText, leaveSortBy]);
-  const leaveFormEmployeeMatches = useMemo(() => {
-    const query = String(formValues.leaveEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
+  const getCurrentEmployeeRow = useCallback(() => {
+    if (!currentUser || currentUser.role !== 'employee') {
+      return null;
     }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
-  }, [employeeBaseRows, formValues.leaveEmployeeSearch]);
+    const employeeId = String(currentUser.employeeId || '').trim();
+    const employeeName = String(currentUser.fullName || '').trim();
+    const fromList =
+      employeeBaseRows.find((employee) => String(employee.id || '').trim() === employeeId) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '').trim() === employeeName) ||
+      null;
+    if (fromList) {
+      return fromList;
+    }
+    if (!employeeId && !employeeName) {
+      return null;
+    }
+    return {
+      id: employeeId || currentUser.username || '',
+      fullName: employeeName || currentUser.username || '',
+      department: '',
+    };
+  }, [currentUser, employeeBaseRows]);
+
+  const leaveFormEmployeeMatches = useMemo(() => {
+    if (currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      return row ? [row] : [];
+    }
+    return filterEmployeesBySearch(employeeBaseRows, formValues.leaveEmployeeSearch);
+  }, [currentUser, employeeBaseRows, formValues.leaveEmployeeSearch, getCurrentEmployeeRow]);
+
   const loanFormEmployeeMatches = useMemo(() => {
     if (activeModuleId !== 'loan-records') {
       return [];
     }
-    const query = String(formValues.loanEmployeeSearch || '').trim().toLowerCase();
-    if (!query) {
-      return [];
+    if (currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      return row ? [row] : [];
     }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
-  }, [activeModuleId, employeeBaseRows, formValues.loanEmployeeSearch]);
+    return filterEmployeesBySearch(employeeBaseRows, formValues.loanEmployeeSearch);
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.loanEmployeeSearch, getCurrentEmployeeRow]);
+  const selectedLoanFormEmployee = useMemo(
+    () =>
+      employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
+      employeeBaseRows.find((employee) => String(employee.fullName || '') === String(formValues.employee || '')) ||
+      findExactEmployeeBySearch(employeeBaseRows, formValues.loanEmployeeSearch) ||
+      null,
+    [employeeBaseRows, formValues.employee, formValues.employeeId, formValues.loanEmployeeSearch]
+  );
   const selectedLeaveFormEmployee = useMemo(
     () =>
       employeeBaseRows.find((employee) => String(employee.id || '') === String(formValues.employeeId || '')) ||
@@ -1887,10 +2025,21 @@ function App({ initialModuleId }) {
       null,
     [employeeBaseRows, formValues.employee, formValues.employeeId]
   );
-  const selectedLeaveFormBalance = useMemo(
-    () => leaveBalanceRows.find((row) => String(row.employeeId || '') === String(selectedLeaveFormEmployee?.id || '')) || null,
-    [leaveBalanceRows, selectedLeaveFormEmployee]
-  );
+  const selectedLeaveFormBalance = useMemo(() => {
+    let employeeIdForBalance = selectedLeaveFormEmployee?.id;
+    if (!employeeIdForBalance && currentUser && currentUser.role === 'employee') {
+      const row = getCurrentEmployeeRow();
+      employeeIdForBalance = row?.id;
+    }
+    if (!employeeIdForBalance) {
+      return null;
+    }
+    return (
+      leaveBalanceRows.find(
+        (row) => String(row.employeeId || '') === String(employeeIdForBalance || '')
+      ) || null
+    );
+  }, [currentUser, getCurrentEmployeeRow, leaveBalanceRows, selectedLeaveFormEmployee]);
   const leaveFormAutoDaysRequested = useMemo(
     () => getInclusiveDaysBetween(formValues.startDate, formValues.endDate),
     [formValues.endDate, formValues.startDate]
@@ -1902,6 +2051,55 @@ function App({ initialModuleId }) {
     }
     return leaveRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
   }, [activeModuleId, leaveRequestRows, modalState.rowId]);
+  const selectedLoanDetailRow = useMemo(() => {
+    if (activeModuleId !== 'loan-records') {
+      return null;
+    }
+    return loanRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
+  }, [activeModuleId, loanRequestRows, modalState.rowId]);
+  useEffect(() => {
+    if (activeModuleId !== 'leave-management' || modalState.mode !== 'form') {
+      return;
+    }
+    if (currentUser && currentUser.role === 'employee') {
+      return;
+    }
+    const matchedEmployee = findExactEmployeeBySearch(employeeBaseRows, formValues.leaveEmployeeSearch);
+    if (!matchedEmployee) {
+      return;
+    }
+    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
+      return;
+    }
+    setFormValues((prev) => ({
+      ...prev,
+      leaveEmployeeSearch: `${matchedEmployee.fullName} (${matchedEmployee.id})`,
+      employee: matchedEmployee.fullName,
+      employeeId: matchedEmployee.id,
+      department: matchedEmployee.department || 'Unassigned',
+    }));
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.employeeId, formValues.leaveEmployeeSearch, modalState.mode]);
+  useEffect(() => {
+    if (activeModuleId !== 'loan-records' || modalState.mode !== 'form') {
+      return;
+    }
+    if (currentUser && currentUser.role === 'employee') {
+      return;
+    }
+    const matchedEmployee = findExactEmployeeBySearch(employeeBaseRows, formValues.loanEmployeeSearch);
+    if (!matchedEmployee) {
+      return;
+    }
+    if (String(formValues.employeeId || '') === String(matchedEmployee.id || '')) {
+      return;
+    }
+    setFormValues((prev) => ({
+      ...prev,
+      loanEmployeeSearch: `${matchedEmployee.fullName} (${matchedEmployee.id})`,
+      employee: matchedEmployee.fullName,
+      employeeId: matchedEmployee.id,
+    }));
+  }, [activeModuleId, currentUser, employeeBaseRows, formValues.employeeId, formValues.loanEmployeeSearch, modalState.mode]);
   const getApprovalBadgeClass = (approvalValue) => {
     const normalized = String(approvalValue || '').trim().toLowerCase();
     if (normalized === 'approved') {
@@ -1947,10 +2145,31 @@ function App({ initialModuleId }) {
     if (!field) {
       return null;
     }
+<<<<<<< HEAD
     const inputMax =
       activeModuleId === 'employee-management' && field.key === 'dob' && field.type === 'date'
         ? getLatestAllowedEmployeeDob()
         : undefined;
+=======
+    const isEmployeeSelfServiceLoan =
+      activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
+    if (
+      isEmployeeSelfServiceLoan &&
+      (field.key === 'employee' ||
+        field.key === 'employeeId' ||
+        field.key === 'status' ||
+        field.key === 'balance' ||
+        field.key === 'interestPercent' ||
+        field.key === 'overduePenaltyPercentPerDay')
+    ) {
+      return (
+        <label key={field.key}>
+          <span>{getFieldLabel(field)}</span>
+          <input value={formValues[field.key] || ''} readOnly />
+        </label>
+      );
+    }
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
     return (
       <label key={field.key}>
         <span>
@@ -1974,6 +2193,10 @@ function App({ initialModuleId }) {
                 ? currentDepartmentOptions
                 : field.key === 'employmentState' && activeModuleId === 'employee-management'
                   ? currentEmploymentStageOptions
+                  : field.key === 'assignedShift' && activeModuleId === 'employee-management'
+                    ? attendanceShiftOptions.map((shift) => shift.name)
+                    : field.key === 'shift' && activeModuleId === 'attendance-time'
+                      ? attendanceShiftOptions.map((shift) => shift.name)
                   : field.options || []
             ).map((option) => (
               <option key={option} value={option}>
@@ -2091,6 +2314,17 @@ function App({ initialModuleId }) {
               />
             ) : null}
           </>
+        ) : field.type === 'month' ? (
+          <input
+            type="month"
+            value={formValues[field.key] || ''}
+            onChange={(event) =>
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: event.target.value,
+              }))
+            }
+          />
         ) : (
           <input
             type={field.type || 'text'}
@@ -2107,6 +2341,74 @@ function App({ initialModuleId }) {
       </label>
     );
   };
+  const normalizeAttendanceClockings = useCallback((row) => {
+    if (!row) {
+      return [];
+    }
+    if (Array.isArray(row.clockings) && row.clockings.length > 0) {
+      return row.clockings
+        .map((clocking) => ({
+          id: String(clocking.id || `CLK-${Date.now()}`),
+          mode: clocking.mode === 'clock-out' ? 'clock-out' : 'clock-in',
+          time: String(clocking.time || '').trim(),
+          lat: typeof clocking.lat === 'number' ? clocking.lat : undefined,
+          lng: typeof clocking.lng === 'number' ? clocking.lng : undefined,
+          accuracy: typeof clocking.accuracy === 'number' ? clocking.accuracy : null,
+          source: String(clocking.source || row.source || 'System'),
+          createdAt: String(clocking.createdAt || ''),
+        }))
+        .filter((clocking) => /^\d{2}:\d{2}$/.test(clocking.time))
+        .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+    }
+    const fallbackClockings = [];
+    if (row.checkIn) {
+      fallbackClockings.push({
+        id: `CLK-IN-${row.id || row.employeeId || Date.now()}`,
+        mode: 'clock-in',
+        time: String(row.checkIn),
+        lat: typeof row.checkInLat === 'number' ? row.checkInLat : undefined,
+        lng: typeof row.checkInLng === 'number' ? row.checkInLng : undefined,
+        accuracy: typeof row.checkInAccuracy === 'number' ? row.checkInAccuracy : null,
+        source: String(row.source || 'System'),
+        createdAt: '',
+      });
+    }
+    if (row.checkOut) {
+      fallbackClockings.push({
+        id: `CLK-OUT-${row.id || row.employeeId || Date.now()}`,
+        mode: 'clock-out',
+        time: String(row.checkOut),
+        lat: typeof row.checkOutLat === 'number' ? row.checkOutLat : undefined,
+        lng: typeof row.checkOutLng === 'number' ? row.checkOutLng : undefined,
+        accuracy: typeof row.checkOutAccuracy === 'number' ? row.checkOutAccuracy : null,
+        source: String(row.source || 'System'),
+        createdAt: '',
+      });
+    }
+    return fallbackClockings.sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+  }, []);
+  const getAttendanceClockSummary = useCallback(
+    (row) => {
+      const clockings = normalizeAttendanceClockings(row);
+      const firstClockIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
+      const lastClockOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+      const openClockInCount = clockings.reduce(
+        (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+        0
+      );
+      return {
+        clockings,
+        checkIn: firstClockIn?.time || '',
+        checkOut: lastClockOut?.time || '',
+        checkInLat: firstClockIn?.lat,
+        checkInLng: firstClockIn?.lng,
+        checkOutLat: lastClockOut?.lat,
+        checkOutLng: lastClockOut?.lng,
+        openClockInCount,
+      };
+    },
+    [normalizeAttendanceClockings]
+  );
   const attendanceTodayRows = useMemo(() => {
     const scopedRows = attendanceRows.filter((row) => {
       if (currentUser && currentUser.role === 'employee') {
@@ -2128,62 +2430,91 @@ function App({ initialModuleId }) {
       }
       return String(row.date || '') === todayIsoDate;
     });
-    return scopedRows.sort((a, b) => toMinutesFromClock(b.checkIn) - toMinutesFromClock(a.checkIn));
-  }, [attendanceRows, currentUser, todayIsoDate]);
+    return scopedRows.sort((a, b) => {
+      const aSummary = getAttendanceClockSummary(a);
+      const bSummary = getAttendanceClockSummary(b);
+      return (toMinutesFromClock(bSummary.checkIn) || -1) - (toMinutesFromClock(aSummary.checkIn) || -1);
+    });
+  }, [attendanceRows, currentUser, getAttendanceClockSummary, todayIsoDate]);
   const attendanceLateCount = useMemo(
     () => attendanceTodayRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
     [attendanceTodayRows]
   );
   const selectedAttendanceEmployee = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
-      const employeeId = String(currentUser.employeeId || '').trim();
-      const employeeName = String(currentUser.fullName || '').trim();
-      return (
-        employeeBaseRows.find((employee) => {
-          const rowEmployeeId = String(employee.id || '').trim();
-          const rowEmployeeName = String(employee.fullName || '').trim();
-          if (employeeId) {
-            return rowEmployeeId === employeeId;
-          }
-          if (employeeName) {
-            return rowEmployeeName === employeeName;
-          }
-          return false;
-        }) || null
-      );
+      return getCurrentEmployeeRow();
     }
     return employeeBaseRows.find((employee) => employee.id === attendanceClockDraft.employeeId) || null;
-  }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows]);
+  }, [attendanceClockDraft.employeeId, currentUser, employeeBaseRows, getCurrentEmployeeRow]);
+  useEffect(() => {
+    const selectedEmployeeId = String(selectedAttendanceEmployee?.id || '').trim();
+    if (!selectedEmployeeId) {
+      if (!attendanceClockDraft.shift && attendanceShiftOptions.length > 0) {
+        setAttendanceClockDraft((prev) => ({ ...prev, shift: attendanceShiftOptions[0].name }));
+      }
+      return;
+    }
+    if (lastAttendanceShiftAutoEmployeeIdRef.current === selectedEmployeeId) {
+      return;
+    }
+    const preferredShift = String(selectedAttendanceEmployee?.assignedShift || '').trim();
+    if (preferredShift) {
+      setAttendanceClockDraft((prev) => ({ ...prev, shift: preferredShift }));
+      lastAttendanceShiftAutoEmployeeIdRef.current = selectedEmployeeId;
+      return;
+    }
+    if (!attendanceClockDraft.shift && attendanceShiftOptions.length > 0) {
+      setAttendanceClockDraft((prev) => ({ ...prev, shift: attendanceShiftOptions[0].name }));
+    }
+    lastAttendanceShiftAutoEmployeeIdRef.current = selectedEmployeeId;
+  }, [attendanceClockDraft.shift, attendanceShiftOptions, selectedAttendanceEmployee]);
   const attendanceSearchMatches = useMemo(() => {
     if (currentUser && currentUser.role === 'employee') {
       return [];
     }
-    const query = attendanceSearchText.trim().toLowerCase();
-    if (!query) {
-      return [];
-    }
-    return employeeBaseRows
-      .filter((employee) => {
-        const employeeId = String(employee.id || '').toLowerCase();
-        const employeeName = String(employee.fullName || '').toLowerCase();
-        return employeeId.includes(query) || employeeName.includes(query);
-      })
-      .slice(0, 6);
+    return filterEmployeesBySearch(employeeBaseRows, attendanceSearchText);
   }, [attendanceSearchText, currentUser, employeeBaseRows]);
   const selectedFingerprintEmployee = useMemo(
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
   );
-  const payrollRows = useMemo(() => moduleRowsState['payroll-management'] || [], [moduleRowsState]);
+  const getShiftScheduleForAttendance = useCallback(
+    ({ attendanceRow, employee }) => {
+      const shiftName =
+        String(attendanceRow?.shift || '').trim() ||
+        String(employee?.assignedShift || '').trim() ||
+        attendanceShiftOptions[0]?.name ||
+        'Default';
+      const shiftConfig = resolveShiftConfig(shiftName);
+      const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || appSettings.attendanceReportTime) ?? 0;
+      const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
+      const shiftEndMinutes = toMinutesFromClock(shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd) ?? 0;
+      const clockOutGraceMinutes = Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0);
+      const overtimeStartAfterMinutes = Math.max(0, Number(shiftConfig?.overtimeStartAfterMinutes) || 0);
+      return {
+        shiftName: shiftConfig?.name || shiftName,
+        reportMinutes,
+        lateAfterMinutes,
+        shiftEndMinutes,
+        shiftEndWithGraceMinutes: shiftEndMinutes + clockOutGraceMinutes,
+        overtimeEnabled: Boolean(shiftConfig?.overtimeEnabled),
+        overtimeStartAfterMinutes,
+        overtimeStartMinutes: shiftEndMinutes + overtimeStartAfterMinutes,
+        overtimePayPerMinute: Math.max(0, Number(shiftConfig?.overtimePayPerMinute) || 0),
+      };
+    },
+    [
+      appSettings.attendanceReportTime,
+      appSettings.attendanceShiftEnd,
+      attendanceShiftOptions,
+      resolveShiftConfig,
+    ]
+  );
   const penaltyAdjustmentRows = useMemo(() => moduleRowsState['attendance-penalty-adjustments'] || [], [moduleRowsState]);
   const attendanceComplianceRows = useMemo(() => {
     const targetDate = attendanceAuditDate || todayIsoDate;
     const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
     const isPastDate = targetDate < todayIsoDate;
-    const isNoonReached = isPastDate || (targetDate === todayIsoDate && nowMinutes >= 12 * 60);
-    const isClockOutDeadlineReached = isPastDate;
-    const lateAfterMinutes = toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
     const scopedEmployees = employeeBaseRows.filter((employee) => {
       if (currentUser && currentUser.role === 'employee') {
         const employeeId = String(currentUser.employeeId || '').trim();
@@ -2204,9 +2535,14 @@ function App({ initialModuleId }) {
       const attendanceRow = attendanceRows.find(
         (row) => String(row.employeeId || '') === String(employee.id || '') && String(row.date || '') === String(targetDate)
       );
-      const payrollProfile =
-        payrollRows.find((row) => String(row.employeeId || '') === String(employee.id || '')) ||
-        payrollRows.find((row) => String(row.employee || '') === String(employee.fullName || ''));
+      const attendanceSummary = getAttendanceClockSummary(attendanceRow);
+      const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
+      const payrollProfile = getEmployeePayrollProfile({
+        moduleRowsState,
+        employeeBaseRows,
+        employeeId: employee.id,
+        employeeName: employee.fullName,
+      });
       const basicPay = toNumberValue(payrollProfile?.basicPay);
       const workingDays = Math.max(1, toNumberValue(payrollProfile?.workingDays) || 26);
       const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
@@ -2228,17 +2564,29 @@ function App({ initialModuleId }) {
       const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
       const isOnLeave = Boolean(leaveMatch);
       const isExempt = isOffDuty || isOnLeave;
-      const checkInMinutes = toMinutesFromClock(attendanceRow?.checkIn);
-      const rawCheckOut = String(attendanceRow?.checkOut || '');
+      const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
+      const rawCheckOut = String(attendanceSummary.checkOut || '');
       const hasMidnightCheckout = rawCheckOut === '00:00' || rawCheckOut === '24:00';
       const checkOutMinutes = hasMidnightCheckout ? null : toMinutesFromClock(rawCheckOut);
       const hasClockIn = checkInMinutes !== null;
       const hasClockOut = checkOutMinutes !== null && checkOutMinutes > (checkInMinutes ?? 0);
-      const isLate = hasClockIn && checkInMinutes > lateAfterMinutes;
-      const leftEarly = hasClockOut && shiftEndMinutes > 0 && checkOutMinutes < shiftEndMinutes;
+      const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+      const leftEarly =
+        hasClockOut && shiftSchedule.shiftEndMinutes > 0 && checkOutMinutes < shiftSchedule.shiftEndMinutes;
+      const overtimeMinutes =
+        hasClockOut && shiftSchedule.overtimeEnabled
+          ? Math.max(0, (checkOutMinutes ?? 0) - shiftSchedule.overtimeStartMinutes)
+          : 0;
+      const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
       const lateDeduction = toNumberValue(attendanceRow?.deductionAmount);
-      const countMissingClockIn = !isExempt && !hasClockIn && isNoonReached;
-      const countMissingClockOut = !isExempt && !hasClockOut && isClockOutDeadlineReached;
+      const countMissingClockIn =
+        !isExempt &&
+        !hasClockIn &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+      const countMissingClockOut =
+        !isExempt &&
+        !hasClockOut &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
       const missingCount = Number(countMissingClockIn) + Number(countMissingClockOut);
       const noClockInPenalty = missingCount === 1 && countMissingClockIn ? dailyWage / 2 : 0;
       const noClockOutPenalty = missingCount === 1 && countMissingClockOut ? dailyWage / 2 : 0;
@@ -2290,24 +2638,28 @@ function App({ initialModuleId }) {
         employeeId: employee.id,
         employee: employee.fullName,
         department: employee.department || 'Unassigned',
-        checkIn: attendanceRow?.checkIn || '',
-        checkOut: attendanceRow?.checkOut || '',
+        shift: shiftSchedule.shiftName,
+        checkIn: attendanceSummary.checkIn,
+        checkOut: attendanceSummary.checkOut,
+        clockings: attendanceSummary.clockings,
         dailyWage,
         dailyStatus,
         isLate,
         leftEarly,
+        overtimeMinutes,
+        overtimeAmount,
         penalties,
       };
     });
   }, [
     currentUser,
-    appSettings.attendanceLateAfter,
-    appSettings.attendanceShiftEnd,
     attendanceAuditDate,
     attendanceRows,
     employeeBaseRows,
+    getShiftScheduleForAttendance,
+    getAttendanceClockSummary,
     leaveRows,
-    payrollRows,
+    moduleRowsState,
     todayIsoDate,
   ]);
   const attendanceComplianceFilteredRows = useMemo(() => {
@@ -2421,8 +2773,6 @@ function App({ initialModuleId }) {
     todayIsoDate,
   ]);
   const attendancePerformanceRows = useMemo(() => {
-    const lateAfterMinutes = toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0;
-    const shiftEndMinutes = toMinutesFromClock(appSettings.attendanceShiftEnd) ?? 0;
     const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
     const rangeStart = attendancePerformanceRange.startDate;
     const rangeEnd = attendancePerformanceRange.endDate;
@@ -2487,8 +2837,6 @@ function App({ initialModuleId }) {
         for (let cursor = parseIsoDateValue(rangeStart); cursor && cursor <= (parseIsoDateValue(rangeEnd) || cursor); ) {
           const currentDate = toIsoDateString(cursor);
           const isPastDate = currentDate < todayIsoDate;
-          const isNoonReached = isPastDate || (currentDate === todayIsoDate && nowMinutes >= 12 * 60);
-          const isClockOutDeadlineReached = isPastDate;
           const leaveOnDate = leaveRows.find((leaveRow) => {
             const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
             const leaveEmployeeName = String(leaveRow.employee || '').trim();
@@ -2505,8 +2853,10 @@ function App({ initialModuleId }) {
           if (!isOffDuty && !leaveOnDate) {
             expectedWorkDays += 1;
             const attendanceRow = attendanceByEmployeeDate[`${String(employee.id || '')}|${currentDate}`];
-            const checkInMinutes = toMinutesFromClock(attendanceRow?.checkIn);
-            const checkOutRaw = String(attendanceRow?.checkOut || '');
+            const attendanceSummary = getAttendanceClockSummary(attendanceRow);
+            const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
+            const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
+            const checkOutRaw = String(attendanceSummary.checkOut || '');
             const checkOutMinutes = toMinutesFromClock(checkOutRaw);
             const hasClockIn = checkInMinutes !== null;
             const hasClockOut =
@@ -2514,16 +2864,24 @@ function App({ initialModuleId }) {
               checkOutRaw !== '24:00' &&
               checkOutMinutes !== null &&
               checkOutMinutes > (checkInMinutes ?? 0);
-            const isLate = hasClockIn && checkInMinutes > lateAfterMinutes;
-            const leftEarly = hasClockOut && shiftEndMinutes > 0 && checkOutMinutes < shiftEndMinutes;
+            const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+            const leftEarly =
+              hasClockOut &&
+              shiftSchedule.shiftEndMinutes > 0 &&
+              checkOutMinutes < shiftSchedule.shiftEndMinutes;
             if (isLate) {
               lateDays += 1;
             }
             if (leftEarly) {
               leftEarlyDays += 1;
             }
-            const missingClockIn = !hasClockIn && isNoonReached;
-            const missingClockOut = !hasClockOut && isClockOutDeadlineReached;
+            const missingClockIn =
+              !hasClockIn &&
+              (isPastDate || (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+            const missingClockOut =
+              !hasClockOut &&
+              (isPastDate ||
+                (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
             if (missingClockIn) {
               noClockInDays += 1;
             }
@@ -2611,14 +2969,14 @@ function App({ initialModuleId }) {
       });
   }, [
     currentUser,
-    appSettings.attendanceLateAfter,
-    appSettings.attendanceShiftEnd,
     attendancePerformanceRange,
     attendancePerformanceRankMetric,
     attendancePerformanceDepartmentFilter,
     attendancePerformanceSearchText,
     attendanceRows,
     employeeBaseRows,
+    getShiftScheduleForAttendance,
+    getAttendanceClockSummary,
     leaveRows,
     todayIsoDate,
   ]);
@@ -2644,6 +3002,132 @@ function App({ initialModuleId }) {
       ) || null
     );
   }, [attendanceRows, selectedComplianceRow]);
+  const selectedComplianceClockings = useMemo(() => {
+    if (selectedComplianceAttendanceRow) {
+      return normalizeAttendanceClockings(selectedComplianceAttendanceRow);
+    }
+    if (selectedComplianceRow) {
+      return normalizeAttendanceClockings(selectedComplianceRow);
+    }
+    return [];
+  }, [normalizeAttendanceClockings, selectedComplianceAttendanceRow, selectedComplianceRow]);
+  const selectedComplianceClockingMapPoints = useMemo(
+    () =>
+      selectedComplianceClockings.filter(
+        (clocking) => typeof clocking.lat === 'number' && !Number.isNaN(clocking.lat) && typeof clocking.lng === 'number' && !Number.isNaN(clocking.lng)
+      ),
+    [selectedComplianceClockings]
+  );
+  const selectedComplianceClockingBounds = useMemo(() => {
+    if (selectedComplianceClockingMapPoints.length === 0) {
+      return null;
+    }
+    let minLat = selectedComplianceClockingMapPoints[0].lat;
+    let maxLat = selectedComplianceClockingMapPoints[0].lat;
+    let minLng = selectedComplianceClockingMapPoints[0].lng;
+    let maxLng = selectedComplianceClockingMapPoints[0].lng;
+    selectedComplianceClockingMapPoints.forEach((point) => {
+      if (point.lat < minLat) {
+        minLat = point.lat;
+      }
+      if (point.lat > maxLat) {
+        maxLat = point.lat;
+      }
+      if (point.lng < minLng) {
+        minLng = point.lng;
+      }
+      if (point.lng > maxLng) {
+        maxLng = point.lng;
+      }
+    });
+    return {
+      minLat,
+      maxLat,
+      minLng,
+      maxLng,
+    };
+  }, [selectedComplianceClockingMapPoints]);
+  const selectedComplianceClockingMapNodes = useMemo(() => {
+    if (!selectedComplianceClockingBounds) {
+      return [];
+    }
+    const latRange = selectedComplianceClockingBounds.maxLat - selectedComplianceClockingBounds.minLat || 0.000001;
+    const lngRange = selectedComplianceClockingBounds.maxLng - selectedComplianceClockingBounds.minLng || 0.000001;
+    return selectedComplianceClockingMapPoints.map((point, index) => {
+      const x = ((point.lng - selectedComplianceClockingBounds.minLng) / lngRange) * 100;
+      const y = ((selectedComplianceClockingBounds.maxLat - point.lat) / latRange) * 100;
+      return {
+        ...point,
+        x: Math.max(2, Math.min(98, x)),
+        y: Math.max(2, Math.min(98, y)),
+        index,
+      };
+    });
+  }, [selectedComplianceClockingBounds, selectedComplianceClockingMapPoints]);
+  const displayedComplianceTrailNodes = useMemo(() => {
+    if (selectedComplianceClockingMapNodes.length === 0) {
+      return [];
+    }
+    if (!complianceReplayActive && complianceReplayIndex === 0) {
+      return selectedComplianceClockingMapNodes;
+    }
+    return selectedComplianceClockingMapNodes.slice(0, complianceReplayIndex + 1);
+  }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes]);
+  const selectedComplianceClockingSessions = useMemo(() => {
+    const sessions = [];
+    let activeClockIn = null;
+    selectedComplianceClockings.forEach((clocking) => {
+      if (clocking.mode === 'clock-in') {
+        activeClockIn = clocking;
+        return;
+      }
+      if (clocking.mode === 'clock-out' && activeClockIn) {
+        const minutesWorked = getMinutesBetweenClocks(activeClockIn.time, clocking.time);
+        sessions.push({
+          id: `${activeClockIn.id || activeClockIn.time}-${clocking.id || clocking.time}`,
+          startTime: activeClockIn.time,
+          endTime: clocking.time,
+          duration:
+            minutesWorked > 0
+              ? formatWorkedDuration(activeClockIn.time, clocking.time)
+              : '00:00',
+          startLat: activeClockIn.lat,
+          startLng: activeClockIn.lng,
+          endLat: clocking.lat,
+          endLng: clocking.lng,
+        });
+        activeClockIn = null;
+      }
+    });
+    return sessions;
+  }, [selectedComplianceClockings]);
+  useEffect(() => {
+    if (attendanceDetailModal.type !== 'compliance' || selectedComplianceClockingMapNodes.length === 0) {
+      setComplianceReplayActive(false);
+      setComplianceReplayIndex(0);
+      return;
+    }
+    setComplianceReplayIndex((prev) => Math.min(prev, selectedComplianceClockingMapNodes.length - 1));
+  }, [attendanceDetailModal.type, selectedComplianceClockingMapNodes.length]);
+  useEffect(() => {
+    if (!complianceReplayActive || selectedComplianceClockingMapNodes.length === 0) {
+      return;
+    }
+    const intervalMs = Math.max(200, Math.round(700 / Math.max(0.5, complianceReplaySpeed)));
+    const intervalId = setInterval(() => {
+      setComplianceReplayIndex((prev) => Math.min(prev + 1, selectedComplianceClockingMapNodes.length - 1));
+    }, intervalMs);
+    return () => clearInterval(intervalId);
+  }, [complianceReplayActive, complianceReplaySpeed, selectedComplianceClockingMapNodes.length]);
+  useEffect(() => {
+    if (
+      complianceReplayActive &&
+      selectedComplianceClockingMapNodes.length > 0 &&
+      complianceReplayIndex >= selectedComplianceClockingMapNodes.length - 1
+    ) {
+      setComplianceReplayActive(false);
+    }
+  }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes.length]);
   const selectedPerformanceAttendanceRows = useMemo(() => {
     if (!selectedPerformanceRow) {
       return [];
@@ -2705,7 +3189,10 @@ function App({ initialModuleId }) {
     !hideModuleTableForAttendanceEmployee &&
     (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
     activeModuleId !== 'leave-management' &&
-    activeModuleId !== 'monitoring-tracking';
+    activeModuleId !== 'monitoring-tracking' &&
+    activeModuleId !== 'user-management' &&
+    activeModuleId !== 'tenant-management' &&
+    activeModuleId !== 'manual';
   const fingerprintConnectionState = useMemo(() => {
     if (appSettings.fingerprintIntegration.mode === 'simulation') {
       return 'Simulation Ready';
@@ -2799,6 +3286,18 @@ function App({ initialModuleId }) {
     }
     return items;
   }, [currentUser]);
+  const loanSubmenuItems = useMemo(() => {
+    const items = [
+      { key: 'requests', label: 'Loan Requests' },
+      { key: 'department', label: 'Department Approval' },
+      { key: 'hr', label: 'HR Approval' },
+      { key: 'manager', label: 'Manager Approval' },
+    ];
+    if (!currentUser || currentUser.role === 'employee') {
+      return items.filter((item) => item.key === 'requests');
+    }
+    return items;
+  }, [currentUser]);
   const showToast = (message, type = 'info') => {
     const toastId = `TST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     setToasts((prev) => [...prev, { id: toastId, message, type }]);
@@ -2806,143 +3305,95 @@ function App({ initialModuleId }) {
       setToasts((prev) => prev.filter((toast) => toast.id !== toastId));
     }, 3200);
   };
-
-  const handleDownloadPayrollTemplate = () => {
-    const payrollConfig = moduleUiData['payroll-management'];
-    if (!payrollConfig || !payrollConfig.columns) {
-      showToast('Payroll template is not available.', 'error');
-      return;
-    }
-    const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
-    if (!columns.length) {
-      showToast('Payroll template has no columns to export.', 'error');
-      return;
-    }
-    const header = columns
-      .map((column) => `"${String(column.label || '').replace(/"/g, '""')}"`)
-      .join(',');
-    const csv = `${header}\n`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'payroll_template.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    showToast('Payroll template downloaded.', 'success');
-  };
-
-  const handleOpenPayrollUpload = () => {
-    if (!payrollUploadInputRef.current) {
-      return;
-    }
-    payrollUploadInputRef.current.value = '';
-    payrollUploadInputRef.current.click();
-  };
-
-  const handlePayrollBulkUpload = (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) {
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (loadEvent) => {
+  const handleAssignEmployeeShift = useCallback(
+    async (employeeId, shiftName) => {
+      const normalizedEmployeeId = String(employeeId || '').trim();
+      const normalizedShiftName = String(shiftName || '').trim();
+      if (!normalizedEmployeeId || !normalizedShiftName) {
+        showToast('Employee and shift are required.', 'error');
+        return false;
+      }
+      const shiftExists = attendanceShiftOptions.some(
+        (shift) => String(shift.name || '').trim() === normalizedShiftName
+      );
+      if (!shiftExists) {
+        showToast(`Shift "${normalizedShiftName}" does not exist in settings.`, 'error');
+        return false;
+      }
+      const currentRows = moduleRowsState['employee-management'] || [];
+      const existingEmployee = currentRows.find((row) => String(row.id || '').trim() === normalizedEmployeeId);
+      if (!existingEmployee) {
+        showToast('Employee record not found.', 'error');
+        return false;
+      }
+      const nextRow = {
+        ...existingEmployee,
+        assignedShift: normalizedShiftName,
+      };
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'employee-management': (prev['employee-management'] || []).map((row) =>
+          String(row.id || '').trim() === normalizedEmployeeId ? nextRow : row
+        ),
+      }));
       try {
-        const text = String(loadEvent.target?.result || '');
-        const { headers, rows: csvRows } = parseCsv(text);
-        if (!headers.length || !csvRows.length) {
-          showToast('Payroll file is empty.', 'error');
-          return;
+        const response = await fetch(
+          toApiUrl(`http://localhost:8000/api/modules/employee-management/${encodeURIComponent(normalizedEmployeeId)}`),
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(nextRow),
+          }
+        );
+        if (!response.ok) {
+          throw new Error('Failed to save shift assignment');
         }
-        const payrollConfig = moduleUiData['payroll-management'];
-        if (!payrollConfig || !payrollConfig.columns) {
-          showToast('Payroll configuration not found.', 'error');
-          return;
-        }
-        const columns = payrollConfig.columns.filter((column) => column.key !== 'id');
-        const labelToKey = columns.reduce((acc, column) => {
-          const labelKey = String(column.label || '').trim().toLowerCase();
-          acc[labelKey] = column.key;
-          return acc;
-        }, {});
-        const headerKeys = headers.map((header) => {
-          const normalized = String(header || '').trim().toLowerCase();
-          return labelToKey[normalized] || null;
-        });
-        if (!headerKeys.some((key) => key === 'employee') || !headerKeys.some((key) => key === 'month')) {
-          showToast('Payroll file headers do not match the template.', 'error');
-          return;
-        }
-        const now = Date.now();
-        const importedRows = csvRows
-          .map((cells, rowIndex) => {
-            if (!Array.isArray(cells) || cells.length === 0) {
-              return null;
-            }
-            const rowPayload = {};
-            headerKeys.forEach((key, columnIndex) => {
-              if (!key) {
-                return;
-              }
-              const value = cells[columnIndex] ?? '';
-              rowPayload[key] = value;
-            });
-            if (!rowPayload.employee && !rowPayload.employeeId) {
-              return null;
-            }
-            const basicPay = toNumberValue(rowPayload.basicPay);
-            const monthlyBonuses = toNumberValue(rowPayload.monthlyBonuses);
-            const transportAllowance = toNumberValue(rowPayload.transportAllowance);
-            const housingAllowance = toNumberValue(rowPayload.housingAllowance);
-            const foodAllowance = toNumberValue(rowPayload.foodAllowance);
-            const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
-            const lateDeduction = toNumberValue(rowPayload.lateDeduction);
-            const noClockInPenalty = toNumberValue(rowPayload.noClockInPenalty);
-            const noClockOutPenalty = toNumberValue(rowPayload.noClockOutPenalty);
-            const absentPenalty = toNumberValue(rowPayload.absentPenalty);
-            const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-            const napsaDeduction = toNumberValue(rowPayload.napsaDeduction);
-            const nhimaDeduction = toNumberValue(rowPayload.nhimaDeduction);
-            const taxDeduction = toNumberValue(rowPayload.taxDeduction);
-            const otherDeduction = toNumberValue(rowPayload.otherDeduction);
-            const totalDeductions =
-              napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-            const netPayable = grossPay - totalDeductions;
-            return {
-              ...rowPayload,
-              id: `PAY-${now}-${rowIndex + 1}`,
-              grossPay: grossPay ? grossPay.toFixed(2) : rowPayload.grossPay || '',
-              totalAttendancePenalty: totalAttendancePenalty
-                ? totalAttendancePenalty.toFixed(2)
-                : rowPayload.totalAttendancePenalty || '',
-              totalDeductions: totalDeductions
-                ? totalDeductions.toFixed(2)
-                : rowPayload.totalDeductions || '',
-              netPayable: netPayable ? netPayable.toFixed(2) : rowPayload.netPayable || '',
-            };
-          })
-          .filter(Boolean);
-        if (!importedRows.length) {
-          showToast('No valid payroll rows found in file.', 'error');
-          return;
-        }
+        const data = await response.json();
+        const saved = data?.record || nextRow;
         setModuleRowsState((prev) => ({
           ...prev,
-          'payroll-management': [...importedRows, ...(prev['payroll-management'] || [])],
+          'employee-management': (prev['employee-management'] || []).map((row) =>
+            String(row.id || '').trim() === normalizedEmployeeId ? saved : row
+          ),
         }));
-        showToast(`Imported ${importedRows.length} payroll row(s).`, 'success');
+        showToast(`Shift updated for ${saved.fullName || normalizedEmployeeId}.`, 'success');
+        return true;
       } catch (error) {
-        showToast('Failed to import payroll file.', 'error');
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'employee-management': (prev['employee-management'] || []).map((row) =>
+            String(row.id || '').trim() === normalizedEmployeeId ? existingEmployee : row
+          ),
+        }));
+        showToast('Unable to save shift assignment.', 'error');
+        return false;
       }
-    };
-    reader.readAsText(file);
-  };
+    },
+    [attendanceShiftOptions, moduleRowsState]
+  );
+  const moduleAdapter = useModuleAdapter({
+    activeModuleId,
+    activeModuleConfig,
+    appSettings,
+    employeeBaseRows,
+    formValues,
+    modalState,
+    moduleRowsState,
+    setFormError,
+    setFormValues,
+    setModuleRowsState,
+    showToast,
+    getTodayIsoDate,
+    getCurrentClockValue,
+    toMinutesFromClock,
+    getMinutesBetweenClocks,
+    isLoanCountableRecord,
+  });
 
   const handleModuleChange = (moduleId) => {
     setActiveModuleId(moduleId);
     setLeaveMenuExpanded(moduleId === 'leave-management');
+    setLoanMenuExpanded(moduleId === 'loan-records');
     if (moduleId === 'settings') {
       setSettingsTab('general');
     }
@@ -2985,28 +3436,63 @@ function App({ initialModuleId }) {
     closeModal();
   };
 
-  const handleClockIn = () => {
-    if (!selectedAttendanceEmployee) {
+  const buildAttendanceFromClockings = (baseRow, clockings) => {
+    const sortedClockings = [...clockings].sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+    const firstClockIn = sortedClockings.find((clocking) => clocking.mode === 'clock-in') || null;
+    const lastClockOut = [...sortedClockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+    return {
+      ...baseRow,
+      clockings: sortedClockings,
+      checkIn: firstClockIn?.time || '',
+      checkOut: lastClockOut?.time || '',
+      workedHours:
+        firstClockIn?.time && lastClockOut?.time
+          ? formatWorkedDuration(firstClockIn.time, lastClockOut.time)
+          : baseRow.workedHours || '',
+      checkInLat: firstClockIn?.lat,
+      checkInLng: firstClockIn?.lng,
+      checkInAccuracy: firstClockIn?.accuracy ?? null,
+      checkOutLat: lastClockOut?.lat,
+      checkOutLng: lastClockOut?.lng,
+      checkOutAccuracy: lastClockOut?.accuracy ?? null,
+    };
+  };
+  const handleClockIn = async () => {
+    let effectiveEmployee = selectedAttendanceEmployee || getCurrentEmployeeRow();
+    if (!effectiveEmployee || !effectiveEmployee.id) {
       showToast('Select an employee before clock in.', 'error');
       return;
     }
     const checkInTime = getCurrentClockValue();
     const nowDate = getTodayIsoDate();
-    const lateRuleMinutes = toMinutesFromClock(appSettings.attendanceLateAfter || appSettings.attendanceReportTime);
+    const selectedShiftName =
+      String(attendanceClockDraft.shift || '').trim() ||
+      String(effectiveEmployee.assignedShift || '').trim() ||
+      attendanceShiftOptions[0]?.name ||
+      'Default';
+    const selectedShiftConfig = resolveShiftConfig(selectedShiftName);
+    const lateRuleMinutes =
+      (toMinutesFromClock(selectedShiftConfig?.reportTime) ?? toMinutesFromClock(appSettings.attendanceReportTime) ?? 0) +
+      Math.max(0, Number(selectedShiftConfig?.graceInMinutes) || 0);
     const checkInMinutes = toMinutesFromClock(checkInTime);
     const lateMinutes =
       lateRuleMinutes === null || checkInMinutes === null ? 0 : Math.max(0, checkInMinutes - lateRuleMinutes);
     const status = lateMinutes > 0 ? 'Late' : 'On Time';
     const rowId = `ATT-${Date.now().toString().slice(-6)}`;
-    const payrollRows = moduleRowsState['payroll-management'] || [];
-    const payrollProfile =
-      payrollRows.find((row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id)) ||
-      payrollRows.find((row) => String(row.employee || '') === String(selectedAttendanceEmployee.fullName));
+    const payrollProfile = getEmployeePayrollProfile({
+      moduleRowsState,
+      employeeBaseRows,
+      employeeId: effectiveEmployee.id,
+      employeeName: effectiveEmployee.fullName,
+    });
     const basicPay = toNumberValue(payrollProfile?.basicPay);
     const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
     const scheduledMinutes = Math.max(
       1,
-      getMinutesBetweenClocks(appSettings.attendanceReportTime, appSettings.attendanceShiftEnd)
+      getMinutesBetweenClocks(
+        selectedShiftConfig?.reportTime || appSettings.attendanceReportTime,
+        selectedShiftConfig?.shiftEnd || appSettings.attendanceShiftEnd
+      )
     );
     const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
     const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
@@ -3014,44 +3500,81 @@ function App({ initialModuleId }) {
     const fixedApplies =
       fixedScope === 'all' ||
       (fixedScope === 'department' &&
-        String(selectedAttendanceEmployee.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
+        String(effectiveEmployee.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
       (fixedScope === 'individual' &&
-        String(selectedAttendanceEmployee.id || '') === String(appSettings.attendanceFixedEmployeeId || ''));
+        String(effectiveEmployee.id || '') === String(appSettings.attendanceFixedEmployeeId || ''));
     const deductionRatePerMinute =
       appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
     const deductionAmount = lateMinutes * deductionRatePerMinute;
 
+    const currentRows = moduleRowsState['attendance-time'] || [];
+    const existingRowIndex = currentRows.findIndex(
+      (row) => row.employeeId === effectiveEmployee.id && String(row.date || '') === nowDate
+    );
+    const existingRow = existingRowIndex >= 0 ? currentRows[existingRowIndex] : null;
+    const existingClockings = normalizeAttendanceClockings(existingRow);
+    const openClockInCount = existingClockings.reduce(
+      (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+      0
+    );
+    if (openClockInCount > 0) {
+      showToast('Clock out the last active session before clocking in again.', 'error');
+      return;
+    }
+    const baseRow = {
+      id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
+      employee: effectiveEmployee.fullName,
+      employeeId: effectiveEmployee.id,
+      date: nowDate,
+      shift: selectedShiftConfig?.name || selectedShiftName,
+      checkIn: '',
+      checkOut: '',
+      workedHours: existingRow?.workedHours || '',
+      lateMinutes: String(lateMinutes),
+      deductionRatePerMinute: deductionRatePerMinute.toFixed(3),
+      deductionAmount: deductionAmount.toFixed(2),
+      source: appSettings.fingerprintIntegration.mode === 'live' ? 'Fingerprint Device' : 'Manual Clock',
+      status,
+    };
+    const newClocking = {
+      id: `CLK-${Date.now().toString().slice(-7)}`,
+      mode: 'clock-in',
+      time: checkInTime,
+      lat: null,
+      lng: null,
+      accuracy: null,
+      source: baseRow.source,
+      createdAt: new Date().toISOString(),
+    };
+    const newRow = buildAttendanceFromClockings(baseRow, [...existingClockings, newClocking]);
+
     setModuleRowsState((prev) => {
-      const currentRows = prev['attendance-time'] || [];
-      const existingRowIndex = currentRows.findIndex(
-        (row) => row.employeeId === selectedAttendanceEmployee.id && String(row.date || '') === nowDate
-      );
-      const newRow = {
-        id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
-        employee: selectedAttendanceEmployee.fullName,
-        employeeId: selectedAttendanceEmployee.id,
-        date: nowDate,
-        shift: attendanceClockDraft.shift || 'Morning',
-        checkIn: checkInTime,
-        checkOut: existingRowIndex >= 0 ? currentRows[existingRowIndex].checkOut || '' : '',
-        workedHours: existingRowIndex >= 0 ? currentRows[existingRowIndex].workedHours || '' : '',
-        lateMinutes: String(lateMinutes),
-        deductionRatePerMinute: deductionRatePerMinute.toFixed(3),
-        deductionAmount: deductionAmount.toFixed(2),
-        source: appSettings.fingerprintIntegration.mode === 'live' ? 'Fingerprint Device' : 'Manual Clock',
-        status,
-      };
+      const prevRows = prev['attendance-time'] || [];
       if (existingRowIndex >= 0) {
-        const updatedRows = [...currentRows];
-        updatedRows[existingRowIndex] = { ...currentRows[existingRowIndex], ...newRow };
+        const updatedRows = [...prevRows];
+        updatedRows[existingRowIndex] = { ...prevRows[existingRowIndex], ...newRow };
         return { ...prev, 'attendance-time': updatedRows };
       }
-      return { ...prev, 'attendance-time': [newRow, ...currentRows] };
+      return { ...prev, 'attendance-time': [newRow, ...prevRows] };
     });
-    showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock in captured successfully.`, 'success');
+
+    try {
+      const url =
+        existingRowIndex >= 0
+          ? toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(newRow.id)}`)
+          : toApiUrl('http://localhost:8000/api/modules/attendance-time');
+      const method = existingRowIndex >= 0 ? 'PUT' : 'POST';
+      await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newRow),
+      });
+    } catch (error) {
+    }
+    showToast(`Thank you ${effectiveEmployee.fullName}, clock in captured successfully.`, 'success');
   };
 
-  const handleClockOut = () => {
+  const handleClockOut = async () => {
     if (!selectedAttendanceEmployee) {
       showToast('Select an employee before clock out.', 'error');
       return;
@@ -3060,38 +3583,88 @@ function App({ initialModuleId }) {
     const nowDate = getTodayIsoDate();
     const currentRows = moduleRowsState['attendance-time'] || [];
     const existingRow = currentRows.find(
-      (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
     );
     if (!existingRow) {
       showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
       return;
     }
-    if (!existingRow.checkIn || getMinutesBetweenClocks(existingRow.checkIn, checkOutTime) <= 0) {
+    const stateRows = moduleRowsState['attendance-time'] || [];
+    const existingRowIndex = stateRows.findIndex(
+      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
+    );
+    if (existingRowIndex < 0) {
+      showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
+      return;
+    }
+    const matchedRow = stateRows[existingRowIndex];
+    const existingClockings = normalizeAttendanceClockings(matchedRow);
+    const openClockInCount = existingClockings.reduce(
+      (acc, clocking) => (clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1)),
+      0
+    );
+    if (openClockInCount <= 0) {
+      showToast('No open clock-in session found for clock-out.', 'error');
+      return;
+    }
+    const lastClockIn = [...existingClockings].reverse().find((clocking) => clocking.mode === 'clock-in') || null;
+    if (!lastClockIn || getMinutesBetweenClocks(lastClockIn.time, checkOutTime) <= 0) {
       showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
       return;
     }
+    const nextClocking = {
+      id: `CLK-${Date.now().toString().slice(-7)}`,
+      mode: 'clock-out',
+      time: checkOutTime,
+      lat: null,
+      lng: null,
+      accuracy: null,
+      source: matchedRow.source || 'Manual Clock',
+      createdAt: new Date().toISOString(),
+    };
+    const updatedRow = buildAttendanceFromClockings(
+      {
+        ...matchedRow,
+      },
+      [...existingClockings, nextClocking]
+    );
+    const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow: matchedRow, employee: selectedAttendanceEmployee });
+    const checkOutMinutes = toMinutesFromClock(checkOutTime) ?? 0;
+    const overtimeMinutes = shiftSchedule.overtimeEnabled
+      ? Math.max(0, checkOutMinutes - shiftSchedule.overtimeStartMinutes)
+      : 0;
+    const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
+    const normalizedUpdatedRow = {
+      ...matchedRow,
+      ...updatedRow,
+      overtimeMinutes,
+      overtimeAmount: overtimeAmount.toFixed(2),
+    };
 
     setModuleRowsState((prev) => {
-      const stateRows = prev['attendance-time'] || [];
-      const existingRowIndex = stateRows.findIndex(
-        (row) => row.employee === selectedAttendanceEmployee.fullName && String(row.date || '') === nowDate
+      const prevRows = prev['attendance-time'] || [];
+      const idx = prevRows.findIndex(
+        (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
       );
-      if (existingRowIndex < 0) {
+      if (idx < 0) {
         return prev;
       }
-      const matchedRow = stateRows[existingRowIndex];
-      if (!matchedRow.checkIn || getMinutesBetweenClocks(matchedRow.checkIn, checkOutTime) <= 0) {
-        return prev;
-      }
-      const workedHours = formatWorkedDuration(matchedRow.checkIn, checkOutTime);
-      const updatedRows = [...stateRows];
-      updatedRows[existingRowIndex] = {
-        ...matchedRow,
-        checkOut: checkOutTime,
-        workedHours,
-      };
-      return { ...prev, 'attendance-time': updatedRows };
+      const rowsCopy = [...prevRows];
+      rowsCopy[idx] = normalizedUpdatedRow;
+      return { ...prev, 'attendance-time': rowsCopy };
     });
+
+    try {
+      await fetch(
+        toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(normalizedUpdatedRow.id)}`),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(normalizedUpdatedRow),
+        }
+      );
+    } catch (error) {
+    }
     showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock out captured successfully.`, 'success');
   };
 
@@ -3146,7 +3719,7 @@ function App({ initialModuleId }) {
       comment: String(input.comment || '').trim(),
     };
   };
-  const handleDepartmentLeaveDecision = (leaveId, decision) => {
+  const handleDepartmentLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3157,28 +3730,56 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    const currentApproval =
+      existingRow.departmentApproval || existingRow.supervisorApproval || existingRow.managerApproval || 'Pending';
+    if (String(currentApproval) !== 'Pending') {
+      showToast(`Leave request ${leaveId} is already processed by department.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      departmentApproval: normalizedDecision,
+      departmentApprover: input.actorName,
+      departmentComment: input.comment,
+      departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.hrApproval || 'Pending',
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        const currentApproval = row.departmentApproval || row.supervisorApproval || row.managerApproval || 'Pending';
-        if (String(currentApproval) !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          departmentApproval: normalizedDecision,
-          departmentApprover: input.actorName,
-          departmentComment: input.comment,
-          departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.hrApproval || 'Pending',
-          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save department decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving department decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected'
@@ -3192,7 +3793,7 @@ function App({ initialModuleId }) {
         : 'Department approval completed. Request moved to HR.'
     );
   };
-  const handleHrLeaveDecision = (leaveId, decision) => {
+  const handleHrLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3203,26 +3804,53 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || 'Pending') !== 'Pending') {
+      showToast(`Leave request ${leaveId} is not ready for HR decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      hrApproval: normalizedDecision,
+      hrApprover: input.actorName,
+      hrComment: input.comment,
+      hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || 'Pending') !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          hrApproval: normalizedDecision,
-          hrApprover: input.actorName,
-          hrComment: input.comment,
-          hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : row.managerApproval || 'Pending',
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save HR decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving HR decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected' ? `HR rejected leave request ${leaveId}.` : `HR approved leave request ${leaveId}.`,
@@ -3232,7 +3860,7 @@ function App({ initialModuleId }) {
       normalizedDecision === 'Rejected' ? 'HR rejected the leave request.' : 'HR approved. Request moved to branch manager.'
     );
   };
-  const handleManagerLeaveDecision = (leaveId, decision) => {
+  const handleManagerLeaveDecision = async (leaveId, decision) => {
     if (!leaveId) {
       return;
     }
@@ -3243,28 +3871,59 @@ function App({ initialModuleId }) {
       return;
     }
     const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'leave-management': (prev['leave-management'] || []).map((row) => {
-        if (String(row.id || '') !== String(leaveId || '')) {
-          return row;
+    const rows = moduleRowsState['leave-management'] || [];
+    const existingRow =
+      rows.find((row) => String(row.id || '') === String(leaveId || '')) || null;
+    if (!existingRow) {
+      showToast(`Leave request ${leaveId} not found.`, 'error');
+      return;
+    }
+    if (
+      String(existingRow.departmentApproval || '') !== 'Approved' ||
+      String(existingRow.hrApproval || '') !== 'Approved'
+    ) {
+      showToast(`Leave request ${leaveId} is not ready for manager decision.`, 'error');
+      return;
+    }
+    if (String(existingRow.managerApproval || 'Pending') !== 'Pending') {
+      showToast(`Leave request ${leaveId} already has a manager decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      managerApproval: normalizedDecision,
+      managerApprover: input.actorName,
+      managerComment: input.comment,
+      managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
+    };
+    setLeaveApprovalSavingId(leaveId);
+    try {
+      const response = await fetch(
+        toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(nextRow.id)}`),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nextRow),
         }
-        if (String(row.departmentApproval || '') !== 'Approved' || String(row.hrApproval || '') !== 'Approved') {
-          return row;
-        }
-        if (String(row.managerApproval || 'Pending') !== 'Pending') {
-          return row;
-        }
-        return {
-          ...row,
-          managerApproval: normalizedDecision,
-          managerApprover: input.actorName,
-          managerComment: input.comment,
-          managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-          status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
-        };
-      }),
-    }));
+      );
+      if (!response.ok) {
+        showToast(`Failed to save manager decision for ${leaveId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'leave-management': (prev['leave-management'] || []).map((row) =>
+          String(row.id || '') === String(leaveId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving manager decision for ${leaveId}.`, 'error');
+    } finally {
+      setLeaveApprovalSavingId(null);
+    }
     setLeaveApprovalDrafts((prev) => ({ ...prev, [leaveId]: { actorName: input.actorName, comment: '' } }));
     showToast(
       normalizedDecision === 'Rejected'
@@ -3276,6 +3935,214 @@ function App({ initialModuleId }) {
       normalizedDecision === 'Rejected'
         ? 'Branch manager rejected the leave request.'
         : 'Branch manager approved the leave request. Balance now takes effect.'
+    );
+  };
+  const getLoanApprovalInput = (loanId) => {
+    const input = loanApprovalDrafts[loanId] || {};
+    return {
+      actorName: String(input.actorName || appSettings.penaltyActorUsername || '').trim(),
+      comment: String(input.comment || '').trim(),
+    };
+  };
+  const handleDepartmentLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} is already processed by department.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      departmentApproval: normalizedDecision,
+      departmentApprover: input.actorName,
+      departmentComment: input.comment,
+      departmentApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      hrApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.hrApproval || 'Pending',
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending HR',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save department decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving department decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Department rejected loan request ${loanId}.`
+        : `Department approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Department approval rejected the loan request.'
+        : 'Department approval completed. Request moved to HR.'
+    );
+  };
+  const handleHrLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} is not ready for HR decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      hrApproval: normalizedDecision,
+      hrApprover: input.actorName,
+      hrComment: input.comment,
+      hrApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      managerApproval: normalizedDecision === 'Rejected' ? 'Rejected' : existingRow.managerApproval || 'Pending',
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Pending Manager',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save HR decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving HR decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected' ? `HR rejected loan request ${loanId}.` : `HR approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected' ? 'HR rejected the loan request.' : 'HR approved. Request moved to branch manager.'
+    );
+  };
+  const handleManagerLoanDecision = async (loanId, decision) => {
+    if (!loanId) {
+      return;
+    }
+    const input = getLoanApprovalInput(loanId);
+    if (!input.actorName || !input.comment) {
+      setLoanActionMessage('Actor name and comment are required before approval.');
+      showToast('Actor name and comment are required before approval.', 'error');
+      return;
+    }
+    const normalizedDecision = decision === 'Rejected' ? 'Rejected' : 'Approved';
+    const rows = moduleRowsState['loan-records'] || [];
+    const existingRow = rows.find((row) => String(row.id || '') === String(loanId || '')) || null;
+    if (!existingRow) {
+      showToast(`Loan request ${loanId} not found.`, 'error');
+      return;
+    }
+    if (String(existingRow.departmentApproval || '') !== 'Approved' || String(existingRow.hrApproval || '') !== 'Approved') {
+      showToast(`Loan request ${loanId} is not ready for manager decision.`, 'error');
+      return;
+    }
+    if (String(existingRow.managerApproval || 'Pending') !== 'Pending') {
+      showToast(`Loan request ${loanId} already has a manager decision.`, 'error');
+      return;
+    }
+    const nextRow = {
+      ...existingRow,
+      managerApproval: normalizedDecision,
+      managerApprover: input.actorName,
+      managerComment: input.comment,
+      managerApprovedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+      status: normalizedDecision === 'Rejected' ? 'Rejected' : 'Approved',
+    };
+    setLoanApprovalSavingId(loanId);
+    try {
+      const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records/${encodeURIComponent(nextRow.id)}`), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextRow),
+      });
+      if (!response.ok) {
+        showToast(`Failed to save manager decision for ${loanId}.`, 'error');
+        return;
+      }
+      const data = await response.json();
+      const persisted = data.record || nextRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'loan-records': (prev['loan-records'] || []).map((row) =>
+          String(row.id || '') === String(loanId || '') ? persisted : row
+        ),
+      }));
+    } catch (error) {
+      showToast(`Error saving manager decision for ${loanId}.`, 'error');
+    } finally {
+      setLoanApprovalSavingId(null);
+    }
+    setLoanApprovalDrafts((prev) => ({ ...prev, [loanId]: { actorName: input.actorName, comment: '' } }));
+    showToast(
+      normalizedDecision === 'Rejected'
+        ? `Manager rejected loan request ${loanId}.`
+        : `Manager approved loan request ${loanId}.`,
+      normalizedDecision === 'Rejected' ? 'error' : 'success'
+    );
+    setLoanActionMessage(
+      normalizedDecision === 'Rejected'
+        ? 'Branch manager rejected the loan request.'
+        : 'Branch manager approved the loan request.'
     );
   };
   const handlePenaltyActionSave = () => {
@@ -3330,40 +4197,65 @@ function App({ initialModuleId }) {
   };
 
   const startCreate = () => {
-    if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
-      showToast('Contact HR to request a new loan record.', 'error');
-      return;
-    }
+    const employeeRowForSelf = getCurrentEmployeeRow();
+    const adapterInitialValues =
+      moduleAdapter && moduleAdapter.active && typeof moduleAdapter.getInitialFormValues === 'function'
+        ? moduleAdapter.getInitialFormValues()
+        : null;
     setEditRowId('new');
     setFormValues(
       activeModuleId === 'leave-management'
-        ? {
-            leaveEmployeeSearch: '',
-            employee: '',
-            employeeId: '',
-            department: '',
-            type: 'Annual',
-            startDate: getTodayIsoDate(),
-            endDate: getTodayIsoDate(),
-            reason: '',
-          }
-        : activeModuleId === 'payroll-management'
+        ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
           ? {
-              payrollEmployeeSearch: '',
+              leaveEmployeeSearch: `${employeeRowForSelf.fullName} (${employeeRowForSelf.id})`,
+              employee: employeeRowForSelf.fullName,
+              employeeId: employeeRowForSelf.id,
+              department: employeeRowForSelf.department || '',
+              type: 'Annual',
+              startDate: getTodayIsoDate(),
+              endDate: getTodayIsoDate(),
+              reason: '',
+            }
+          : {
+              leaveEmployeeSearch: '',
               employee: '',
               employeeId: '',
-              month: '',
+              department: '',
+              type: 'Annual',
+              startDate: getTodayIsoDate(),
+              endDate: getTodayIsoDate(),
+              reason: '',
             }
         : activeModuleId === 'loan-records'
-          ? {
-              loanEmployeeSearch: '',
-              employee: '',
-              employeeId: '',
-              amount: '',
-              interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
-              balance: '',
-            }
-          : {}
+          ? currentUser && currentUser.role === 'employee' && employeeRowForSelf
+            ? {
+                loanEmployeeSearch: `${employeeRowForSelf.fullName} (${employeeRowForSelf.id})`,
+                employee: employeeRowForSelf.fullName,
+                employeeId: employeeRowForSelf.id,
+                amount: '',
+                interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+                tenorMonths: '',
+                monthlyInstallment: '',
+                issuedOn: getTodayIsoDate(),
+                balance: '',
+                departmentApproval: 'Pending',
+                hrApproval: 'Pending',
+                managerApproval: 'Pending',
+                status: 'Pending Department',
+              }
+            : {
+                loanEmployeeSearch: '',
+                employee: '',
+                employeeId: '',
+                amount: '',
+                interestPercent: appSettings.loanRules.defaultInterestPercentPerMonth,
+                balance: '',
+                departmentApproval: 'Pending',
+                hrApproval: 'Pending',
+                managerApproval: 'Pending',
+                status: 'Pending Department',
+              }
+          : adapterInitialValues || {}
     );
     setFormError('');
     setModalState({ mode: 'form', rowId: null });
@@ -3374,16 +4266,15 @@ function App({ initialModuleId }) {
       showToast('Loan records are view-only in employee self-service.', 'error');
       return;
     }
+    const adapterEditValues =
+      moduleAdapter && moduleAdapter.active && typeof moduleAdapter.getEditFormValues === 'function'
+        ? moduleAdapter.getEditFormValues(row)
+        : null;
     setEditRowId(row.id);
     setFormValues(
       activeModuleId === 'leave-management'
         ? { ...row, leaveEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim() }
-        : activeModuleId === 'payroll-management'
-          ? {
-              ...row,
-              payrollEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim(),
-            }
-        : { ...row }
+        : adapterEditValues || { ...row }
     );
     setFormError('');
     setModalState({ mode: 'form', rowId: row.id });
@@ -3406,7 +4297,7 @@ function App({ initialModuleId }) {
       return;
     }
     if (activeModuleId !== 'attendance-penalty-adjustments') {
-      fetch(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`, {
+      fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`), {
         method: 'DELETE',
         headers: authHeaders,
       }).catch(() => {});
@@ -3439,6 +4330,7 @@ function App({ initialModuleId }) {
         setFormError(`${getFieldLabel(missingRequiredField)} is required.`);
         return;
       }
+<<<<<<< HEAD
       if (activeModuleId === 'employee-management') {
         const latestAllowedEmployeeDob = getLatestAllowedEmployeeDob();
         if (String(formValues.dob || '') > latestAllowedEmployeeDob) {
@@ -3538,11 +4430,31 @@ function App({ initialModuleId }) {
       };
       }
       if (activeModuleId === 'loan-records') {
+=======
+    }
+    if (activeModuleId === 'attendance-time') {
+      setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
+      return;
+    }
+    let computedPayrollValues = {};
+    let computedLoanValues = {};
+    if (moduleAdapter && moduleAdapter.active && typeof moduleAdapter.beforeSave === 'function') {
+      const adapterResult = moduleAdapter.beforeSave();
+      if (!adapterResult || adapterResult.ok === false) {
+        return;
+      }
+      computedPayrollValues = adapterResult.computedValues || {};
+    }
+    if (activeModuleId === 'loan-records') {
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
       const principal = toNumberValue(formValues.amount);
-      const rawInterestPercent =
+      let rawInterestPercent =
         formValues.interestPercent !== undefined && formValues.interestPercent !== null
           ? Number(formValues.interestPercent)
           : appSettings.loanRules.defaultInterestPercentPerMonth;
+      if (currentUser && currentUser.role === 'employee') {
+        rawInterestPercent = appSettings.loanRules.defaultInterestPercentPerMonth;
+      }
       const interestPercent = Math.max(0, Number(rawInterestPercent) || 0);
       const tenorMonths = Math.max(1, toNumberValue(formValues.tenorMonths) || 1);
       let monthlyInstallment = toNumberValue(formValues.monthlyInstallment);
@@ -3551,12 +4463,103 @@ function App({ initialModuleId }) {
         const totalRepay = principal + totalInterest;
         monthlyInstallment = totalRepay / tenorMonths;
       }
+
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim();
+        const payrollProfile = getEmployeePayrollProfile({
+          moduleRowsState,
+          employeeBaseRows,
+          employeeId,
+          employeeName,
+        });
+        if (!payrollProfile) {
+          const message = 'No payroll profile found. Contact HR before applying for a loan.';
+          setFormError(message);
+          showToast(message, 'error');
+          return;
+        }
+        const basicPay = toNumberValue(payrollProfile.basicPay);
+        const monthlyBonuses = toNumberValue(payrollProfile.monthlyBonuses);
+        const transportAllowance = toNumberValue(payrollProfile.transportAllowance);
+        const housingAllowance = toNumberValue(payrollProfile.housingAllowance);
+        const foodAllowance = toNumberValue(payrollProfile.foodAllowance);
+        const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
+        const loanRules = appSettings.loanRules || {};
+        const maxPercent = Math.max(
+          0,
+          Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 0)
+        );
+        const monthlyLimit = (grossPay * maxPercent) / 100;
+        if (monthlyInstallment > monthlyLimit) {
+          const message = `Requested loan exceeds your credit limit. Max monthly installment allowed is ${monthlyLimit.toFixed(
+            2
+          )}.`;
+          setFormError(message);
+          showToast(message, 'error');
+          return;
+        }
+      }
+
       computedLoanValues = {
         interestPercent: interestPercent || '',
         tenorMonths: tenorMonths || '',
         monthlyInstallment: monthlyInstallment ? monthlyInstallment.toFixed(2) : '',
         balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
+        overduePenaltyPercentPerDay: appSettings.loanRules.overduePenaltyPercentPerDay,
       };
+<<<<<<< HEAD
+=======
+      const requestedDepartmentApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.departmentApproval || '').trim() || 'Pending';
+      const requestedHrApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.hrApproval || '').trim() || 'Pending';
+      const requestedManagerApproval =
+        currentUser && currentUser.role === 'employee'
+          ? 'Pending'
+          : String(formValues.managerApproval || '').trim() || 'Pending';
+      const derivedLoanStatus =
+        requestedDepartmentApproval === 'Rejected' ||
+        requestedHrApproval === 'Rejected' ||
+        requestedManagerApproval === 'Rejected'
+          ? 'Rejected'
+          : requestedDepartmentApproval !== 'Approved'
+            ? 'Pending Department'
+            : requestedHrApproval !== 'Approved'
+              ? 'Pending HR'
+              : requestedManagerApproval !== 'Approved'
+                ? 'Pending Manager'
+                : 'Approved';
+      computedLoanValues = {
+        ...computedLoanValues,
+        departmentApproval: requestedDepartmentApproval,
+        hrApproval: requestedHrApproval,
+        managerApproval: requestedManagerApproval,
+        status: derivedLoanStatus,
+      };
+      if (currentUser && currentUser.role === 'employee') {
+        computedLoanValues = {
+          ...computedLoanValues,
+          employee: currentUser.fullName || '',
+          employeeId: currentUser.employeeId || '',
+          issuedOn: formValues.issuedOn || todayIsoDate,
+        };
+      }
+    }
+    if (activeModuleId === 'leave-management') {
+      let employeeForLeave = selectedLeaveFormEmployee;
+      if (currentUser && currentUser.role === 'employee') {
+        employeeForLeave = getCurrentEmployeeRow();
+      }
+      if (!employeeForLeave) {
+        setFormError('Select a valid employee from search.');
+        showToast('Select a valid employee from search.', 'error');
+        return;
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
       }
       if (activeModuleId === 'leave-management') {
         if (!selectedLeaveFormEmployee) {
@@ -3682,6 +4685,85 @@ function App({ initialModuleId }) {
         closeModal();
         return;
       }
+<<<<<<< HEAD
+=======
+      const rowId =
+        editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
+      const requestPayload = {
+        id: rowId,
+        employee: employeeForLeave.fullName,
+        employeeId: employeeForLeave.id,
+        department: employeeForLeave.department || 'Unassigned',
+        type: formValues.type || 'Annual',
+        startDate: formValues.startDate,
+        endDate: formValues.endDate,
+        daysRequested: leaveDays,
+        reason,
+        requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+        departmentApproval: formValues.departmentApproval || 'Pending',
+        departmentApprover: formValues.departmentApprover || '',
+        departmentComment: formValues.departmentComment || '',
+        departmentApprovedOn: formValues.departmentApprovedOn || '',
+        hrApproval: formValues.hrApproval || 'Pending',
+        hrApprover: formValues.hrApprover || '',
+        hrComment: formValues.hrComment || '',
+        hrApprovedOn: formValues.hrApprovedOn || '',
+        managerApproval: formValues.managerApproval || 'Pending',
+        managerApprover: formValues.managerApprover || '',
+        managerComment: formValues.managerComment || '',
+        managerApprovedOn: formValues.managerApprovedOn || '',
+        status:
+          formValues.status ||
+          (formValues.departmentApproval === 'Rejected' || formValues.hrApproval === 'Rejected' || formValues.managerApproval === 'Rejected'
+            ? 'Rejected'
+            : formValues.departmentApproval === 'Approved'
+              ? formValues.hrApproval === 'Approved'
+                ? formValues.managerApproval === 'Approved'
+                  ? 'Approved'
+                  : 'Pending Manager'
+                : 'Pending HR'
+              : 'Pending Department'),
+      };
+      try {
+        const url =
+          editRowId === 'new'
+            ? toApiUrl('http://localhost:8000/api/modules/leave-management')
+            : toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`);
+        const method = editRowId === 'new' ? 'POST' : 'PUT';
+        const response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestPayload),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const saved = data.record || requestPayload;
+          setModuleRowsState((prev) => ({
+            ...prev,
+            'leave-management':
+              editRowId === 'new'
+                ? [saved, ...(prev['leave-management'] || [])]
+                : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
+          }));
+        }
+      } catch (error) {
+      }
+      setLeaveActionMessage(
+        editRowId === 'new'
+          ? 'Leave request submitted to department approval.'
+          : 'Leave request updated successfully.'
+      );
+      showToast(
+        editRowId === 'new'
+          ? `Leave request submitted for ${employeeForLeave.fullName}.`
+          : 'Leave request updated successfully.',
+        'success'
+      );
+      setSelectedRowId(rowId);
+      closeModal();
+      return;
+    }
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
 
       const payload = activeModuleConfig.formFields.reduce((acc, field) => {
         if (computedPayrollValues[field.key] !== undefined) {
@@ -3748,6 +4830,7 @@ function App({ initialModuleId }) {
         ...employeeFilesPayload,
         id:
           editRowId === 'new'
+<<<<<<< HEAD
             ? activeModuleId === 'employee-management'
               ? employeeGeneratedId
               : formValues.id || fallbackId
@@ -3775,6 +4858,19 @@ function App({ initialModuleId }) {
           }
           const data = await response.json().catch(() => null);
           const saved = data?.record || rowWithId;
+=======
+            ? toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`)
+            : toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`);
+        const method = editRowId === 'new' ? 'POST' : 'PUT';
+        const response = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(rowWithId),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const saved = data.record || rowWithId;
+>>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
           setModuleRowsState((prev) => {
             const currentRows = prev[activeModuleId] || [];
             if (editRowId === 'new') {
@@ -4399,9 +5495,21 @@ function App({ initialModuleId }) {
             <p>Sign in to continue.</p>
             <form onSubmit={handleLoginSubmit} className="login-form">
               <label>
-                <span>Username</span>
+                  <span>Tenant ID</span>
+                  <input
+                    autoComplete="organization"
+                    value={loginForm.tenantId}
+                    onChange={(event) =>
+                      setLoginForm((prev) => ({ ...prev, tenantId: event.target.value }))
+                    }
+                    placeholder="master or acme-ghana"
+                    required
+                  />
+                </label>
+                <label>
+                <span>Username or Employee ID</span>
                 <input
-                autoComplete="username"
+                  autoComplete="username"
                   value={loginForm.username}
                   onChange={(event) =>
                     setLoginForm((prev) => ({ ...prev, username: event.target.value }))
@@ -4423,7 +5531,7 @@ function App({ initialModuleId }) {
             <button type="submit" className="primary-btn" disabled={loginLoading}>
               {loginLoading ? 'Signing In...' : 'Sign In'}
               </button>
-              {backendHealth.mongo !== 'connected' ? (
+              {backendHealth.status === 'error' ? (
                 <div className="login-hint">
                   Backend or database is not connected. Check the server before logging in.
                 </div>
@@ -4437,99 +5545,30 @@ function App({ initialModuleId }) {
 
   return (
     <div className="App">
-      <aside className="sidebar-shell" style={sidebarStyle}>
-        <div className="brand-block">
-          <div className="brand-logo">{appInitial}</div>
-          <div>
-            <h1>{appSettings.appName || 'PTHR'}</h1>
-            <p>HR Command Center</p>
-          </div>
-        </div>
-        {sidebarSections.map((section) => (
-          <div className="sidebar-section" key={section.title}>
-            <h2>{section.title}</h2>
-            <nav>
-              {section.items.map((item) => {
-                if (!allowedModulesByRole.has(item.id)) {
-                  return null;
-                }
-                if (activeModuleId && !allowedModulesByRole.has(activeModuleId)) {
-                  const firstAllowed = sidebarSections
-                    .flatMap((s) => s.items)
-                    .find((candidate) => allowedModulesByRole.has(candidate.id));
-                  if (firstAllowed && firstAllowed.id !== activeModuleId) {
-                    setActiveModuleId(firstAllowed.id);
-                  }
-                }
-                if (item.id === 'leave-management') {
-                  return (
-                    <div key={item.id} className="menu-group">
-                      <button
-                        type="button"
-                        className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                        onClick={() => {
-                          if (activeModuleId !== 'leave-management') {
-                            handleModuleChange('leave-management');
-                            setLeaveMenuExpanded(true);
-                            return;
-                          }
-                          setLeaveMenuExpanded((prev) => !prev);
-                        }}
-                      >
-                        <span>{item.label}</span>
-                        <span className={`menu-arrow ${leaveMenuExpanded ? 'open' : ''}`}>▾</span>
-                      </button>
-                      {leaveMenuExpanded ? (
-                        <div className="menu-subitems">
-                          {leaveSubmenuItems.map((submenu) => (
-                            <button
-                              key={submenu.key}
-                              type="button"
-                              className={`menu-subitem ${
-                                activeModuleId === 'leave-management' && leaveViewTab === submenu.key ? 'active' : ''
-                              }`}
-                              onClick={() => {
-                                if (activeModuleId !== 'leave-management') {
-                                  handleModuleChange('leave-management');
-                                }
-                                setLeaveMenuExpanded(true);
-                                setLeaveViewTab(submenu.key);
-                                if (submenu.key === 'requests') {
-                                  setLeaveRequestPageTab('requests');
-                                }
-                              }}
-                            >
-                              {submenu.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`menu-item ${activeModuleId === item.id ? 'active' : ''}`}
-                    onClick={() => handleModuleChange(item.id)}
-                  >
-                    <span>{item.label}</span>
-                    {Array.isArray(item.children) && item.children.length > 0 ? <span className="menu-arrow">▾</span> : null}
-                  </button>
-                );
-              })}
-            </nav>
-          </div>
-        ))}
-      </aside>
+      <SidebarNav
+        sidebarSections={sidebarSections}
+        allowedModulesByRole={allowedModulesByRole}
+        activeModuleId={activeModuleId}
+        setActiveModuleId={setActiveModuleId}
+        handleModuleChange={handleModuleChange}
+        sidebarStyle={sidebarStyle}
+        appInitial={appInitial}
+        appSettings={appSettings}
+        leaveMenuExpanded={leaveMenuExpanded}
+        setLeaveMenuExpanded={setLeaveMenuExpanded}
+        leaveSubmenuItems={leaveSubmenuItems}
+        leaveViewTab={leaveViewTab}
+        setLeaveViewTab={setLeaveViewTab}
+        setLeaveRequestPageTab={setLeaveRequestPageTab}
+        loanMenuExpanded={loanMenuExpanded}
+        setLoanMenuExpanded={setLoanMenuExpanded}
+        loanSubmenuItems={loanSubmenuItems}
+        loanViewTab={loanViewTab}
+        setLoanViewTab={setLoanViewTab}
+      />
 
       <div className="app-shell">
         <header className="hero">
-          <div>
-            <h1>{appSettings.appName || 'PTHR'} HR Management Workspace</h1>
-            <p>Complete UI implementation with CRUD actions, enterprise data tables, and smart filters.</p>
-          </div>
           <div className="hero-right">
             <div className="user-header">
               <div className="user-avatar">
@@ -4546,20 +5585,6 @@ function App({ initialModuleId }) {
               <button type="button" className="secondary-btn small" onClick={handleLogout}>
                 Sign out
               </button>
-            </div>
-            <div className="stats">
-              <article className="stat-card">
-                <span className="stat-value">{totalModules}</span>
-                <span className="stat-label">Modules</span>
-              </article>
-              <article className="stat-card">
-                <span className="stat-value">{totalRows}</span>
-                <span className="stat-label">Data Rows</span>
-              </article>
-              <article className="stat-card">
-                <span className="stat-value">{activeStatusCount}</span>
-                <span className="stat-label">Active Records</span>
-              </article>
             </div>
             <div
               style={{
@@ -4590,12 +5615,61 @@ function App({ initialModuleId }) {
                   }}
                 />
                 {backendHealth.mongo === 'connected'
-                  ? 'Connected to MongoDB Atlas'
-                  : 'Not connected to MongoDB Atlas'}
+                  ? 'Connected'
+                  : 'Not connected'}
               </span>
+              {typeof currentUser.subscriptionDaysRemaining === 'number' ? (
+                <span
+                  style={{
+                    marginLeft: 8,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '3px 10px',
+                    borderRadius: 999,
+                    fontSize: 12,
+                    backgroundColor: currentUser.subscriptionDaysRemaining <= 7 ? '#fff2df' : '#eaf2ff',
+                    color: currentUser.subscriptionDaysRemaining <= 7 ? '#8a4c0f' : '#1b3f8d',
+                  }}
+                >
+                  Subscription: {currentUser.subscriptionDaysRemaining >= 0 ? `${currentUser.subscriptionDaysRemaining} day(s)` : 'Expired'}
+                </span>
+              ) : null}
             </div>
           </div>
         </header>
+
+        {!isSettingsPage ? (
+          <div className="mobile-quick-bar">
+            <div className="mobile-quick-bar-row">
+              <label>
+                <span>Module</span>
+                <select
+                  className="filter-select"
+                  value={activeModuleId}
+                  onChange={(event) => handleModuleChange(event.target.value)}
+                >
+                  {mobileModuleOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {showMainModuleTable ? (
+                <label>
+                  <span>Quick Search</span>
+                  <input
+                    className="search-input"
+                    placeholder="Search records..."
+                    value={searchText}
+                    onChange={(event) => setSearchText(event.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         <main className="content-grid">
           {isSettingsPage ? (
@@ -4611,6 +5685,7 @@ function App({ initialModuleId }) {
                   { id: 'general', label: 'General' },
                   { id: 'attendance', label: 'Attendance Rules' },
                   { id: 'tracking', label: 'Presence Tracking' },
+                  { id: 'mobile', label: 'Mobile App' },
                   { id: 'payroll', label: 'Payroll & Loans' },
                   { id: 'fingerprint', label: 'Fingerprint' },
                   { id: 'labels', label: 'Employee Labels' },
@@ -4692,10 +5767,13 @@ function App({ initialModuleId }) {
                 ) : null}
                 {settingsTab === 'attendance' ? (
                   <>
+                    {attendanceSettingsLoading ? <p>Loading attendance settings from backend...</p> : null}
+                    {attendanceSettingsError ? <p className="form-error">{attendanceSettingsError}</p> : null}
                     <label>
                       <span>Reporting Time</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceReportTime}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4703,12 +5781,14 @@ function App({ initialModuleId }) {
                             attendanceReportTime: event.target.value || '08:00',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Free Late Until</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceLateAfter}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4716,12 +5796,14 @@ function App({ initialModuleId }) {
                             attendanceLateAfter: event.target.value || '08:15',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Shift End Time</span>
                       <input
                         type="time"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceShiftEnd}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4729,14 +5811,293 @@ function App({ initialModuleId }) {
                             attendanceShiftEnd: event.target.value || '17:00',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
+                    <div className="attendance-audit-wrap" style={{ gridColumn: '1 / -1' }}>
+                      <div className="attendance-audit-head">
+                        <h4>Shift Templates</h4>
+                        <div className="attendance-audit-actions">
+                          <button
+                            type="button"
+                            className="neutral-btn"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            onClick={() =>
+                              setAppSettings((prev) => {
+                                const nextSettings = {
+                                  ...prev,
+                                  shifts: [
+                                    ...(Array.isArray(prev.shifts) ? prev.shifts : []),
+                                    {
+                                      id: `SHIFT-${Date.now()}`,
+                                      name: `Shift ${Math.max(1, (Array.isArray(prev.shifts) ? prev.shifts.length : 0) + 1)}`,
+                                      reportTime: prev.attendanceReportTime || '08:00',
+                                      shiftEnd: prev.attendanceShiftEnd || '17:00',
+                                      graceInMinutes: 15,
+                                      graceOutMinutes: 0,
+                                      overtimeEnabled: false,
+                                      overtimeStartAfterMinutes: 0,
+                                      overtimePayPerMinute: 0,
+                                    },
+                                  ],
+                                };
+                                void saveAttendanceSettings(nextSettings);
+                                return nextSettings;
+                              })
+                            }
+                          >
+                            {attendanceSettingsSaving ? 'Saving...' : 'Add Shift'}
+                          </button>
+                        </div>
+                      </div>
+                      <p className="muted-note">
+                        Shift rules apply only to employees assigned to that shift. Configure overtime per shift using toggle, start-after minutes, and pay per minute.
+                      </p>
+                      <div className="attendance-audit-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Shift Name</th>
+                              <th>Time In</th>
+                              <th>Time Out</th>
+                              <th>Grace In (min)</th>
+                              <th>Grace Out (min)</th>
+                              <th>Overtime</th>
+                              <th>OT Start After (min)</th>
+                              <th>OT Pay / Min</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {attendanceShiftOptions.map((shift, index) => (
+                              <tr key={shift.id || `${shift.name}-${index}`}>
+                                <td>
+                                  <input
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.name}
+                                    onChange={(event) => {
+                                      const previousName = String(shift.name || '').trim();
+                                      const nextName = String(event.target.value || '').trim();
+                                      if (!nextName) {
+                                        return;
+                                      }
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index ? { ...item, name: nextName } : item
+                                        ),
+                                      }));
+                                      if (previousName && nextName && previousName !== nextName) {
+                                        setModuleRowsState((prev) => ({
+                                          ...prev,
+                                          'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
+                                            String(employeeRow.assignedShift || '').trim() === previousName
+                                              ? { ...employeeRow, assignedShift: nextName }
+                                              : employeeRow
+                                          ),
+                                          'attendance-time': (prev['attendance-time'] || []).map((attendanceRow) =>
+                                            String(attendanceRow.shift || '').trim() === previousName
+                                              ? { ...attendanceRow, shift: nextName }
+                                              : attendanceRow
+                                          ),
+                                        }));
+                                        setAttendanceClockDraft((prev) =>
+                                          String(prev.shift || '').trim() === previousName
+                                            ? { ...prev, shift: nextName }
+                                            : prev
+                                        );
+                                      }
+                                    }}
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="time"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.reportTime}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, reportTime: event.target.value || '08:00' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="time"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.shiftEnd}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, shiftEnd: event.target.value || '17:00' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.graceInMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, graceInMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.graceOutMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, graceOutMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    className="filter-select"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimeEnabled ? 'on' : 'off'}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimeEnabled: event.target.value === 'on' }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  >
+                                    <option value="off">Off</option>
+                                    <option value="on">On</option>
+                                  </select>
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimeStartAfterMinutes}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimeStartAfterMinutes: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.001"
+                                    disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                    value={shift.overtimePayPerMinute}
+                                    onChange={(event) =>
+                                      setAppSettings((prev) => ({
+                                        ...prev,
+                                        shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item, itemIndex) =>
+                                          item.id === shift.id || itemIndex === index
+                                            ? { ...item, overtimePayPerMinute: Math.max(0, Number(event.target.value) || 0) }
+                                            : item
+                                        ),
+                                      }))
+                                    }
+                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                  />
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="danger-btn"
+                                    onClick={() =>
+                                      (() => {
+                                        const removingName = String(shift.name || '').trim();
+                                        const fallbackShiftName =
+                                          attendanceShiftOptions.find((item) => String(item.name || '').trim() !== removingName)?.name ||
+                                          '';
+                                        setAppSettings((prev) => {
+                                          const nextSettings = {
+                                            ...prev,
+                                            shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).filter(
+                                              (item, itemIndex) => !(item.id === shift.id || itemIndex === index)
+                                            ),
+                                          };
+                                          void saveAttendanceSettings(nextSettings);
+                                          return nextSettings;
+                                        });
+                                        setModuleRowsState((prev) => ({
+                                          ...prev,
+                                          'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
+                                            String(employeeRow.assignedShift || '').trim() === removingName
+                                              ? { ...employeeRow, assignedShift: fallbackShiftName }
+                                              : employeeRow
+                                          ),
+                                        }));
+                                        setAttendanceClockDraft((prev) =>
+                                          String(prev.shift || '').trim() === removingName
+                                            ? { ...prev, shift: fallbackShiftName }
+                                            : prev
+                                        );
+                                      })()
+                                    }
+                                    disabled={attendanceShiftOptions.length <= 1 || attendanceSettingsLoading || attendanceSettingsSaving}
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                     <label>
                       <span>Payroll Working Days</span>
                       <input
                         type="number"
                         min="1"
                         max="31"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.payrollWorkingDays}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4744,12 +6105,14 @@ function App({ initialModuleId }) {
                             payrollWorkingDays: Math.max(1, Number(event.target.value) || 1),
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Deduction Mode</span>
                       <select
                         className="filter-select"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                         value={appSettings.attendanceCalculationMode}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4757,6 +6120,7 @@ function App({ initialModuleId }) {
                             attendanceCalculationMode: event.target.value === 'fixed' ? 'fixed' : 'auto',
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       >
                         <option value="auto">System Calculation</option>
                         <option value="fixed">Fixed Per Minute</option>
@@ -4768,7 +6132,7 @@ function App({ initialModuleId }) {
                         type="number"
                         min="0"
                         step="0.001"
-                        disabled={appSettings.attendanceCalculationMode !== 'fixed'}
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving || appSettings.attendanceCalculationMode !== 'fixed'}
                         value={appSettings.attendanceFixedDeductionPerMinute}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4776,13 +6140,14 @@ function App({ initialModuleId }) {
                             attendanceFixedDeductionPerMinute: Math.max(0, Number(event.target.value) || 0),
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
                     <label>
                       <span>Fixed Scope</span>
                       <select
                         className="filter-select"
-                        disabled={appSettings.attendanceCalculationMode !== 'fixed'}
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving || appSettings.attendanceCalculationMode !== 'fixed'}
                         value={appSettings.attendanceFixedScope}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
@@ -4790,6 +6155,7 @@ function App({ initialModuleId }) {
                             attendanceFixedScope: event.target.value,
                           }))
                         }
+                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       >
                         <option value="all">All Employees</option>
                         <option value="department">By Department</option>
@@ -4801,6 +6167,7 @@ function App({ initialModuleId }) {
                         <span>Fixed Department</span>
                         <select
                           className="filter-select"
+                          disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                           value={appSettings.attendanceFixedDepartment}
                           onChange={(event) =>
                             setAppSettings((prev) => ({
@@ -4808,6 +6175,7 @@ function App({ initialModuleId }) {
                               attendanceFixedDepartment: event.target.value,
                             }))
                           }
+                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
                         >
                           <option value="">Select department</option>
                           {currentDepartmentOptions.map((department) => (
@@ -4823,6 +6191,7 @@ function App({ initialModuleId }) {
                         <span>Fixed Employee</span>
                         <select
                           className="filter-select"
+                          disabled={attendanceSettingsLoading || attendanceSettingsSaving}
                           value={appSettings.attendanceFixedEmployeeId}
                           onChange={(event) =>
                             setAppSettings((prev) => ({
@@ -4830,6 +6199,7 @@ function App({ initialModuleId }) {
                               attendanceFixedEmployeeId: event.target.value,
                             }))
                           }
+                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
                         >
                           <option value="">Select employee</option>
                           {employeeBaseRows.map((employee) => (
@@ -4840,6 +6210,17 @@ function App({ initialModuleId }) {
                         </select>
                       </label>
                     ) : null}
+                    <div className="attendance-audit-actions" style={{ gridColumn: '1 / -1' }}>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                        onClick={() => saveAttendanceSettings({ ...appSettings })}
+                      >
+                        {attendanceSettingsSaving ? 'Saving Attendance Settings...' : 'Save Attendance Settings'}
+                      </button>
+                      {attendanceSettingsSavedMessage ? <span>{attendanceSettingsSavedMessage}</span> : null}
+                    </div>
                   </>
                 ) : null}
                 {settingsTab === 'tracking' ? (
@@ -4990,6 +6371,10 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <p style={{ marginTop: -4, color: '#4b6090', fontSize: 12 }}>
+                      VPN does not change GPS coordinates, but it can hide real network origin. Use Office WiFi and Office IP ranges together
+                      to flag network-risk when VPN/proxy is used.
+                    </p>
                     <label className="inline-field">
                       <span>Monitor Activity</span>
                       <input
@@ -5054,6 +6439,22 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <label className="inline-field">
+                      <span>Alert When Location Is Turned Off</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.trackingRules.locationOffAlertEnabled)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            trackingRules: {
+                              ...prev.trackingRules,
+                              locationOffAlertEnabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
                     <label>
                       <span>Offline After (minutes)</span>
                       <input
@@ -5086,6 +6487,205 @@ function App({ initialModuleId }) {
                       </button>
                     </div>
                     {trackingSettingsSavedMessage ? <p>{trackingSettingsSavedMessage}</p> : null}
+                  </>
+                ) : null}
+                {settingsTab === 'mobile' ? (
+                  <>
+                    <h4 className="settings-subtitle">Mobile App Management</h4>
+                    {mobileSettingsLoading ? <p>Loading mobile settings from backend...</p> : null}
+                    {mobileSettingsError ? <p className="form-error">{mobileSettingsError}</p> : null}
+                    <label>
+                      <span>Enabled Mobile Modules</span>
+                      <select
+                        multiple
+                        value={appSettings.mobileApp.enabledModules}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              enabledModules: Array.from(event.target.selectedOptions).map((option) => option.value),
+                            },
+                          }))
+                        }
+                      >
+                        <option value="attendance-time">Attendance</option>
+                        <option value="loan-records">Loan Records</option>
+                        <option value="leave-management">Leave Management</option>
+                        <option value="monitoring-tracking">Live Tracking</option>
+                      </select>
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowClockIn)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowClockIn: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Clock Out</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowClockOut)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowClockOut: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Require Location When Clocking</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.requireLocationOnClock)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              requireLocationOnClock: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Auto Send Live Location On Clock</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.autoSendLocationOnClock)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              autoSendLocationOnClock: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Auto Start Tracking On Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.autoStartTrackingOnClockIn)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              autoStartTrackingOnClockIn: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Loan Records View</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLoanView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLoanView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Loan Requests</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLoanRequest)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLoanRequest: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Leave Records View</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLeaveView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLeaveView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Leave Requests</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowLeaveRequest)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowLeaveRequest: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Allow Tracking Module</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.allowTrackingView)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              allowTrackingView: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="attendance-ops-actions">
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={handleSaveMobileSettings}
+                        disabled={mobileSettingsSaving}
+                      >
+                        {mobileSettingsSaving ? 'Saving...' : 'Save Mobile Settings'}
+                      </button>
+                    </div>
+                    {mobileSettingsSavedMessage ? <p>{mobileSettingsSavedMessage}</p> : null}
                   </>
                 ) : null}
                 {settingsTab === 'payroll' ? (
@@ -5288,6 +6888,27 @@ function App({ initialModuleId }) {
                             loanRules: {
                               ...prev.loanRules,
                               defaultInterestPercentPerMonth: Math.max(
+                                0,
+                                Number(event.target.value) || 0
+                              ),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Overdue Penalty % / Day</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={appSettings.loanRules.overduePenaltyPercentPerDay}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            loanRules: {
+                              ...prev.loanRules,
+                              overduePenaltyPercentPerDay: Math.max(
                                 0,
                                 Number(event.target.value) || 0
                               ),
@@ -5701,24 +7322,31 @@ function App({ initialModuleId }) {
                 ) : null}
               </div>
             </section>
+          ) : isManualPage ? (
+            <section className="panel table-panel">
+              <div className="panel-title-row">
+                <div>
+                  <h2>Manual</h2>
+                  <p>Detailed system usage guide for admin and mobile workflows.</p>
+                </div>
+              </div>
+              <ManualPage />
+            </section>
           ) : (
             <section className="panel table-panel">
               <div className="panel-title-row">
                 <div>
                   <h2>{activeModuleConfig.title}</h2>
-                  <p>{activeModuleConfig.entityLabel} registry and operations table</p>
+                  <p>
+                    {showMainModuleTable
+                      ? `${activeModuleConfig.entityLabel} registry and operations table • ${filteredRows.length} visible row(s)`
+                      : `${activeModuleConfig.entityLabel} registry and operations table`}
+                  </p>
                 </div>
                 {activeModuleId !== 'attendance-time' && activeModuleId !== 'user-management' ? (
                   <div className="panel-title-actions">
-                    {activeModuleId === 'payroll-management' ? (
-                      <PayrollPage
-                        appSettings={appSettings}
-                        payrollUploadInputRef={payrollUploadInputRef}
-                        handlePayrollBulkUpload={handlePayrollBulkUpload}
-                        handleDownloadPayrollTemplate={handleDownloadPayrollTemplate}
-                        handleOpenPayrollUpload={handleOpenPayrollUpload}
-                        payrollLoansForModal={payrollLoansForModal}
-                      />
+                    {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderHeader === 'function' ? (
+                      moduleAdapter.renderHeader({ startCreate })
                     ) : (
                       <button type="button" className="primary-btn" onClick={startCreate}>
                         + Add {activeModuleConfig.entityLabel}
@@ -5786,10 +7414,12 @@ function App({ initialModuleId }) {
                   setSelectedPerformanceEmployeeId={setSelectedPerformanceEmployeeId}
                   getCurrentClockValue={getCurrentClockValue}
                   currentUser={currentUser}
+                  handleAssignEmployeeShift={handleAssignEmployeeShift}
                 />
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}
               {activeModuleId === 'user-management' ? <UserManagementPage authToken={authToken} /> : null}
+              {activeModuleId === 'tenant-management' ? <TenantManagementPage authToken={authToken} /> : null}
               {activeModuleId === 'leave-management' ? (
                 <LeaveManagementPage
                   appSettings={appSettings}
@@ -5815,6 +7445,25 @@ function App({ initialModuleId }) {
                   leaveBalanceFilteredRows={leaveBalanceFilteredRows}
                   leaveApprovalDrafts={leaveApprovalDrafts}
                   setLeaveApprovalDrafts={setLeaveApprovalDrafts}
+                />
+              ) : null}
+              {activeModuleId === 'loan-records' ? (
+                <LoanManagementPage
+                  appSettings={appSettings}
+                  currentUser={currentUser}
+                  startCreate={startCreate}
+                  selectedRowId={selectedRowId}
+                  loanSearchText={loanSearchText}
+                  setLoanSearchText={setLoanSearchText}
+                  loanStatusFilter={loanStatusFilter}
+                  setLoanStatusFilter={setLoanStatusFilter}
+                  loanStatusOptions={loanStatusOptions}
+                  loanRequestFilteredRows={loanRequestFilteredRows}
+                  getLoanViewStatus={getLoanViewStatus}
+                  loanActionMessage={loanActionMessage}
+                  loanViewTab={loanViewTab}
+                  openDetails={openDetails}
+                  getApprovalBadgeClass={getApprovalBadgeClass}
                 />
               ) : null}
               {activeModuleId === 'fingerprint' ? (
@@ -6060,6 +7709,30 @@ function App({ initialModuleId }) {
                       }
                     />
                   </label>
+                  {selectedLeaveFormBalance && currentUser && currentUser.role === 'employee' ? (
+                    <>
+                      <label>
+                        <span>Department</span>
+                        <input value={selectedLeaveFormBalance.department} readOnly />
+                      </label>
+                      <label>
+                        <span>Opening Leave Days</span>
+                        <input value={selectedLeaveFormBalance.openingBalance.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Approved Days</span>
+                        <input value={selectedLeaveFormBalance.approvedDays.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Pending Days</span>
+                        <input value={selectedLeaveFormBalance.pendingDays.toFixed(1)} readOnly />
+                      </label>
+                      <label>
+                        <span>Remaining Leave Days</span>
+                        <input value={selectedLeaveFormBalance.availableBalance.toFixed(1)} readOnly />
+                      </label>
+                    </>
+                  ) : null}
                   {leaveFormEmployeeMatches.length > 0 ? (
                     <div className="row-actions">
                       {leaveFormEmployeeMatches.map((employee) => (
@@ -6167,96 +7840,9 @@ function App({ initialModuleId }) {
                 </div>
               ) : (
                 <>
-                  {activeModuleId === 'payroll-management' ? (
-                    <>
-                      <div className="form-grid">
-                        <label>
-                          <span>Employee Search *</span>
-                          <input
-                            value={formValues.payrollEmployeeSearch || ''}
-                            placeholder="Search by name or ID"
-                            onChange={(event) =>
-                              setFormValues((prev) => ({
-                                ...prev,
-                                payrollEmployeeSearch: event.target.value,
-                              }))
-                            }
-                          />
-                        </label>
-                        {payrollFormEmployeeMatches.length > 0 ? (
-                          <div className="row-actions">
-                            {payrollFormEmployeeMatches.map((employee) => (
-                              <button
-                                key={employee.id}
-                                type="button"
-                                className="mini-btn"
-                                onClick={() =>
-                                  setFormValues((prev) => ({
-                                    ...prev,
-                                    payrollEmployeeSearch: `${employee.fullName} (${employee.id})`,
-                                    employee: employee.fullName,
-                                    employeeId: employee.id,
-                                    taxId: employee.taxId || '',
-                                    pensionId: employee.pensionId || '',
-                                    nhimaNumber: employee.nhimaNumber || '',
-                                    accessAccount: employee.accessAccount || '',
-                                    mobileMoneyNumber: employee.mobileMoneyNumber || '',
-                                    mobileMoneyNetwork: employee.mobileMoneyNetwork || '',
-                                    bankName: employee.bankName || '',
-                                    bankAccountName: employee.bankAccountName || '',
-                                    bankAccountNumber: employee.bankAccountNumber || '',
-                                    basicPay: employee.basicPay || '',
-                                    monthlyBonuses: employee.monthlyBonuses || '',
-                                    transportAllowance: employee.transportAllowance || '',
-                                    housingAllowance: employee.housingAllowance || '',
-                                    foodAllowance: employee.foodAllowance || '',
-                                  }))
-                                }
-                              >
-                                {employee.fullName} ({employee.id})
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    <div className="form-section-grid">
-                      {payrollDetailSections
-                        .map((section) => ({
-                          id: section.id,
-                          title: section.title,
-                          fields: section.fields
-                            .map((key) => payrollFormFieldMap[key])
-                            .filter(Boolean),
-                        }))
-                        .filter((section) => section.fields.length > 0)
-                        .map((section) => (
-                          <div key={section.id} className="form-section">
-                            <p className="form-section-title">{section.title}</p>
-                            <div className="form-grid">
-                              {section.fields.map((field) => renderFormFieldControl(field))}
-                            </div>
-                          </div>
-                        ))}
-                      {payrollFormLoans.length > 0 ? (
-                        <div className="form-section">
-                          <p className="form-section-title">Employee Loans</p>
-                          <div className="form-grid">
-                            {payrollFormLoans.map((loanRow) => (
-                              <div key={loanRow.id} className="detail-cell">
-                                <span>
-                                  {loanRow.type || 'Loan'} • {loanRow.issuedOn || '—'}
-                                </span>
-                                <strong>
-                                  {loanRow.amount || '—'} {loanRow.balance ? `• Balance: ${loanRow.balance}` : ''}
-                                </strong>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </>
-                ) : isEmployeeModule ? (
+                  {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderFormBody === 'function' ? (
+                    moduleAdapter.renderFormBody({ renderFormFieldControl })
+                  ) : isEmployeeModule ? (
                     <div className="form-section-grid">
                       {employeeFormSections
                         .map((section) => ({
@@ -6285,7 +7871,8 @@ function App({ initialModuleId }) {
                           visibleFormFields={visibleFormFields}
                           loanInstallmentPreview={loanInstallmentPreview}
                           renderFormFieldControl={renderFormFieldControl}
-                          employeeBaseRows={employeeBaseRows}
+                          loanFormEmployeeMatches={loanFormEmployeeMatches}
+                          selectedLoanFormEmployee={selectedLoanFormEmployee}
                         />
                       ) : (
                         <div className="form-section-grid">
@@ -6388,196 +7975,36 @@ function App({ initialModuleId }) {
                         })}
                       </div>
                     ) : null}
-                    {activeModuleId === 'payroll-management' && payrollLoansForModal.length > 0 ? (
-                      <div className="employee-ops-card">
-                        <div className="employee-ops-header">
-                          <h5>Employee Loans</h5>
-                          <span>{`${payrollLoansForModal.length} loan(s)`}</span>
-                        </div>
-                        <div className="employee-ops-list">
-                          {payrollLoansForModal.map((loanRow) => (
-                            <div className="employee-ops-row" key={loanRow.id}>
-                              <div>
-                                <p>{loanRow.type || 'Loan Record'}</p>
-                                <span>
-                                  {loanRow.issuedOn || '—'} • {loanRow.amount || '—'}
-                                </span>
-                              </div>
-                              <div className="employee-ops-actions">
-                                <strong>{loanRow.status || 'Active'}</strong>
-                                <span>{loanRow.balance ? `Balance: ${loanRow.balance}` : 'Balance: —'}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                    {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderDetailsExtras === 'function'
+                      ? moduleAdapter.renderDetailsExtras({ modalRow })
+                      : null}
+                    {activeModuleId === 'leave-management' ? (
+                      <LeaveApprovalPanel
+                        selectedLeaveDetailRow={selectedLeaveDetailRow}
+                        leaveViewTab={leaveViewTab}
+                        leaveApprovalDrafts={leaveApprovalDrafts}
+                        setLeaveApprovalDrafts={setLeaveApprovalDrafts}
+                        leaveApprovalSavingId={leaveApprovalSavingId}
+                        appSettings={appSettings}
+                        getApprovalBadgeClass={getApprovalBadgeClass}
+                        handleDepartmentLeaveDecision={handleDepartmentLeaveDecision}
+                        handleHrLeaveDecision={handleHrLeaveDecision}
+                        handleManagerLeaveDecision={handleManagerLeaveDecision}
+                      />
                     ) : null}
-                    {activeModuleId === 'leave-management' && selectedLeaveDetailRow ? (
-                      <div className="penalty-action-card">
-                        <strong>Leave Approval Details</strong>
-                        <span>
-                          {selectedLeaveDetailRow.startDate} → {selectedLeaveDetailRow.endDate} •{' '}
-                          {selectedLeaveDetailRow.daysRequested} day(s) • {selectedLeaveDetailRow.type}
-                        </span>
-                        <span>{selectedLeaveDetailRow.reason || 'No reason provided.'}</span>
-                        <div className="details-badges">
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(
-                              selectedLeaveDetailRow.departmentApproval
-                            )}`}
-                          >
-                            Department: {selectedLeaveDetailRow.departmentApproval}
-                          </span>
-                          <span className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.hrApproval)}`}>
-                            HR: {selectedLeaveDetailRow.hrApproval}
-                          </span>
-                          <span
-                            className={`approval-stage-badge ${getApprovalBadgeClass(selectedLeaveDetailRow.managerApproval)}`}
-                          >
-                            Manager: {selectedLeaveDetailRow.managerApproval}
-                          </span>
-                        </div>
-                        <div className="details-grid-table">
-                          <div className="detail-cell">
-                            <span>Department Actor</span>
-                            <strong>{selectedLeaveDetailRow.departmentApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Department Comment</span>
-                            <strong>{selectedLeaveDetailRow.departmentComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Actor</span>
-                            <strong>{selectedLeaveDetailRow.hrApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>HR Comment</span>
-                            <strong>{selectedLeaveDetailRow.hrComment || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Actor</span>
-                            <strong>{selectedLeaveDetailRow.managerApprover || '—'}</strong>
-                          </div>
-                          <div className="detail-cell">
-                            <span>Manager Comment</span>
-                            <strong>{selectedLeaveDetailRow.managerComment || '—'}</strong>
-                          </div>
-                        </div>
-                        {leaveViewTab !== 'requests' ? (
-                          <div className="attendance-ops-form">
-                            <label>
-                              <span>Actor</span>
-                              <input
-                                value={
-                                  (leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).actorName ||
-                                  appSettings.penaltyActorUsername ||
-                                  ''
-                                }
-                                onChange={(event) =>
-                                  setLeaveApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLeaveDetailRow.id]: {
-                                      ...(prev[selectedLeaveDetailRow.id] || {}),
-                                      actorName: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Comment</span>
-                              <input
-                                value={(leaveApprovalDrafts[selectedLeaveDetailRow.id] || {}).comment || ''}
-                                onChange={(event) =>
-                                  setLeaveApprovalDrafts((prev) => ({
-                                    ...prev,
-                                    [selectedLeaveDetailRow.id]: {
-                                      ...(prev[selectedLeaveDetailRow.id] || {}),
-                                      comment: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </label>
-                            <div className="row-actions">
-                              {leaveViewTab === 'department' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
-                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={String(selectedLeaveDetailRow.departmentApproval || '') !== 'Pending'}
-                                    onClick={() => handleDepartmentLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {leaveViewTab === 'hr' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleHrLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                              {leaveViewTab === 'manager' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="mini-btn"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Approved')}
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="mini-btn danger"
-                                    disabled={
-                                      String(selectedLeaveDetailRow.departmentApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.hrApproval || '') !== 'Approved' ||
-                                      String(selectedLeaveDetailRow.managerApproval || '') !== 'Pending'
-                                    }
-                                    onClick={() => handleManagerLeaveDecision(selectedLeaveDetailRow.id, 'Rejected')}
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
+                    {activeModuleId === 'loan-records' ? (
+                      <LoanApprovalPanel
+                        selectedLoanDetailRow={selectedLoanDetailRow}
+                        loanViewTab={loanViewTab}
+                        loanApprovalDrafts={loanApprovalDrafts}
+                        setLoanApprovalDrafts={setLoanApprovalDrafts}
+                        loanApprovalSavingId={loanApprovalSavingId}
+                        appSettings={appSettings}
+                        getApprovalBadgeClass={getApprovalBadgeClass}
+                        handleDepartmentLoanDecision={handleDepartmentLoanDecision}
+                        handleHrLoanDecision={handleHrLoanDecision}
+                        handleManagerLoanDecision={handleManagerLoanDecision}
+                      />
                     ) : null}
 
                     <div className="details-grid-table">
@@ -6603,27 +8030,9 @@ function App({ initialModuleId }) {
                                 {section.fields.map((field) => renderDetailFieldCell(field))}
                               </Fragment>
                             ))
-                        : isPayrollModule
-                          ? payrollDetailSections
-                              .map((section) => ({
-                                id: section.id,
-                                title: section.title,
-                                fields: section.fields
-                                  .map((key) => payrollFormFieldMap[key])
-                                  .filter(Boolean),
-                              }))
-                              .filter((section) => section.fields.length > 0)
-                              .map((section) => (
-                                <Fragment key={section.id}>
-                                  <div className="detail-section-header">
-                                    <span>{section.title}</span>
-                                  </div>
-                                  {section.fields.map((field) => renderDetailFieldCell(field))}
-                                </Fragment>
-                              ))
-                          : activeModuleConfig.formFields
-                              .filter((field) => !employeeImageFields.includes(field.key))
-                              .map((field) => renderDetailFieldCell(field))}
+                        : activeModuleConfig.formFields
+                            .filter((field) => !employeeImageFields.includes(field.key))
+                            .map((field) => renderDetailFieldCell(field))}
                     </div>
                     {activeModuleId === 'employee-management' ? (
                       <div className="employee-ops-card">
@@ -6894,6 +8303,306 @@ function App({ initialModuleId }) {
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+                  <div className="attendance-audit-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Mode</th>
+                          <th>Time</th>
+                          <th>Latitude</th>
+                          <th>Longitude</th>
+                          <th>Accuracy</th>
+                          <th>Source</th>
+                          <th>Map</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedComplianceClockings.length > 0 ? (
+                          selectedComplianceClockings.map((clocking, index) => (
+                            <tr key={`${selectedComplianceRow.employeeId}-${selectedComplianceRow.date}-${clocking.id || index}`}>
+                              <td>{index + 1}</td>
+                              <td>{clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'}</td>
+                              <td>{clocking.time || '—'}</td>
+                              <td>{typeof clocking.lat === 'number' ? clocking.lat.toFixed(6) : '—'}</td>
+                              <td>{typeof clocking.lng === 'number' ? clocking.lng.toFixed(6) : '—'}</td>
+                              <td>{typeof clocking.accuracy === 'number' ? `${Math.round(clocking.accuracy)} m` : '—'}</td>
+                              <td>{clocking.source || 'System'}</td>
+                              <td>
+                                {typeof clocking.lat === 'number' && typeof clocking.lng === 'number' ? (
+                                  <a href={`https://www.google.com/maps?q=${clocking.lat},${clocking.lng}`} target="_blank" rel="noreferrer">
+                                    Open
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={8}>No clocking events for this day.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="attendance-audit-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Session #</th>
+                          <th>Start</th>
+                          <th>End</th>
+                          <th>Duration</th>
+                          <th>Start Point</th>
+                          <th>End Point</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedComplianceClockingSessions.length > 0 ? (
+                          selectedComplianceClockingSessions.map((session, index) => (
+                            <tr key={session.id}>
+                              <td>{index + 1}</td>
+                              <td>{session.startTime || '—'}</td>
+                              <td>{session.endTime || '—'}</td>
+                              <td>{session.duration}</td>
+                              <td>
+                                {typeof session.startLat === 'number' && typeof session.startLng === 'number' ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${session.startLat},${session.startLng}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Open Start
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                              <td>
+                                {typeof session.endLat === 'number' && typeof session.endLng === 'number' ? (
+                                  <a href={`https://www.google.com/maps?q=${session.endLat},${session.endLng}`} target="_blank" rel="noreferrer">
+                                    Open End
+                                  </a>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={6}>No complete IN/OUT session pairs for this day.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="employee-ops-card" style={{ minHeight: 260 }}>
+                    <div className="employee-ops-header">
+                      <h5>Clocking Location Trail</h5>
+                      <div className="employee-ops-actions" style={{ gap: 8 }}>
+                        <span>
+                          {selectedComplianceClockingMapNodes.length > 0
+                            ? `${selectedComplianceClockingMapNodes.length} point(s) • ${Math.min(
+                                complianceReplayIndex + 1,
+                                selectedComplianceClockingMapNodes.length
+                              )}/${selectedComplianceClockingMapNodes.length}`
+                            : 'No GPS points'}
+                        </span>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => {
+                            setComplianceReplayIndex(0);
+                            setComplianceReplayActive(true);
+                          }}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          Replay
+                        </button>
+                        <select
+                          className="filter-select"
+                          value={String(complianceReplaySpeed)}
+                          onChange={(event) => setComplianceReplaySpeed(Number(event.target.value) || 1)}
+                          style={{ minWidth: 84 }}
+                        >
+                          <option value="0.5">0.5x</option>
+                          <option value="1">1x</option>
+                          <option value="2">2x</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => setComplianceReplayActive((prev) => !prev)}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          {complianceReplayActive ? 'Pause' : 'Resume'}
+                        </button>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => {
+                            setComplianceReplayActive(false);
+                            setComplianceReplayIndex(0);
+                          }}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          Reset
+                        </button>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          onClick={() => setComplianceShowPointLabels((prev) => !prev)}
+                          disabled={selectedComplianceClockingMapNodes.length === 0}
+                        >
+                          {complianceShowPointLabels ? 'Hide Labels' : 'Show Labels'}
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        position: 'relative',
+                        height: 240,
+                        borderRadius: 10,
+                        background: 'radial-gradient(circle at 50% 50%, rgba(10,115,217,0.12), rgba(10,115,217,0.04))',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          backgroundImage:
+                            'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
+                          backgroundSize: '30px 30px',
+                          opacity: 0.4,
+                        }}
+                      />
+                      {selectedComplianceClockingMapNodes.length > 0 ? (
+                        <>
+                          <svg
+                            viewBox="0 0 100 100"
+                            preserveAspectRatio="none"
+                            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+                          >
+                            {displayedComplianceTrailNodes.length > 1 ? (
+                              <polyline
+                                points={displayedComplianceTrailNodes
+                                  .map((point) => `${point.x},${point.y}`)
+                                  .join(' ')}
+                                fill="none"
+                                stroke="rgba(10,115,217,0.8)"
+                                strokeWidth="0.8"
+                              />
+                            ) : null}
+                          </svg>
+                          {displayedComplianceTrailNodes.map((point, index) => (
+                            <div
+                              key={`clocking-map-point-${index}`}
+                              style={{
+                                position: 'absolute',
+                                left: `${point.x}%`,
+                                top: `${point.y}%`,
+                              }}
+                            >
+                              <div
+                                title={`${point.mode === 'clock-in' ? 'IN' : 'OUT'} ${point.time || ''}`}
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  borderRadius: '50%',
+                                  transform: 'translate(-50%, -50%)',
+                                  backgroundColor: point.mode === 'clock-in' ? '#0f9d58' : '#db4437',
+                                  boxShadow: '0 0 0 5px rgba(0,0,0,0.16)',
+                                }}
+                              />
+                              {complianceShowPointLabels ? (
+                                <div
+                                  style={{
+                                    transform: 'translate(-50%, -165%)',
+                                    backgroundColor: 'rgba(11, 25, 58, 0.88)',
+                                    color: '#e9f0ff',
+                                    fontSize: 10,
+                                    padding: '2px 6px',
+                                    borderRadius: 6,
+                                    whiteSpace: 'nowrap',
+                                    pointerEvents: 'none',
+                                  }}
+                                >
+                                  {point.mode === 'clock-in' ? 'IN' : 'OUT'} {point.time || ''}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                          {selectedComplianceClockingMapNodes[complianceReplayIndex] ? (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                width: 18,
+                                height: 18,
+                                borderRadius: '50%',
+                                left: `${selectedComplianceClockingMapNodes[complianceReplayIndex].x}%`,
+                                top: `${selectedComplianceClockingMapNodes[complianceReplayIndex].y}%`,
+                                transform: 'translate(-50%, -50%)',
+                                border: '3px solid rgba(10,115,217,0.9)',
+                                backgroundColor: '#ffffff',
+                                boxShadow: '0 0 0 10px rgba(10,115,217,0.22)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          ) : null}
+                        </>
+                      ) : (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#607098',
+                            fontSize: 13,
+                          }}
+                        >
+                          No location trail captured for this day.
+                        </div>
+                      )}
+                    </div>
+                    {selectedComplianceClockingMapNodes.length > 0 ? (
+                      <div style={{ marginTop: 12 }}>
+                        <input
+                          type="range"
+                          min={0}
+                          max={Math.max(0, selectedComplianceClockingMapNodes.length - 1)}
+                          value={Math.min(complianceReplayIndex, Math.max(0, selectedComplianceClockingMapNodes.length - 1))}
+                          onChange={(event) => {
+                            const nextIndex = Number(event.target.value) || 0;
+                            setComplianceReplayActive(false);
+                            setComplianceReplayIndex(Math.max(0, Math.min(nextIndex, selectedComplianceClockingMapNodes.length - 1)));
+                          }}
+                          style={{ width: '100%' }}
+                        />
+                        <div
+                          style={{
+                            marginTop: 6,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            color: '#607098',
+                            fontSize: 12,
+                          }}
+                        >
+                          <span>Start</span>
+                          <span>
+                            Step {Math.min(complianceReplayIndex + 1, selectedComplianceClockingMapNodes.length)} of{' '}
+                            {selectedComplianceClockingMapNodes.length}
+                          </span>
+                          <span>End</span>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="attendance-audit-table">
                     <table>

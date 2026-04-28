@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { filterEmployeesBySearch } from '../utils/employeeSearch';
+import { toApiUrl } from '../config/api';
 
 export default function AttendanceTimePage({
   appSettings,
@@ -58,10 +60,107 @@ export default function AttendanceTimePage({
   setSelectedPerformanceEmployeeId,
   getCurrentClockValue,
   currentUser,
+  handleAssignEmployeeShift,
 }) {
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
+  const [isClockModalOpen, setIsClockModalOpen] = useState(false);
+  const [complianceSort, setComplianceSort] = useState({ key: 'employee', direction: 'asc' });
+  const [penaltySort, setPenaltySort] = useState({ key: 'date', direction: 'desc' });
+  const [performanceSort, setPerformanceSort] = useState({ key: 'attendanceScore', direction: 'desc' });
+  const [shiftAssignmentSort, setShiftAssignmentSort] = useState({ key: 'fullName', direction: 'asc' });
+  const [shiftAssignmentDepartmentFilter, setShiftAssignmentDepartmentFilter] = useState('All');
+  const [shiftAssignmentShiftFilter, setShiftAssignmentShiftFilter] = useState('All');
+  const [shiftAssignmentSearchText, setShiftAssignmentSearchText] = useState('');
+  const [shiftAssignmentSavingId, setShiftAssignmentSavingId] = useState('');
+  const shiftOptions = useMemo(
+    () =>
+      Array.isArray(appSettings.shifts) && appSettings.shifts.length > 0
+        ? appSettings.shifts.map((shift) => String(shift?.name || '').trim()).filter(Boolean)
+        : ['Default'],
+    [appSettings.shifts]
+  );
+  const toggleSort = (currentSort, setSort, key) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'asc' }
+    );
+  };
+  const compareValues = useCallback((left, right, direction) => {
+    const leftValue = left ?? '';
+    const rightValue = right ?? '';
+    const leftNumber = Number(leftValue);
+    const rightNumber = Number(rightValue);
+    const bothNumbers = Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+    const base = bothNumbers
+      ? leftNumber - rightNumber
+      : String(leftValue).localeCompare(String(rightValue));
+    return direction === 'asc' ? base : -base;
+  }, []);
+  const sortArrow = (state, key) => {
+    if (state.key !== key) {
+      return '';
+    }
+    return state.direction === 'asc' ? ' ▲' : ' ▼';
+  };
+  const sortedComplianceRows = useMemo(() => {
+    return [...attendanceComplianceFilteredRows].sort((a, b) => {
+      if (complianceSort.key === 'lateFlag') {
+        return compareValues(Number(Boolean(a.isLate)), Number(Boolean(b.isLate)), complianceSort.direction);
+      }
+      return compareValues(a?.[complianceSort.key], b?.[complianceSort.key], complianceSort.direction);
+    });
+  }, [attendanceComplianceFilteredRows, compareValues, complianceSort]);
+  const sortedPenaltyRows = useMemo(() => {
+    return [...attendancePenaltyFilteredRows].sort((a, b) => {
+      if (penaltySort.key === 'status') {
+        const leftStatus = a.outstandingAmount > 0 ? 'Outstanding' : 'Cleared';
+        const rightStatus = b.outstandingAmount > 0 ? 'Outstanding' : 'Cleared';
+        return compareValues(leftStatus, rightStatus, penaltySort.direction);
+      }
+      return compareValues(a?.[penaltySort.key], b?.[penaltySort.key], penaltySort.direction);
+    });
+  }, [attendancePenaltyFilteredRows, compareValues, penaltySort]);
+  const sortedPerformanceRows = useMemo(() => {
+    return [...attendancePerformanceRows].sort((a, b) =>
+      compareValues(a?.[performanceSort.key], b?.[performanceSort.key], performanceSort.direction)
+    );
+  }, [attendancePerformanceRows, compareValues, performanceSort]);
+  const shiftAssignmentDepartmentOptions = useMemo(() => {
+    const departments = new Set(
+      (employeeBaseRows || [])
+        .map((row) => String(row.department || '').trim())
+        .filter(Boolean)
+    );
+    return ['All', ...Array.from(departments).sort((a, b) => String(a).localeCompare(String(b)))];
+  }, [employeeBaseRows]);
+  const shiftAssignmentRows = useMemo(() => {
+    const query = String(shiftAssignmentSearchText || '').trim().toLowerCase();
+    return (employeeBaseRows || [])
+      .filter((row) => {
+        const department = String(row.department || '').trim() || 'Unassigned';
+        const assignedShift = String(row.assignedShift || '').trim() || shiftOptions[0] || 'Default';
+        const matchesDepartment = shiftAssignmentDepartmentFilter === 'All' || department === shiftAssignmentDepartmentFilter;
+        const matchesShift = shiftAssignmentShiftFilter === 'All' || assignedShift === shiftAssignmentShiftFilter;
+        const matchesSearch =
+          !query ||
+          String(row.fullName || '').toLowerCase().includes(query) ||
+          String(row.id || '').toLowerCase().includes(query) ||
+          department.toLowerCase().includes(query);
+        return matchesDepartment && matchesShift && matchesSearch;
+      })
+      .sort((a, b) => compareValues(a?.[shiftAssignmentSort.key], b?.[shiftAssignmentSort.key], shiftAssignmentSort.direction));
+  }, [
+    compareValues,
+    employeeBaseRows,
+    shiftAssignmentDepartmentFilter,
+    shiftAssignmentSearchText,
+    shiftAssignmentShiftFilter,
+    shiftAssignmentSort,
+    shiftOptions,
+  ]);
 
   useEffect(() => {
     if (attendanceViewTab !== 'tracking') {
@@ -75,7 +174,7 @@ export default function AttendanceTimePage({
           return;
         }
         setTrackingLoading(true);
-        const response = await fetch('http://localhost:8000/api/tracking/employees');
+        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/employees'));
         if (!response.ok) {
           throw new Error('Failed to load tracking data');
         }
@@ -150,108 +249,22 @@ export default function AttendanceTimePage({
             >
               Live Tracking
             </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${attendanceViewTab === 'shifts' ? 'active' : ''}`}
+              onClick={() => setAttendanceViewTab('shifts')}
+            >
+              Shift Assignment
+            </button>
           </>
         ) : null}
       </div>
       {attendanceViewTab === 'clock' ? (
         <>
-          <div className="attendance-ops-form">
-            {currentUser && currentUser.role === 'employee' ? (
-              <label>
-                <span>Employee</span>
-                <input
-                  readOnly
-                  value={
-                    selectedAttendanceEmployee
-                      ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                      : ''
-                  }
-                />
-              </label>
-            ) : (
-              <label>
-                <span>Search Employee (Name or ID)</span>
-                <input
-                  placeholder="Type employee name or ID"
-                  value={attendanceSearchText}
-                  onChange={(event) => {
-                    const query = event.target.value;
-                    const normalizedQuery = query.trim().toLowerCase();
-                    const matchedEmployee = normalizedQuery
-                      ? employeeBaseRows.find((employee) => {
-                          const employeeId = String(employee.id || '').toLowerCase();
-                          const employeeName = String(employee.fullName || '').toLowerCase();
-                          return employeeId.includes(normalizedQuery) || employeeName.includes(normalizedQuery);
-                        }) || null
-                      : null;
-                    setAttendanceSearchText(query);
-                    setAttendanceClockDraft((prev) => ({
-                      ...prev,
-                      employeeId: matchedEmployee?.id || '',
-                    }));
-                  }}
-                />
-                {attendanceSearchText.trim() ? (
-                  <div className="attendance-search-dropdown">
-                    {attendanceSearchMatches.length > 0 ? (
-                      attendanceSearchMatches.map((employee) => (
-                        <button
-                          key={employee.id}
-                          type="button"
-                          className="attendance-search-item"
-                          onClick={() => {
-                            setAttendanceClockDraft((prev) => ({
-                              ...prev,
-                              employeeId: employee.id,
-                            }));
-                            setAttendanceSearchText('');
-                          }}
-                        >
-                          {employee.fullName} ({employee.id})
-                        </button>
-                      ))
-                    ) : (
-                      <span className="attendance-search-empty">No matching employee</span>
-                    )}
-                  </div>
-                ) : null}
-                <span className="field-title">
-                  {selectedAttendanceEmployee
-                    ? `Selected: ${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
-                    : 'No matching employee selected'}
-                </span>
-              </label>
-            )}
-            <label>
-              <span>Shift</span>
-              <select
-                className="filter-select"
-                value={attendanceClockDraft.shift}
-                onChange={(event) =>
-                  setAttendanceClockDraft((prev) => ({
-                    ...prev,
-                    shift: event.target.value,
-                  }))
-                }
-              >
-                <option value="Morning">Morning</option>
-                <option value="Evening">Evening</option>
-                <option value="Night">Night</option>
-                <option value="Remote">Remote</option>
-              </select>
-            </label>
-            <label>
-              <span>Punch Time</span>
-              <input value={getCurrentClockValue()} readOnly />
-            </label>
-            <div className="attendance-ops-actions">
-              <button type="button" className="primary-btn" onClick={handleClockIn}>
-                Clock In
-              </button>
-              <button type="button" className="neutral-btn" onClick={handleClockOut}>
-                Clock Out
-              </button>
-            </div>
+          <div className="attendance-ops-actions" style={{ justifyContent: 'flex-end' }}>
+            <button type="button" className="primary-btn" onClick={() => setIsClockModalOpen(true)}>
+              Record Attendance
+            </button>
           </div>
           <div className="attendance-stats-grid">
             <article className="attendance-stat">
@@ -295,10 +308,10 @@ export default function AttendanceTimePage({
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.shift}</td>
-                      <td>{row.clockIn}</td>
-                      <td>{row.clockOut || '—'}</td>
+                      <td>{row.checkIn || '—'}</td>
+                      <td>{row.checkOut || '—'}</td>
                       <td>{row.status}</td>
-                      <td>{row.minutesLate || 0}</td>
+                      <td>{row.lateMinutes || 0}</td>
                     </tr>
                   ))
                 ) : (
@@ -332,10 +345,14 @@ export default function AttendanceTimePage({
                   value={attendanceAuditFilter}
                   onChange={(event) => setAttendanceAuditFilter(event.target.value)}
                 >
-                  <option value="all">All</option>
-                  <option value="late">Late</option>
-                  <option value="on-time">On time</option>
-                  <option value="absent">Absent</option>
+                  <option value="All">All</option>
+                  <option value="On Time">On Time</option>
+                  <option value="Late">Late</option>
+                  <option value="Left Early">Left Early</option>
+                  <option value="Clocked In Once">Clocked In Once</option>
+                  <option value="Absent">Absent</option>
+                  <option value="On Leave">On Leave</option>
+                  <option value="Off Duty">Off Duty</option>
                 </select>
               </label>
               <label>
@@ -360,26 +377,58 @@ export default function AttendanceTimePage({
             <table>
               <thead>
                 <tr>
-                  <th>Employee</th>
-                  <th>Shift</th>
-                  <th>Clock In</th>
-                  <th>Clock Out</th>
-                  <th>Status</th>
-                  <th>Minutes Late</th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'employee')}>
+                      Employee{sortArrow(complianceSort, 'employee')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'shift')}>
+                      Shift{sortArrow(complianceSort, 'shift')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'checkIn')}>
+                      Clock In{sortArrow(complianceSort, 'checkIn')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'checkOut')}>
+                      Clock Out{sortArrow(complianceSort, 'checkOut')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'dailyStatus')}>
+                      Status{sortArrow(complianceSort, 'dailyStatus')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'lateFlag')}>
+                      Minutes Late{sortArrow(complianceSort, 'lateFlag')}
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {attendanceComplianceFilteredRows.length > 0 ? (
-                  attendanceComplianceFilteredRows.map((row) => (
-                    <tr key={row.id}>
+                {sortedComplianceRows.length > 0 ? (
+                  sortedComplianceRows.map((row) => (
+                    <tr
+                      key={`${row.employeeId}-${row.date}`}
+                      className={selectedComplianceKey === `${row.employeeId}-${row.date}` ? 'selected-row' : ''}
+                      onClick={() => {
+                        const detailKey = `${row.employeeId}-${row.date}`;
+                        setSelectedComplianceKey(detailKey);
+                        setAttendanceDetailModal({ type: 'compliance', key: detailKey });
+                      }}
+                    >
                       <td>
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.shift}</td>
-                      <td>{row.clockIn}</td>
-                      <td>{row.clockOut || '—'}</td>
-                      <td>{row.status}</td>
-                      <td>{row.minutesLate || 0}</td>
+                      <td>{row.checkIn || '—'}</td>
+                      <td>{row.checkOut || '—'}</td>
+                      <td>{row.dailyStatus}</td>
+                      <td>{row.isLate ? '1' : '0'}</td>
                     </tr>
                   ))
                 ) : (
@@ -404,9 +453,9 @@ export default function AttendanceTimePage({
                   value={attendancePenaltyStatusFilter}
                   onChange={(event) => setAttendancePenaltyStatusFilter(event.target.value)}
                 >
-                  <option value="all">All</option>
-                  <option value="pending">Pending</option>
-                  <option value="cleared">Cleared</option>
+                  <option value="All">All</option>
+                  <option value="Outstanding">Outstanding</option>
+                  <option value="Cleared">Cleared</option>
                 </select>
               </label>
             </div>
@@ -415,40 +464,67 @@ export default function AttendanceTimePage({
             <table>
               <thead>
                 <tr>
-                  <th>Employee</th>
-                  <th>Date</th>
-                  <th>Minutes Late</th>
-                  <th>Amount</th>
-                  <th>Status</th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'employee')}>
+                      Employee{sortArrow(penaltySort, 'employee')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'date')}>
+                      Date{sortArrow(penaltySort, 'date')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'penaltyLabel')}>
+                      Penalty{sortArrow(penaltySort, 'penaltyLabel')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(penaltySort, setPenaltySort, 'outstandingAmount')}
+                    >
+                      Amount{sortArrow(penaltySort, 'outstandingAmount')}
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'status')}>
+                      Status{sortArrow(penaltySort, 'status')}
+                    </button>
+                  </th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {attendancePenaltyFilteredRows.length > 0 ? (
-                  attendancePenaltyFilteredRows.map((row) => (
+                {sortedPenaltyRows.length > 0 ? (
+                  sortedPenaltyRows.map((row) => (
                     <tr
-                      key={row.id}
-                      className={selectedPenaltyKey === row.id ? 'selected-row' : ''}
-                      onClick={() => setSelectedPenaltyKey(row.id)}
+                      key={row.key}
+                      className={selectedPenaltyKey === row.key ? 'selected-row' : ''}
+                      onClick={() => setSelectedPenaltyKey(row.key)}
                     >
                       <td>
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.date}</td>
-                      <td>{row.minutesLate}</td>
+                      <td>{row.penaltyLabel}</td>
                       <td>
                         {appSettings.defaultCurrency}{' '}
-                        {toNumberValue(row.amount).toLocaleString(undefined, {
+                        {toNumberValue(row.outstandingAmount).toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
                       </td>
-                      <td>{row.status}</td>
+                      <td>{row.outstandingAmount > 0 ? 'Outstanding' : 'Cleared'}</td>
                       <td>
                         <button
                           type="button"
                           className="primary-btn"
-                          onClick={() => setSelectedPenaltyKey(row.id)}
+                          onClick={() => {
+                            setSelectedPenaltyKey(row.key);
+                            setAttendanceDetailModal({ type: 'penalties', key: row.key });
+                          }}
                         >
                           View
                         </button>
@@ -473,11 +549,11 @@ export default function AttendanceTimePage({
               </div>
               <div className="attendance-ops-form">
                 <label>
-                  <span>Minutes Late</span>
-                  <input value={selectedPenaltyRow.minutesLate} readOnly />
+                  <span>Penalty</span>
+                  <input value={selectedPenaltyRow.penaltyLabel} readOnly />
                 </label>
                 <label>
-                  <span>Penalty Amount</span>
+                  <span>Outstanding Amount</span>
                   <input
                     value={toNumberValue(penaltyActionDraft.amount)}
                     onChange={(event) =>
@@ -492,27 +568,27 @@ export default function AttendanceTimePage({
                   <span>Action</span>
                   <select
                     className="filter-select"
-                    value={penaltyActionDraft.action}
+                    value={penaltyActionDraft.mode}
                     onChange={(event) =>
                       setPenaltyActionDraft((prev) => ({
                         ...prev,
-                        action: event.target.value,
+                        mode: event.target.value === 'full' ? 'full' : 'partial',
                       }))
                     }
                   >
-                    <option value="deduct">Deduct from salary</option>
-                    <option value="waive">Waive penalty</option>
+                    <option value="partial">Partial Clearance</option>
+                    <option value="full">Full Clearance</option>
                   </select>
                 </label>
                 <label>
-                  <span>Comment</span>
+                  <span>Remark</span>
                   <textarea
                     rows={3}
-                    value={penaltyActionDraft.comment}
+                    value={penaltyActionDraft.remark}
                     onChange={(event) =>
                       setPenaltyActionDraft((prev) => ({
                         ...prev,
-                        comment: event.target.value,
+                        remark: event.target.value,
                       }))
                     }
                   />
@@ -539,9 +615,9 @@ export default function AttendanceTimePage({
                   value={attendancePerformancePeriod}
                   onChange={(event) => setAttendancePerformancePeriod(event.target.value)}
                 >
-                  <option value="month">This Month</option>
-                  <option value="quarter">This Quarter</option>
-                  <option value="year">This Year</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
                   <option value="custom">Custom</option>
                 </select>
               </label>
@@ -574,9 +650,13 @@ export default function AttendanceTimePage({
                   value={attendancePerformanceRankMetric}
                   onChange={(event) => setAttendancePerformanceRankMetric(event.target.value)}
                 >
-                  <option value="on-time">On time days</option>
-                  <option value="late">Late days</option>
-                  <option value="absent">Absent days</option>
+                  <option value="perfect-attendance">Perfect Attendance</option>
+                  <option value="least-late">Least Late</option>
+                  <option value="most-late">Most Late</option>
+                  <option value="least-absent">Least Absent</option>
+                  <option value="most-absent">Most Absent</option>
+                  <option value="least-leave-applications">Least Leave Applications</option>
+                  <option value="most-leave-applications">Most Leave Applications</option>
                 </select>
               </label>
               <label>
@@ -620,17 +700,65 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>Rank</th>
-                  <th>Employee</th>
-                  <th>Department</th>
-                  <th>On Time</th>
-                  <th>Late</th>
-                  <th>Absent</th>
-                  <th>Score</th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'employee')}
+                    >
+                      Employee{sortArrow(performanceSort, 'employee')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'department')}
+                    >
+                      Department{sortArrow(performanceSort, 'department')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'onTimeCompleteDays')}
+                    >
+                      On Time{sortArrow(performanceSort, 'onTimeCompleteDays')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'lateDays')}
+                    >
+                      Late{sortArrow(performanceSort, 'lateDays')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'absentDays')}
+                    >
+                      Absent{sortArrow(performanceSort, 'absentDays')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'attendanceScore')}
+                    >
+                      Score{sortArrow(performanceSort, 'attendanceScore')}
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {attendancePerformanceRows.length > 0 ? (
-                  attendancePerformanceRows.map((row, index) => (
+                {sortedPerformanceRows.length > 0 ? (
+                  sortedPerformanceRows.map((row, index) => (
                     <tr
                       key={row.employeeId}
                       className={selectedPerformanceEmployeeId === row.employeeId ? 'selected-row' : ''}
@@ -641,15 +769,139 @@ export default function AttendanceTimePage({
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.department}</td>
-                      <td>{row.onTimeDays}</td>
+                      <td>{row.onTimeCompleteDays}</td>
                       <td>{row.lateDays}</td>
                       <td>{row.absentDays}</td>
-                      <td>{row.score}</td>
+                      <td>{row.attendanceScore.toFixed(1)}%</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
                     <td colSpan={7}>No performance records for the selected filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'shifts' ? (
+        <div className="attendance-audit-wrap">
+          <div className="attendance-audit-head">
+            <h4>Shift Assignment</h4>
+            <div className="attendance-audit-filters">
+              <label>
+                <span>Department</span>
+                <select
+                  className="filter-select"
+                  value={shiftAssignmentDepartmentFilter}
+                  onChange={(event) => setShiftAssignmentDepartmentFilter(event.target.value)}
+                >
+                  {shiftAssignmentDepartmentOptions.map((department) => (
+                    <option key={department} value={department}>
+                      {department}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Shift</span>
+                <select
+                  className="filter-select"
+                  value={shiftAssignmentShiftFilter}
+                  onChange={(event) => setShiftAssignmentShiftFilter(event.target.value)}
+                >
+                  <option value="All">All</option>
+                  {shiftOptions.map((shiftName) => (
+                    <option key={shiftName} value={shiftName}>
+                      {shiftName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Search</span>
+                <input
+                  placeholder="Name, ID or department"
+                  value={shiftAssignmentSearchText}
+                  onChange={(event) => setShiftAssignmentSearchText(event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="attendance-audit-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'fullName')}
+                    >
+                      Employee{sortArrow(shiftAssignmentSort, 'fullName')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'department')}
+                    >
+                      Department{sortArrow(shiftAssignmentSort, 'department')}
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'assignedShift')}
+                    >
+                      Assigned Shift{sortArrow(shiftAssignmentSort, 'assignedShift')}
+                    </button>
+                  </th>
+                  <th>Update</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shiftAssignmentRows.length > 0 ? (
+                  shiftAssignmentRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        {row.fullName} ({row.id})
+                      </td>
+                      <td>{row.department || 'Unassigned'}</td>
+                      <td>
+                        <select
+                          className="filter-select"
+                          value={String(row.assignedShift || shiftOptions[0] || 'Default')}
+                          disabled={shiftAssignmentSavingId === row.id}
+                          onChange={async (event) => {
+                            const nextShift = event.target.value;
+                            if (nextShift === String(row.assignedShift || '')) {
+                              return;
+                            }
+                            setShiftAssignmentSavingId(row.id);
+                            try {
+                              await handleAssignEmployeeShift(row.id, nextShift);
+                            } finally {
+                              setShiftAssignmentSavingId('');
+                            }
+                          }}
+                        >
+                          {shiftOptions.map((shiftName) => (
+                            <option key={shiftName} value={shiftName}>
+                              {shiftName}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>{shiftAssignmentSavingId === row.id ? 'Saving...' : 'Ready'}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4}>No employees found for selected filters.</td>
                   </tr>
                 )}
               </tbody>
@@ -717,6 +969,110 @@ export default function AttendanceTimePage({
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'clock' && isClockModalOpen ? (
+        <div className="modal-backdrop" onClick={() => setIsClockModalOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Clock In / Out</h3>
+              <button type="button" className="neutral-btn" onClick={() => setIsClockModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="attendance-ops-form">
+              {currentUser && currentUser.role === 'employee' ? (
+                <label>
+                  <span>Employee</span>
+                  <input
+                    readOnly
+                    value={
+                      selectedAttendanceEmployee
+                        ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
+                        : `${currentUser.fullName || ''}${
+                            currentUser.employeeId ? ` (${currentUser.employeeId})` : ''
+                          }`
+                    }
+                  />
+                </label>
+              ) : (
+                <label>
+                  <span>Search Employee (Name or ID)</span>
+                  <input
+                    placeholder="Type employee name or ID"
+                    value={attendanceSearchText}
+                    onChange={(event) => {
+                      const query = event.target.value;
+                      const matchedEmployee = filterEmployeesBySearch(employeeBaseRows, query, 1)[0] || null;
+                      setAttendanceSearchText(query);
+                      if (matchedEmployee?.id) {
+                        setAttendanceClockDraft((prev) => ({
+                          ...prev,
+                          employeeId: matchedEmployee.id,
+                        }));
+                      }
+                    }}
+                  />
+                  {attendanceSearchText.trim() ? (
+                    <div className="attendance-search-dropdown">
+                      {attendanceSearchMatches.length > 0 ? (
+                        attendanceSearchMatches.map((employee) => (
+                          <button
+                            key={employee.id}
+                            type="button"
+                            className="attendance-search-item"
+                            onClick={() => {
+                              setAttendanceClockDraft((prev) => ({
+                                ...prev,
+                                employeeId: employee.id,
+                                shift: String(employee.assignedShift || prev.shift || shiftOptions[0] || 'Default'),
+                              }));
+                              setAttendanceSearchText('');
+                            }}
+                          >
+                            {employee.fullName} ({employee.id})
+                          </button>
+                        ))
+                      ) : (
+                        <span className="attendance-search-empty">No matching employee</span>
+                      )}
+                    </div>
+                  ) : null}
+                </label>
+              )}
+              <label>
+                <span>Shift</span>
+                <select
+                  className="filter-select"
+                  value={attendanceClockDraft.shift}
+                  onChange={(event) =>
+                    setAttendanceClockDraft((prev) => ({
+                      ...prev,
+                      shift: event.target.value,
+                    }))
+                  }
+                >
+                  {shiftOptions.map((shiftName) => (
+                    <option key={shiftName} value={shiftName}>
+                      {shiftName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Punch Time</span>
+                <input value={getCurrentClockValue()} readOnly />
+              </label>
+              <div className="attendance-ops-actions">
+                <button type="button" className="primary-btn" onClick={handleClockIn}>
+                  Clock In
+                </button>
+                <button type="button" className="neutral-btn" onClick={handleClockOut}>
+                  Clock Out
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
