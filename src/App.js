@@ -4280,7 +4280,8 @@ function App({ initialModuleId }) {
     setModalState({ mode: 'form', rowId: row.id });
   };
 
-  const handleDelete = (rowId) => {
+  const handleDelete = (row) => {
+    const rowId = row?.id;
     if (activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee') {
       showToast('Loan records cannot be deleted in employee self-service.', 'error');
       return;
@@ -4724,6 +4725,7 @@ function App({ initialModuleId }) {
                 : 'Pending HR'
               : 'Pending Department'),
       };
+      setIsSavingRecord(true);
       try {
         const url =
           editRowId === 'new'
@@ -4735,18 +4737,29 @@ function App({ initialModuleId }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestPayload),
         });
-        if (response.ok) {
-          const data = await response.json();
-          const saved = data.record || requestPayload;
-          setModuleRowsState((prev) => ({
-            ...prev,
-            'leave-management':
-              editRowId === 'new'
-                ? [saved, ...(prev['leave-management'] || [])]
-                : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
-          }));
+        if (!response.ok) {
+          const failurePayload = await response.json().catch(() => ({}));
+          const message = String(failurePayload.error || 'Failed to save leave request.');
+          setFormError(message);
+          showToast(message, 'error');
+          return;
         }
+        const data = await response.json();
+        const saved = data.record || requestPayload;
+        setModuleRowsState((prev) => ({
+          ...prev,
+          'leave-management':
+            editRowId === 'new'
+              ? [saved, ...(prev['leave-management'] || [])]
+              : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
+        }));
       } catch (error) {
+        const message = 'Failed to save leave request.';
+        setFormError(message);
+        showToast(message, 'error');
+        return;
+      } finally {
+        setIsSavingRecord(false);
       }
       setLeaveActionMessage(
         editRowId === 'new'
@@ -7650,7 +7663,7 @@ function App({ initialModuleId }) {
                                 className="mini-btn danger"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  handleDelete(row.id);
+                                  handleDelete(row);
                                 }}
                                 disabled={activeModuleId === 'attendance-time'}
                               >
