@@ -12,8 +12,17 @@ export const LoginScreen = () => {
 
   const handleLogin = async () => {
     setError('');
+    const normalizedTenantId = tenantId.trim().toLowerCase();
+    if (!normalizedTenantId) {
+      setError('Tenant ID is required');
+      return;
+    }
+    if (!identifier.trim() || !password) {
+      setError('Username and password are required');
+      return;
+    }
     try {
-      await login(tenantId.trim().toLowerCase(), identifier.trim(), password);
+      await login(normalizedTenantId, identifier.trim(), password);
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'Unable to sign in');
     }
