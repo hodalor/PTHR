@@ -117,6 +117,8 @@ const getTodayIsoDate = () => {
   return `${year}-${month}-${day}`;
 };
 
+const getLatestAllowedEmployeeDob = () => `${new Date().getFullYear() - 11}-12-31`;
+
 const formatWorkedDuration = (startTime, endTime) => {
   const startMinutes = toMinutesFromClock(startTime);
   const endMinutes = toMinutesFromClock(endTime);
@@ -471,6 +473,7 @@ function App({ initialModuleId }) {
   const [editRowId, setEditRowId] = useState(null);
   const [formValues, setFormValues] = useState({});
   const [formError, setFormError] = useState('');
+  const [recordSaving, setRecordSaving] = useState(false);
   const [departmentNameInput, setDepartmentNameInput] = useState('');
   const [departmentCodeInput, setDepartmentCodeInput] = useState('');
   const [departmentEditingName, setDepartmentEditingName] = useState('');
@@ -722,6 +725,13 @@ function App({ initialModuleId }) {
     clearAuth();
   };
 
+  const authHeaders = useMemo(() => {
+    if (!authToken) {
+      return {};
+    }
+    return { Authorization: `Bearer ${authToken}` };
+  }, [authToken]);
+
   useEffect(() => {
     if (!activeModuleId || isSettingsPage || activeModuleId === 'monitoring-tracking') {
       return;
@@ -729,7 +739,9 @@ function App({ initialModuleId }) {
     let cancelled = false;
     const loadModuleRows = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`);
+        const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`, {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           return;
         }
@@ -749,7 +761,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, isSettingsPage]);
+  }, [activeModuleId, authHeaders, isSettingsPage]);
 
   useEffect(() => {
     const fetchTrackingSettings = async () => {
@@ -1935,6 +1947,10 @@ function App({ initialModuleId }) {
     if (!field) {
       return null;
     }
+    const inputMax =
+      activeModuleId === 'employee-management' && field.key === 'dob' && field.type === 'date'
+        ? getLatestAllowedEmployeeDob()
+        : undefined;
     return (
       <label key={field.key}>
         <span>
@@ -2079,6 +2095,7 @@ function App({ initialModuleId }) {
           <input
             type={field.type || 'text'}
             value={formValues[field.key] || ''}
+            max={inputMax}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
@@ -2768,6 +2785,7 @@ function App({ initialModuleId }) {
     setEditRowId(null);
     setFormValues({});
     setFormError('');
+    setRecordSaving(false);
   };
   const leaveSubmenuItems = useMemo(() => {
     const items = [
@@ -3379,9 +3397,18 @@ function App({ initialModuleId }) {
     if (!activeModuleId || !rowId) {
       return;
     }
+    const currentRows = moduleRowsState[activeModuleId] || [];
+    const matchedRow = currentRows.find((row) => row.id === rowId) || null;
+    const entityLabel = activeModuleConfig?.entityLabel || 'record';
+    const labelValue = matchedRow?.fullName || matchedRow?.name || matchedRow?.employee || matchedRow?.id || rowId;
+    const confirmed = window.confirm(`Delete this ${entityLabel}: ${labelValue}?`);
+    if (!confirmed) {
+      return;
+    }
     if (activeModuleId !== 'attendance-penalty-adjustments') {
       fetch(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowId)}`, {
         method: 'DELETE',
+        headers: authHeaders,
       }).catch(() => {});
     }
     setModuleRowsState((prev) => {
@@ -3400,32 +3427,41 @@ function App({ initialModuleId }) {
   };
 
   const handleSave = async () => {
-    if (!activeModuleConfig) {
+    if (!activeModuleConfig || recordSaving) {
       return;
     }
-    const missingRequiredField = visibleFormFields.find(
-      (field) => field.required && !String(formValues[field.key] || '').trim()
-    );
-    if (missingRequiredField) {
-      setFormError(`${getFieldLabel(missingRequiredField)} is required.`);
-      return;
-    }
-    if (activeModuleId === 'employee-management') {
-      const normalizedPassword = String(formValues.password || '').trim();
-      const hasLetter = /[A-Za-z]/.test(normalizedPassword);
-      const hasNumber = /\d/.test(normalizedPassword);
-      if (normalizedPassword.length < 8 || !hasLetter || !hasNumber) {
-        setFormError('Portal Password must be at least 8 characters and include letters and numbers.');
+    setRecordSaving(true);
+    try {
+      const missingRequiredField = visibleFormFields.find(
+        (field) => field.required && !String(formValues[field.key] || '').trim()
+      );
+      if (missingRequiredField) {
+        setFormError(`${getFieldLabel(missingRequiredField)} is required.`);
         return;
       }
-    }
-    if (activeModuleId === 'attendance-time') {
-      setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
-      return;
-    }
-    let computedPayrollValues = {};
-    let computedLoanValues = {};
-    if (activeModuleId === 'payroll-management') {
+      if (activeModuleId === 'employee-management') {
+        const latestAllowedEmployeeDob = getLatestAllowedEmployeeDob();
+        if (String(formValues.dob || '') > latestAllowedEmployeeDob) {
+          setFormError(`Date of Birth must be ${latestAllowedEmployeeDob} or earlier.`);
+          return;
+        }
+      }
+      if (activeModuleId === 'employee-management') {
+        const normalizedPassword = String(formValues.password || '').trim();
+        const hasLetter = /[A-Za-z]/.test(normalizedPassword);
+        const hasNumber = /\d/.test(normalizedPassword);
+        if (normalizedPassword.length < 8 || !hasLetter || !hasNumber) {
+          setFormError('Portal Password must be at least 8 characters and include letters and numbers.');
+          return;
+        }
+      }
+      if (activeModuleId === 'attendance-time') {
+        setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
+        return;
+      }
+      let computedPayrollValues = {};
+      let computedLoanValues = {};
+      if (activeModuleId === 'payroll-management') {
       const basicPay = toNumberValue(formValues.basicPay);
       const monthlyBonuses = toNumberValue(formValues.monthlyBonuses);
       const transportAllowance = toNumberValue(formValues.transportAllowance);
@@ -3500,8 +3536,8 @@ function App({ initialModuleId }) {
         nhimaDeduction: nhimaDeduction ? nhimaDeduction.toFixed(2) : '',
         taxDeduction: taxDeduction ? taxDeduction.toFixed(2) : '',
       };
-    }
-    if (activeModuleId === 'loan-records') {
+      }
+      if (activeModuleId === 'loan-records') {
       const principal = toNumberValue(formValues.amount);
       const rawInterestPercent =
         formValues.interestPercent !== undefined && formValues.interestPercent !== null
@@ -3521,209 +3557,230 @@ function App({ initialModuleId }) {
         monthlyInstallment: monthlyInstallment ? monthlyInstallment.toFixed(2) : '',
         balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
       };
-    }
-    if (activeModuleId === 'leave-management') {
-      if (!selectedLeaveFormEmployee) {
-        setFormError('Select a valid employee from search.');
-        showToast('Select a valid employee from search.', 'error');
-        return;
       }
-      const reason = String(formValues.reason || '').trim();
-      if (!reason) {
-        setFormError('Reason is required.');
-        showToast('Reason is required.', 'error');
-        return;
-      }
-      if (String(formValues.startDate || '') < todayIsoDate || String(formValues.endDate || '') < todayIsoDate) {
-        setFormError('Past dates are not allowed for leave request.');
-        showToast('Past dates are not allowed for leave request.', 'error');
-        return;
-      }
-      const leaveDays = getInclusiveDaysBetween(formValues.startDate, formValues.endDate);
-      if (leaveDays <= 0) {
-        setFormError('Select a valid start and end date.');
-        showToast('Select a valid start and end date.', 'error');
-        return;
-      }
-      if (selectedLeaveFormBalance && leaveDays > selectedLeaveFormBalance.availableBalance) {
-        setFormError(
-          `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`
+      if (activeModuleId === 'leave-management') {
+        if (!selectedLeaveFormEmployee) {
+          setFormError('Select a valid employee from search.');
+          showToast('Select a valid employee from search.', 'error');
+          return;
+        }
+        const reason = String(formValues.reason || '').trim();
+        if (!reason) {
+          setFormError('Reason is required.');
+          showToast('Reason is required.', 'error');
+          return;
+        }
+        if (String(formValues.startDate || '') < todayIsoDate || String(formValues.endDate || '') < todayIsoDate) {
+          setFormError('Past dates are not allowed for leave request.');
+          showToast('Past dates are not allowed for leave request.', 'error');
+          return;
+        }
+        const leaveDays = getInclusiveDaysBetween(formValues.startDate, formValues.endDate);
+        if (leaveDays <= 0) {
+          setFormError('Select a valid start and end date.');
+          showToast('Select a valid start and end date.', 'error');
+          return;
+        }
+        if (selectedLeaveFormBalance && leaveDays > selectedLeaveFormBalance.availableBalance) {
+          setFormError(
+            `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`
+          );
+          showToast(
+            `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`,
+            'error'
+          );
+          return;
+        }
+        const rowId =
+          editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
+        const requestPayload = {
+          id: rowId,
+          employee: selectedLeaveFormEmployee.fullName,
+          employeeId: selectedLeaveFormEmployee.id,
+          department: selectedLeaveFormEmployee.department || 'Unassigned',
+          type: formValues.type || 'Annual',
+          startDate: formValues.startDate,
+          endDate: formValues.endDate,
+          daysRequested: leaveDays,
+          reason,
+          requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+          departmentApproval: formValues.departmentApproval || 'Pending',
+          departmentApprover: formValues.departmentApprover || '',
+          departmentComment: formValues.departmentComment || '',
+          departmentApprovedOn: formValues.departmentApprovedOn || '',
+          hrApproval: formValues.hrApproval || 'Pending',
+          hrApprover: formValues.hrApprover || '',
+          hrComment: formValues.hrComment || '',
+          hrApprovedOn: formValues.hrApprovedOn || '',
+          managerApproval: formValues.managerApproval || 'Pending',
+          managerApprover: formValues.managerApprover || '',
+          managerComment: formValues.managerComment || '',
+          managerApprovedOn: formValues.managerApprovedOn || '',
+          status:
+            formValues.status ||
+            (formValues.departmentApproval === 'Rejected' || formValues.hrApproval === 'Rejected' || formValues.managerApproval === 'Rejected'
+              ? 'Rejected'
+              : formValues.departmentApproval === 'Approved'
+                ? formValues.hrApproval === 'Approved'
+                  ? formValues.managerApproval === 'Approved'
+                    ? 'Approved'
+                    : 'Pending Manager'
+                  : 'Pending HR'
+                : 'Pending Department'),
+        };
+        try {
+          const url =
+            editRowId === 'new'
+              ? 'http://localhost:8000/api/modules/leave-management'
+              : `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`;
+          const method = editRowId === 'new' ? 'POST' : 'PUT';
+          const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify(requestPayload),
+          });
+          if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            const message = data?.error || 'Unable to save leave request.';
+            setFormError(message);
+            showToast(message, 'error');
+            return;
+          }
+          const data = await response.json().catch(() => null);
+          const saved = data?.record || requestPayload;
+          setModuleRowsState((prev) => {
+            const currentRows = prev['leave-management'] || [];
+            if (editRowId === 'new') {
+              return {
+                ...prev,
+                'leave-management': [saved, ...currentRows.filter((row) => row.id !== saved.id)],
+              };
+            }
+            return {
+              ...prev,
+              'leave-management': currentRows.map((row) => (row.id === rowId ? saved : row)),
+            };
+          });
+        } catch (error) {
+          const message = 'Unable to save leave request.';
+          setFormError(message);
+          showToast(message, 'error');
+          return;
+        }
+        setLeaveActionMessage(
+          editRowId === 'new'
+            ? 'Leave request submitted to department approval.'
+            : 'Leave request updated successfully.'
         );
         showToast(
-          `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`,
-          'error'
+          editRowId === 'new'
+            ? `Leave request submitted for ${selectedLeaveFormEmployee.fullName}.`
+            : 'Leave request updated successfully.',
+          'success'
         );
+        setSelectedRowId(rowId);
+        closeModal();
         return;
       }
-      const rowId =
-        editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
-      const requestPayload = {
-        id: rowId,
-        employee: selectedLeaveFormEmployee.fullName,
-        employeeId: selectedLeaveFormEmployee.id,
-        department: selectedLeaveFormEmployee.department || 'Unassigned',
-        type: formValues.type || 'Annual',
-        startDate: formValues.startDate,
-        endDate: formValues.endDate,
-        daysRequested: leaveDays,
-        reason,
-        requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-        departmentApproval: formValues.departmentApproval || 'Pending',
-        departmentApprover: formValues.departmentApprover || '',
-        departmentComment: formValues.departmentComment || '',
-        departmentApprovedOn: formValues.departmentApprovedOn || '',
-        hrApproval: formValues.hrApproval || 'Pending',
-        hrApprover: formValues.hrApprover || '',
-        hrComment: formValues.hrComment || '',
-        hrApprovedOn: formValues.hrApprovedOn || '',
-        managerApproval: formValues.managerApproval || 'Pending',
-        managerApprover: formValues.managerApprover || '',
-        managerComment: formValues.managerComment || '',
-        managerApprovedOn: formValues.managerApprovedOn || '',
-        status:
-          formValues.status ||
-          (formValues.departmentApproval === 'Rejected' || formValues.hrApproval === 'Rejected' || formValues.managerApproval === 'Rejected'
-            ? 'Rejected'
-            : formValues.departmentApproval === 'Approved'
-              ? formValues.hrApproval === 'Approved'
-                ? formValues.managerApproval === 'Approved'
-                  ? 'Approved'
-                  : 'Pending Manager'
-                : 'Pending HR'
-              : 'Pending Department'),
-      };
-      try {
-        const url =
-          editRowId === 'new'
-            ? 'http://localhost:8000/api/modules/leave-management'
-            : `http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`;
-        const method = editRowId === 'new' ? 'POST' : 'PUT';
-        const response = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestPayload),
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const saved = data.record || requestPayload;
-          setModuleRowsState((prev) => ({
-            ...prev,
-            'leave-management':
-              editRowId === 'new'
-                ? [saved, ...(prev['leave-management'] || [])]
-                : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
-          }));
-        }
-      } catch (error) {
-      }
-      setLeaveActionMessage(
-        editRowId === 'new'
-          ? 'Leave request submitted to department approval.'
-          : 'Leave request updated successfully.'
-      );
-      showToast(
-        editRowId === 'new'
-          ? `Leave request submitted for ${selectedLeaveFormEmployee.fullName}.`
-          : 'Leave request updated successfully.',
-        'success'
-      );
-      setSelectedRowId(rowId);
-      closeModal();
-      return;
-    }
 
-    const payload = activeModuleConfig.formFields.reduce((acc, field) => {
-      if (computedPayrollValues[field.key] !== undefined) {
+      const payload = activeModuleConfig.formFields.reduce((acc, field) => {
+        if (computedPayrollValues[field.key] !== undefined) {
+          return {
+            ...acc,
+            [field.key]: computedPayrollValues[field.key],
+          };
+        }
+        if (computedLoanValues[field.key] !== undefined) {
+          return {
+            ...acc,
+            [field.key]: computedLoanValues[field.key],
+          };
+        }
         return {
           ...acc,
-          [field.key]: computedPayrollValues[field.key],
+          [field.key]: formValues[field.key] || '',
         };
+      }, {});
+      const employeeImagePreviewsPayload =
+        activeModuleId === 'employee-management'
+          ? employeeImageFields.reduce(
+              (acc, key) => ({
+                ...acc,
+                [`${key}Preview`]: formValues[`${key}Preview`] || '',
+              }),
+              {}
+            )
+          : {};
+      const employeeFilesPayload =
+        activeModuleId === 'employee-management'
+          ? employeeFileFields.reduce(
+              (acc, key) => ({
+                ...acc,
+                [`${key}Files`]: Array.isArray(formValues[`${key}Files`])
+                  ? formValues[`${key}Files`]
+                  : [],
+              }),
+              {}
+            )
+          : {};
+      const moduleIdPrefix = activeModuleId.slice(0, 3).toUpperCase();
+      const fallbackId = `${moduleIdPrefix}-${Math.floor(Math.random() * 900 + 100)}`;
+      let employeeGeneratedId = '';
+
+      if (activeModuleId === 'employee-management' && editRowId === 'new') {
+        const prefix = getDepartmentPrefix(payload.department, appSettings.departments);
+        const currentEmployeeRows = moduleRowsState['employee-management'] || [];
+        const highestSequenceForDepartment = currentEmployeeRows
+          .filter((row) => row.department === payload.department)
+          .reduce((acc, row) => {
+            const match = String(row.id || '').match(/(\d{8})$/);
+            if (!match) {
+              return acc;
+            }
+            return Math.max(acc, Number(match[1]));
+          }, 0);
+        employeeGeneratedId = `${prefix}${String(highestSequenceForDepartment + 1).padStart(8, '0')}`;
       }
-      if (computedLoanValues[field.key] !== undefined) {
-        return {
-          ...acc,
-          [field.key]: computedLoanValues[field.key],
-        };
-      }
-      return {
-        ...acc,
-        [field.key]: formValues[field.key] || '',
-      };
-    }, {});
-    const employeeImagePreviewsPayload =
-      activeModuleId === 'employee-management'
-        ? employeeImageFields.reduce(
-            (acc, key) => ({
-              ...acc,
-              [`${key}Preview`]: formValues[`${key}Preview`] || '',
-            }),
-            {}
-          )
-        : {};
-    const employeeFilesPayload =
-      activeModuleId === 'employee-management'
-        ? employeeFileFields.reduce(
-            (acc, key) => ({
-              ...acc,
-              [`${key}Files`]: Array.isArray(formValues[`${key}Files`])
-                ? formValues[`${key}Files`]
-                : [],
-            }),
-            {}
-          )
-        : {};
-    const moduleIdPrefix = activeModuleId.slice(0, 3).toUpperCase();
-    const fallbackId = `${moduleIdPrefix}-${Math.floor(Math.random() * 900 + 100)}`;
-    let employeeGeneratedId = '';
 
-    if (activeModuleId === 'employee-management' && editRowId === 'new') {
-      const prefix = getDepartmentPrefix(payload.department, appSettings.departments);
-      const currentEmployeeRows = moduleRowsState['employee-management'] || [];
-      const highestSequenceForDepartment = currentEmployeeRows
-        .filter((row) => row.department === payload.department)
-        .reduce((acc, row) => {
-        const match = String(row.id || '').match(/(\d{8})$/);
-        if (!match) {
-          return acc;
-        }
-        return Math.max(acc, Number(match[1]));
-      }, 0);
-      employeeGeneratedId = `${prefix}${String(highestSequenceForDepartment + 1).padStart(8, '0')}`;
-    }
-
-    const rowWithId = {
-      ...payload,
-      ...employeeImagePreviewsPayload,
-      ...employeeFilesPayload,
-      id:
-        editRowId === 'new'
-          ? activeModuleId === 'employee-management'
-            ? employeeGeneratedId
-            : formValues.id || fallbackId
-          : formValues.id || editRowId,
-    };
-
-    if (activeModuleId !== 'attendance-penalty-adjustments') {
-      try {
-        const url =
+      const rowWithId = {
+        ...payload,
+        ...employeeImagePreviewsPayload,
+        ...employeeFilesPayload,
+        id:
           editRowId === 'new'
-            ? `http://localhost:8000/api/modules/${activeModuleId}`
-            : `http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`;
-        const method = editRowId === 'new' ? 'POST' : 'PUT';
-        const response = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(rowWithId),
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const saved = data.record || rowWithId;
+            ? activeModuleId === 'employee-management'
+              ? employeeGeneratedId
+              : formValues.id || fallbackId
+            : formValues.id || editRowId,
+      };
+
+      if (activeModuleId !== 'attendance-penalty-adjustments') {
+        try {
+          const url =
+            editRowId === 'new'
+              ? `http://localhost:8000/api/modules/${activeModuleId}`
+              : `http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`;
+          const method = editRowId === 'new' ? 'POST' : 'PUT';
+          const response = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify(rowWithId),
+          });
+          if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            const message = data?.error || 'Unable to save record.';
+            setFormError(message);
+            showToast(message, 'error');
+            return;
+          }
+          const data = await response.json().catch(() => null);
+          const saved = data?.record || rowWithId;
           setModuleRowsState((prev) => {
             const currentRows = prev[activeModuleId] || [];
             if (editRowId === 'new') {
               return {
                 ...prev,
-                [activeModuleId]: [saved, ...currentRows],
+                [activeModuleId]: [saved, ...currentRows.filter((row) => row.id !== saved.id)],
               };
             }
             return {
@@ -3731,22 +3788,13 @@ function App({ initialModuleId }) {
               [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? saved : row)),
             };
           });
-        } else {
-          setModuleRowsState((prev) => {
-            const currentRows = prev[activeModuleId] || [];
-            if (editRowId === 'new') {
-              return {
-                ...prev,
-                [activeModuleId]: [rowWithId, ...currentRows],
-              };
-            }
-            return {
-              ...prev,
-              [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? rowWithId : row)),
-            };
-          });
+        } catch (error) {
+          const message = 'Unable to save record.';
+          setFormError(message);
+          showToast(message, 'error');
+          return;
         }
-      } catch (error) {
+      } else {
         setModuleRowsState((prev) => {
           const currentRows = prev[activeModuleId] || [];
           if (editRowId === 'new') {
@@ -3761,23 +3809,11 @@ function App({ initialModuleId }) {
           };
         });
       }
-    } else {
-      setModuleRowsState((prev) => {
-        const currentRows = prev[activeModuleId] || [];
-        if (editRowId === 'new') {
-          return {
-            ...prev,
-            [activeModuleId]: [rowWithId, ...currentRows],
-          };
-        }
-        return {
-          ...prev,
-          [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? rowWithId : row)),
-        };
-      });
+      setSelectedRowId(rowWithId.id);
+      closeModal();
+    } finally {
+      setRecordSaving(false);
     }
-    setSelectedRowId(rowWithId.id);
-    closeModal();
   };
 
   const handleAddCurrency = () => {
@@ -6121,8 +6157,8 @@ function App({ initialModuleId }) {
                   </label>
                   {formError ? <p className="form-error">{formError}</p> : null}
                   <div className="form-actions">
-                    <button type="button" className="primary-btn" onClick={handleSave}>
-                      Save
+                    <button type="button" className="primary-btn" onClick={handleSave} disabled={recordSaving}>
+                      {recordSaving ? 'Saving...' : 'Save'}
                     </button>
                     <button type="button" className="neutral-btn" onClick={closeModal}>
                       Cancel
@@ -6287,8 +6323,8 @@ function App({ initialModuleId }) {
                   )}
                   {formError ? <p className="form-error">{formError}</p> : null}
                   <div className="form-actions">
-                    <button type="button" className="primary-btn" onClick={handleSave}>
-                      Save
+                    <button type="button" className="primary-btn" onClick={handleSave} disabled={recordSaving}>
+                      {recordSaving ? 'Saving...' : 'Save'}
                     </button>
                     <button type="button" className="neutral-btn" onClick={closeModal}>
                       Cancel
