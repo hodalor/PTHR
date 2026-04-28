@@ -595,6 +595,18 @@ app.post('/api/modules/:moduleId', async (req, res) => {
         }
       }
     }
+    if (moduleId === 'employee-management') {
+      const incomingId = String(req.body?.id || '').trim();
+      if (!incomingId) {
+        res.status(400).json({ error: 'Employee ID is required.' });
+        return;
+      }
+      const existingEmployee = await req.db.collection('employees').findOne({ id: incomingId });
+      if (existingEmployee) {
+        res.status(409).json({ error: `Employee ID ${incomingId} already exists.` });
+        return;
+      }
+    }
     const incoming = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, req.body) : req.body;
     const payload = {
       ...incoming,
