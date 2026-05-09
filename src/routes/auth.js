@@ -1,7 +1,8 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { randomUUID } = require('crypto');
+const crypto = require('crypto');
+const { ObjectId } = require('mongodb');
 const {
   allModules,
   packageDefaults,
@@ -12,149 +13,65 @@ const {
 } = require('../tenancy');
 
 const router = express.Router();
+
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
-const JWT_EXPIRES_IN = '12h';
-const AUTH_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const SUPERADMIN_USERNAME = String(process.env.SUPERADMIN_USERNAME || 'superadmin').trim();
+const SUPERADMIN_PASSWORD = String(process.env.SUPERADMIN_PASSWORD || 'admin1234').trim();
+const SUPERADMIN_FULL_NAME = String(process.env.SUPERADMIN_FULL_NAME || 'Platform Super Admin').trim();
 
-const usersCollection = (db) => db.collection('users');
-const rolesCollection = (db) => db.collection('roles');
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-function toIsoDateOrNull(value) {
+function getSessionExpiryIso(days = 7) {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function getSubscriptionDaysRemaining(value) {
   if (!value) {
     return null;
   }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-function getSubscriptionDaysRemaining(expiresAtRaw) {
-  const expiresAt = toIsoDateOrNull(expiresAtRaw);
-  if (!expiresAt) {
+  const expiryDate = new Date(`${String(value).slice(0, 10)}T23:59:59`);
+  if (Number.isNaN(expiryDate.getTime())) {
     return null;
   }
-  return Math.ceil((new Date(expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  return Math.ceil((expiryDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
-function isSubscriptionExpired(expiresAtRaw) {
-  const expiresAt = toIsoDateOrNull(expiresAtRaw);
-  return Boolean(expiresAt && new Date(expiresAt).getTime() < Date.now());
+function isTenantSubscriptionExpired(tenant) {
+  const daysRemaining = getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt);
+  return daysRemaining !== null && daysRemaining < 0;
 }
 
-async function resolveTenantPolicy(masterDb, tenantId) {
-  if (tenantId === 'master') {
-    return {
-      tenantId: 'master',
-      packageType: 'enterprise',
-      grantedModules: [...allModules],
-      dbName: masterDb.databaseName,
-      employeeLimit: 1000000,
-      concurrentLoginLimit: 1000000,
-      subscriptionExpiresAt: null,
-      subscriptionDaysRemaining: null,
-    };
-  }
-  const tenant = await masterDb.collection('tenants').findOne({ tenantId, status: 'active' });
-  if (!tenant) {
-    return null;
-  }
-  const packageModules = resolvePackageModules(tenant.packageType);
-  const grantedModules = resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules);
-  const limits = resolveTenantEffectiveLimits(tenant);
-  const subscriptionExpiresAt = toIsoDateOrNull(tenant.subscriptionExpiresAt);
+function sanitizeUser(user, tenantId, tenant) {
   return {
-    tenantId,
-    packageType: tenant.packageType,
-    grantedModules: grantedModules.length > 0 ? grantedModules : packageModules,
-    dbName: tenant.dbName,
-    name: tenant.name || tenantId,
-    employeeLimit: limits.employeeLimit,
-    concurrentLoginLimit: limits.concurrentLoginLimit,
-    subscriptionExpiresAt,
-    subscriptionDaysRemaining: getSubscriptionDaysRemaining(subscriptionExpiresAt),
+    id: String(user?._id || ''),
+    username: String(user?.username || ''),
+    fullName: String(user?.fullName || user?.username || ''),
+    role: String(user?.role || ''),
+    employeeId: String(user?.employeeId || ''),
+    tenantId: String(tenantId || 'master'),
+    packageType: tenant?.packageType || (tenantId === 'master' ? 'enterprise' : undefined),
+    allowedModules: Array.isArray(user?.allowedModules)
+      ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
+      : [],
   };
 }
 
-function resolveAllowedModules(user, tenantPolicy) {
-  const role = String(user?.role || '').toLowerCase();
-  if (!user) {
-    return [];
-  }
-  if (role === 'superadmin' && tenantPolicy?.tenantId === 'master') {
-    return ['*'];
-  }
-  const requested = Array.isArray(user.allowedModules)
-    ? user.allowedModules.map((x) => String(x || '').trim()).filter(Boolean)
-    : [];
-  const baseline =
-    role === 'employee' && requested.length === 0
-      ? defaultEmployeeModules
-      : requested.length > 0
-        ? requested
-        : tenantPolicy?.grantedModules || [];
-  const tenantSet = new Set(tenantPolicy?.grantedModules || []);
-  return tenantSet.size === 0 ? baseline : baseline.filter((moduleId) => tenantSet.has(moduleId));
+async function ensureTenantIndexes(db) {
+  await Promise.allSettled([
+    db.collection('users').createIndex({ username: 1 }, { unique: true }),
+    db.collection('users').createIndex({ employeeId: 1 }, { unique: true, sparse: true }),
+    db.collection('employees').createIndex({ id: 1 }, { unique: true }),
+    db.collection('authSessions').createIndex({ tokenId: 1 }, { unique: true }),
+    db.collection('authSessions').createIndex({ userId: 1, revokedAt: 1 }),
+  ]);
 }
 
-function buildAuthUserPayload(user, tenantPolicy) {
-  const role = String(user.role || 'employee').toLowerCase();
-  return {
-    id: user._id.toString(),
-    username: user.username,
-    fullName: user.fullName || user.username,
-    role,
-    employeeId: user.employeeId || '',
-    tenantId: tenantPolicy?.tenantId || user.tenantId || 'master',
-    packageType: tenantPolicy?.packageType || 'basic',
-    subscriptionExpiresAt: tenantPolicy?.subscriptionExpiresAt || null,
-    subscriptionDaysRemaining:
-      typeof tenantPolicy?.subscriptionDaysRemaining === 'number' ? tenantPolicy.subscriptionDaysRemaining : null,
-    employeeLimit: tenantPolicy?.employeeLimit || null,
-    concurrentLoginLimit: tenantPolicy?.concurrentLoginLimit || null,
-    allowedModules: resolveAllowedModules({ ...user, role }, tenantPolicy),
-  };
-}
-
-async function ensureSuperAdmin(db) {
-  const users = usersCollection(db);
-  const roles = rolesCollection(db);
-  const now = new Date().toISOString();
-  const existingRole = await roles.findOne({ name: 'superadmin' });
-  const roleId = existingRole
-    ? existingRole._id
-    : (
-        await roles.insertOne({
-          name: 'superadmin',
-          description: 'Master super admin',
-          permissions: ['*'],
-          createdAt: now,
-          updatedAt: now,
-        })
-      ).insertedId;
-  const existingUser = await users.findOne({ username: 'superadmin', tenantId: 'master' });
-  const payload = {
-    fullName: 'System Super Admin',
-    passwordHash: await bcrypt.hash('SuperAdmin@2026', 10),
-    role: 'superadmin',
-    roleId,
-    tenantId: 'master',
-    allowedModules: ['*'],
-    isActive: true,
-    updatedAt: now,
-  };
-  if (!existingUser) {
-    await users.insertOne({ username: 'superadmin', createdAt: now, ...payload });
-    return;
-  }
-  await users.updateOne({ _id: existingUser._id }, { $set: payload });
-}
-
-function extractToken(req) {
-  return (req.headers.authorization || '').split(' ')[1] || '';
-}
-
-async function getAuthUser(req) {
-  const token = extractToken(req);
+async function loadAuthUserFromToken(req) {
+  const authHeader = req.headers.authorization || '';
+  const [, token] = authHeader.split(' ');
   if (!token) {
     return null;
   }
@@ -164,15 +81,18 @@ async function getAuthUser(req) {
   } catch (error) {
     return null;
   }
-  const tenantId = normalizeTenantId(payload.tenantId) || 'master';
-  let tenantDb;
-  try {
-    tenantDb = await req.getTenantDb(tenantId);
-  } catch (error) {
+  if (!payload?.sub || !ObjectId.isValid(payload.sub)) {
+    return null;
+  }
+  const user = await req.db.collection('users').findOne({
+    _id: new ObjectId(payload.sub),
+    isActive: true,
+  });
+  if (!user) {
     return null;
   }
   if (payload.jti) {
-    const activeSession = await tenantDb.collection('authSessions').findOne({
+    const activeSession = await req.db.collection('authSessions').findOne({
       tokenId: payload.jti,
       revokedAt: null,
       expiresAt: { $gt: new Date().toISOString() },
@@ -181,77 +101,225 @@ async function getAuthUser(req) {
       return null;
     }
   }
-  const user = await usersCollection(tenantDb).findOne({ _id: new req.db.bson.ObjectId(payload.sub) });
-  if (!user || !user.isActive) {
-    return null;
-  }
-  const tenantPolicy = await resolveTenantPolicy(req.masterDb, tenantId);
-  return { ...user, tenantId, tenantPolicy, tokenPayload: payload };
+  return { user, payload, token };
 }
 
 async function requireSuperAdmin(req, res, next) {
   try {
-    const user = await getAuthUser(req);
-    if (!user) {
-      res.status(401).json({ error: 'Unauthorized' });
+    const auth = await loadAuthUserFromToken(req);
+    if (!auth || String(auth.user.role || '').toLowerCase() !== 'superadmin' || req.tenantId !== 'master') {
+      res.status(403).json({ error: 'Super admin access is required' });
       return;
     }
-    if (String(user.role || '').toLowerCase() !== 'superadmin' || user.tenantId !== 'master') {
-      res.status(403).json({ error: 'Forbidden' });
-      return;
-    }
-    req.authUser = user;
+    req.authUser = auth.user;
+    req.authTokenPayload = auth.payload;
     next();
   } catch (error) {
-    res.status(500).json({ error: 'Auth check failed' });
+    res.status(500).json({ error: 'Authorization failed' });
   }
 }
 
-router.post('/bootstrap-superadmin', async (req, res) => {
+async function createTenantAdminUser(db, tenantId, payload) {
+  const now = new Date().toISOString();
+  const adminUsername = String(payload.adminUsername || '').trim();
+  const adminPassword = String(payload.adminPassword || '').trim();
+  const adminFullName = String(payload.adminFullName || adminUsername || `${tenantId} Admin`).trim();
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
+  await db.collection('users').insertOne({
+    username: adminUsername,
+    fullName: adminFullName,
+    employeeId: '',
+    passwordHash,
+    role: 'admin',
+    allowedModules: resolveTenantGrantedModules(payload.packageType, payload.grantedModules),
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function ensureSuperAdmin(masterDb) {
+  await ensureTenantIndexes(masterDb);
+  const users = masterDb.collection('users');
+  const now = new Date().toISOString();
+  const existing = await users.findOne({ username: SUPERADMIN_USERNAME });
+  const passwordHash = await bcrypt.hash(SUPERADMIN_PASSWORD, 10);
+  if (existing) {
+    await users.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          fullName: SUPERADMIN_FULL_NAME,
+          passwordHash,
+          role: 'superadmin',
+          allowedModules: ['*'],
+          isActive: true,
+          updatedAt: now,
+        },
+      }
+    );
+    return;
+  }
+  await users.insertOne({
+    username: SUPERADMIN_USERNAME,
+    fullName: SUPERADMIN_FULL_NAME,
+    employeeId: '',
+    passwordHash,
+    role: 'superadmin',
+    allowedModules: ['*'],
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+router.post('/login', async (req, res) => {
   try {
-    await ensureSuperAdmin(req.masterDb);
-    res.json({ ok: true, tenantId: 'master', username: 'superadmin', password: 'SuperAdmin@2026' });
+    const tenantId = normalizeTenantId(req.body?.tenantId);
+    const identifier = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    if (!tenantId || !identifier || !password) {
+      res.status(400).json({ error: 'Tenant ID, username, and password are required' });
+      return;
+    }
+    await ensureTenantIndexes(req.db);
+    if (req.tenant && String(req.tenant.status || 'active') !== 'active') {
+      res.status(403).json({ error: 'Tenant is inactive' });
+      return;
+    }
+    if (req.tenantId !== 'master' && isTenantSubscriptionExpired(req.tenant)) {
+      res.status(403).json({ error: 'Tenant subscription has expired' });
+      return;
+    }
+    const users = req.db.collection('users');
+    const usernameRegex = new RegExp(`^${escapeRegex(identifier)}$`, 'i');
+    const user = await users.findOne({
+      isActive: true,
+      $or: [{ username: usernameRegex }, { employeeId: identifier }],
+    });
+    if (!user?.passwordHash) {
+      res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
+      return;
+    }
+    const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+    if (!passwordMatches) {
+      res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
+      return;
+    }
+    const role = String(user.role || '').toLowerCase();
+    if (role !== 'superadmin' && req.tenantId !== 'master') {
+      const limits = resolveTenantEffectiveLimits(req.tenant || {});
+      const concurrentLimit = Number(limits.concurrentLoginLimit) || 0;
+      if (concurrentLimit > 0) {
+        const activeSessions = await req.db.collection('authSessions').countDocuments({
+          userId: String(user._id),
+          revokedAt: null,
+          expiresAt: { $gt: new Date().toISOString() },
+        });
+        if (activeSessions >= concurrentLimit) {
+          res.status(403).json({ error: `Concurrent login limit reached (${concurrentLimit}) for this tenant.` });
+          return;
+        }
+      }
+    }
+    const tokenId = crypto.randomUUID();
+    const token = jwt.sign(
+      {
+        sub: String(user._id),
+        role: user.role,
+        tenantId: req.tenantId,
+        employeeId: user.employeeId || '',
+        jti: tokenId,
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+    const now = new Date().toISOString();
+    await req.db.collection('authSessions').insertOne({
+      tokenId,
+      userId: String(user._id),
+      tenantId: req.tenantId,
+      createdAt: now,
+      updatedAt: now,
+      revokedAt: null,
+      expiresAt: getSessionExpiryIso(7),
+    });
+    res.json({
+      token,
+      user: sanitizeUser(user, req.tenantId, req.tenant),
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to bootstrap super admin' });
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+router.get('/me', async (req, res) => {
+  try {
+    const auth = await loadAuthUserFromToken(req);
+    if (!auth) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    res.json({ user: sanitizeUser(auth.user, req.tenantId, req.tenant) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load current user' });
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  try {
+    const auth = await loadAuthUserFromToken(req);
+    if (!auth) {
+      res.json({ ok: true });
+      return;
+    }
+    const now = new Date().toISOString();
+    await req.db.collection('authSessions').updateMany(
+      { tokenId: auth.payload.jti, revokedAt: null },
+      { $set: { revokedAt: now, updatedAt: now } }
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Logout failed' });
   }
 });
 
 router.get('/tenant-packages', requireSuperAdmin, async (req, res) => {
   res.json({
+    modules: [...allModules],
     packages: Object.entries(packageDefaults).map(([id, value]) => ({
       id,
       modules: value.modules,
       employeeLimit: value.employeeLimit,
       concurrentLoginLimit: value.concurrentLoginLimit,
     })),
-    modules: allModules,
   });
 });
 
 router.get('/tenants', requireSuperAdmin, async (req, res) => {
   try {
-    const tenants = await req.masterDb.collection('tenants').find({}).sort({ createdAt: -1 }).toArray();
-    res.json({
-      tenants: tenants.map((tenant) => {
-        const limits = resolveTenantEffectiveLimits(tenant);
-        return {
-          id: tenant._id.toString(),
-          tenantId: tenant.tenantId,
-          name: tenant.name,
-          dbName: tenant.dbName,
-          packageType: tenant.packageType,
-          grantedModules: Array.isArray(tenant.grantedModules) ? tenant.grantedModules : [],
-          status: tenant.status || 'active',
-          employeeLimit: limits.employeeLimit,
-          concurrentLoginLimit: limits.concurrentLoginLimit,
-          employeeLimitOverride: tenant.employeeLimitOverride || null,
-          concurrentLoginLimitOverride: tenant.concurrentLoginLimitOverride || null,
-          subscriptionExpiresAt: tenant.subscriptionExpiresAt || null,
-          subscriptionDaysRemaining: getSubscriptionDaysRemaining(tenant.subscriptionExpiresAt),
-          createdAt: tenant.createdAt,
-        };
-      }),
+    const rows = await req.masterDb.collection('tenants').find({}).sort({ createdAt: -1 }).toArray();
+    const tenants = rows.map((tenant) => {
+      const limits = resolveTenantEffectiveLimits(tenant);
+      return {
+        id: String(tenant._id || tenant.tenantId),
+        tenantId: tenant.tenantId,
+        name: tenant.name || tenant.tenantId,
+        packageType: tenant.packageType || 'basic',
+        grantedModules: resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules),
+        employeeLimitOverride: tenant.employeeLimitOverride || null,
+        concurrentLoginLimitOverride: tenant.concurrentLoginLimitOverride || null,
+        employeeLimit: limits.employeeLimit,
+        concurrentLoginLimit: limits.concurrentLoginLimit,
+        dbName: tenant.dbName,
+        subscriptionExpiresAt: tenant.subscriptionExpiresAt || null,
+        subscriptionDaysRemaining: getSubscriptionDaysRemaining(tenant.subscriptionExpiresAt),
+        status: tenant.status || 'active',
+        createdAt: tenant.createdAt,
+        updatedAt: tenant.updatedAt,
+      };
     });
+    res.json({ tenants });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load tenants' });
   }
@@ -259,385 +327,115 @@ router.get('/tenants', requireSuperAdmin, async (req, res) => {
 
 router.post('/tenants', requireSuperAdmin, async (req, res) => {
   try {
-    const {
+    const tenantId = normalizeTenantId(req.body?.tenantId);
+    const name = String(req.body?.name || '').trim();
+    const packageType = String(req.body?.packageType || 'basic').trim().toLowerCase();
+    const adminUsername = String(req.body?.adminUsername || '').trim();
+    const adminPassword = String(req.body?.adminPassword || '').trim();
+    if (!tenantId || !name || !adminUsername || !adminPassword) {
+      res.status(400).json({ error: 'Tenant ID, name, admin username, and admin password are required' });
+      return;
+    }
+    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
+    if (existingTenant) {
+      res.status(409).json({ error: `Tenant ${tenantId} already exists.` });
+      return;
+    }
+    const dbName = `tenant-${tenantId}`;
+    const now = new Date().toISOString();
+    const grantedModules = resolveTenantGrantedModules(packageType, req.body?.grantedModules);
+    const tenantPayload = {
       tenantId,
       name,
       packageType,
-      grantedModules,
-      employeeLimitOverride,
-      concurrentLoginLimitOverride,
-      subscriptionExpiresAt,
-      adminUsername,
-      adminPassword,
-      adminFullName,
-    } = req.body || {};
-    const normalizedTenantId = normalizeTenantId(tenantId);
-    if (!normalizedTenantId || normalizedTenantId === 'master') {
-      res.status(400).json({ error: 'Valid tenantId is required (cannot be master)' });
-      return;
-    }
-    if (!adminUsername || !adminPassword) {
-      res.status(400).json({ error: 'Default tenant admin username and password are required' });
-      return;
-    }
-    if (await req.masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId })) {
-      res.status(409).json({ error: 'Tenant already exists' });
-      return;
-    }
-    const normalizedPackage = String(packageType || 'basic').trim().toLowerCase();
-    if (!packageDefaults[normalizedPackage]) {
-      res.status(400).json({ error: 'Invalid package type' });
-      return;
-    }
-
-    const now = new Date().toISOString();
-    const resolvedGrantedModules = resolveTenantGrantedModules(normalizedPackage, grantedModules);
-    const dbName = `hr_tenant_${normalizedTenantId.replace(/-/g, '_')}`;
-    await req.masterDb.collection('tenants').insertOne({
-      tenantId: normalizedTenantId,
-      name: String(name || normalizedTenantId).trim(),
       dbName,
-      packageType: normalizedPackage,
-      grantedModules: resolvedGrantedModules,
+      grantedModules,
       employeeLimitOverride:
-        Number.isFinite(Number(employeeLimitOverride)) && Number(employeeLimitOverride) > 0
-          ? Math.floor(Number(employeeLimitOverride))
+        Number.isFinite(Number(req.body?.employeeLimitOverride)) && Number(req.body?.employeeLimitOverride) > 0
+          ? Math.floor(Number(req.body.employeeLimitOverride))
           : null,
       concurrentLoginLimitOverride:
-        Number.isFinite(Number(concurrentLoginLimitOverride)) && Number(concurrentLoginLimitOverride) > 0
-          ? Math.floor(Number(concurrentLoginLimitOverride))
+        Number.isFinite(Number(req.body?.concurrentLoginLimitOverride)) && Number(req.body?.concurrentLoginLimitOverride) > 0
+          ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
           : null,
-      subscriptionExpiresAt: toIsoDateOrNull(subscriptionExpiresAt),
-      status: 'active',
+      subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
+      status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
       createdAt: now,
       updatedAt: now,
-      createdBy: req.authUser.username,
+    };
+    await req.masterDb.collection('tenants').insertOne(tenantPayload);
+    const tenantDb = req.getDbByName(dbName);
+    await ensureTenantIndexes(tenantDb);
+    await createTenantAdminUser(tenantDb, tenantId, {
+      ...req.body,
+      packageType,
+      grantedModules,
     });
-
-    const tenantDb = await req.getTenantDb(normalizedTenantId);
-    const collections = await tenantDb.listCollections().toArray();
-    for (const item of collections) {
-      await tenantDb.collection(item.name).drop();
-    }
-
-    const roleId = (
-      await rolesCollection(tenantDb).insertOne({
-        name: 'tenant-admin',
-        description: 'Default admin for tenant',
-        permissions: ['*'],
-        createdAt: now,
-        updatedAt: now,
-      })
-    ).insertedId;
-    await usersCollection(tenantDb).insertOne({
-      username: String(adminUsername).trim(),
-      fullName: String(adminFullName || adminUsername).trim(),
-      passwordHash: await bcrypt.hash(String(adminPassword), 10),
-      role: 'tenant-admin',
-      roleId,
-      tenantId: normalizedTenantId,
-      allowedModules: resolvedGrantedModules,
-      isActive: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    res.status(201).json({ ok: true });
+    res.status(201).json({ ok: true, tenant: tenantPayload });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Failed to create tenant' });
+    res.status(500).json({ error: 'Failed to create tenant' });
   }
 });
 
 router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
   try {
-    const targetTenantId = normalizeTenantId(req.params.tenantId);
-    if (!targetTenantId || targetTenantId === 'master') {
-      res.status(400).json({ error: 'Cannot edit master tenant' });
-      return;
-    }
-    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId: targetTenantId });
+    const tenantId = normalizeTenantId(req.params.tenantId);
+    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
     if (!existingTenant) {
       res.status(404).json({ error: 'Tenant not found' });
       return;
     }
-
-    const {
-      name,
+    const packageType = String(req.body?.packageType || existingTenant.packageType || 'basic').trim().toLowerCase();
+    const update = {
+      name: String(req.body?.name || existingTenant.name || tenantId).trim(),
       packageType,
-      grantedModules,
-      employeeLimitOverride,
-      concurrentLoginLimitOverride,
-      subscriptionExpiresAt,
-      status,
-    } = req.body || {};
-    const normalizedPackage = String(packageType || existingTenant.packageType || 'basic').trim().toLowerCase();
-    if (!packageDefaults[normalizedPackage]) {
-      res.status(400).json({ error: 'Invalid package type' });
-      return;
-    }
-    const resolvedGrantedModules = resolveTenantGrantedModules(normalizedPackage, grantedModules);
-    await req.masterDb.collection('tenants').updateOne(
-      { tenantId: targetTenantId },
-      {
-        $set: {
-          name: String(name || existingTenant.name || targetTenantId).trim(),
-          packageType: normalizedPackage,
-          grantedModules: resolvedGrantedModules,
-          employeeLimitOverride:
-            Number.isFinite(Number(employeeLimitOverride)) && Number(employeeLimitOverride) > 0
-              ? Math.floor(Number(employeeLimitOverride))
-              : null,
-          concurrentLoginLimitOverride:
-            Number.isFinite(Number(concurrentLoginLimitOverride)) && Number(concurrentLoginLimitOverride) > 0
-              ? Math.floor(Number(concurrentLoginLimitOverride))
-              : null,
-          subscriptionExpiresAt: toIsoDateOrNull(subscriptionExpiresAt),
-          status: status === 'inactive' ? 'inactive' : 'active',
-          updatedAt: new Date().toISOString(),
-          updatedBy: req.authUser.username,
-        },
-      }
+      grantedModules: resolveTenantGrantedModules(packageType, req.body?.grantedModules),
+      employeeLimitOverride:
+        Number.isFinite(Number(req.body?.employeeLimitOverride)) && Number(req.body?.employeeLimitOverride) > 0
+          ? Math.floor(Number(req.body.employeeLimitOverride))
+          : null,
+      concurrentLoginLimitOverride:
+        Number.isFinite(Number(req.body?.concurrentLoginLimitOverride)) && Number(req.body?.concurrentLoginLimitOverride) > 0
+          ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
+          : null,
+      subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
+      status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
+      updatedAt: new Date().toISOString(),
+    };
+    await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
+    const tenantDb = req.getDbByName(existingTenant.dbName);
+    await ensureTenantIndexes(tenantDb);
+    await tenantDb.collection('users').updateMany(
+      { role: 'admin' },
+      { $set: { allowedModules: update.grantedModules, updatedAt: update.updatedAt } }
     );
-    await (await req.getTenantDb(targetTenantId)).collection('users').updateMany(
-      {},
-      {
-        $set: {
-          allowedModules: resolvedGrantedModules,
-          updatedAt: new Date().toISOString(),
-        },
-      }
-    );
-    res.json({ ok: true });
+    res.json({ ok: true, tenant: { ...existingTenant, ...update } });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Failed to update tenant' });
+    res.status(500).json({ error: 'Failed to update tenant' });
   }
 });
 
 router.delete('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
   try {
-    const targetTenantId = normalizeTenantId(req.params.tenantId);
-    if (!targetTenantId || targetTenantId === 'master') {
-      res.status(400).json({ error: 'Cannot delete master tenant' });
+    const tenantId = normalizeTenantId(req.params.tenantId);
+    if (!tenantId || tenantId === 'master') {
+      res.status(400).json({ error: 'Master tenant cannot be deleted' });
       return;
     }
-    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId: targetTenantId });
+    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
     if (!existingTenant) {
       res.status(404).json({ error: 'Tenant not found' });
       return;
     }
-    await req.masterDb.collection('tenants').deleteOne({ tenantId: targetTenantId });
-    if (existingTenant.dbName && req.getDbByName) {
-      await req.getDbByName(existingTenant.dbName).dropDatabase();
-    }
+    await req.masterDb.collection('tenants').deleteOne({ tenantId });
+    await req.getDbByName(existingTenant.dbName).dropDatabase();
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Failed to delete tenant' });
+    res.status(500).json({ error: 'Failed to delete tenant' });
   }
 });
 
-router.post('/login', async (req, res) => {
-  try {
-    const { tenantId, username, password } = req.body || {};
-    const normalizedTenantId = normalizeTenantId(tenantId);
-    const identifier = String(username || '').trim();
-    if (!normalizedTenantId || !identifier || !password) {
-      res.status(400).json({ error: 'tenantId, username/employee ID and password are required' });
-      return;
-    }
-    const tenantPolicy = await resolveTenantPolicy(req.masterDb, normalizedTenantId);
-    if (!tenantPolicy) {
-      res.status(404).json({ error: 'Tenant not found or inactive' });
-      return;
-    }
-    if (isSubscriptionExpired(tenantPolicy.subscriptionExpiresAt)) {
-      res.status(403).json({ error: 'Tenant subscription has expired. Contact support.' });
-      return;
-    }
-
-    const tenantDb = await req.getTenantDb(normalizedTenantId);
-    const users = usersCollection(tenantDb);
-    let user = await users.findOne({ $or: [{ username: identifier }, { employeeId: identifier }] });
-    if (!user) {
-      const employee = await tenantDb.collection('employees').findOne({ id: identifier });
-      if (employee && employee.password) {
-        const now = new Date().toISOString();
-        const doc = {
-          username: identifier,
-          fullName: employee.fullName || identifier,
-          passwordHash: await bcrypt.hash(String(employee.password), 10),
-          role: 'employee',
-          employeeId: identifier,
-          tenantId: normalizedTenantId,
-          allowedModules: [],
-          isActive: true,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const result = await users.insertOne(doc);
-        user = { _id: result.insertedId, ...doc };
-      }
-    }
-    if (!user || !user.isActive) {
-      res.status(401).json({ error: 'Invalid credentials' });
-      return;
-    }
-    if (!(await bcrypt.compare(password, user.passwordHash || ''))) {
-      res.status(401).json({ error: 'Invalid credentials' });
-      return;
-    }
-
-    const sessions = tenantDb.collection('authSessions');
-    const nowIso = new Date().toISOString();
-    await sessions.deleteMany({ $or: [{ revokedAt: { $ne: null } }, { expiresAt: { $lte: nowIso } }] });
-    const activeSessions = await sessions.countDocuments({ revokedAt: null, expiresAt: { $gt: nowIso } });
-    if (activeSessions >= tenantPolicy.concurrentLoginLimit) {
-      res.status(429).json({ error: 'Concurrent login limit reached for this tenant plan.' });
-      return;
-    }
-
-    const tokenId = randomUUID();
-    const token = jwt.sign(
-      {
-        sub: user._id.toString(),
-        username: user.username,
-        role: user.role || 'employee',
-        tenantId: normalizedTenantId,
-        jti: tokenId,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-    await sessions.insertOne({
-      tokenId,
-      userId: user._id.toString(),
-      username: user.username,
-      tenantId: normalizedTenantId,
-      issuedAt: nowIso,
-      expiresAt: new Date(Date.now() + AUTH_SESSION_TTL_MS).toISOString(),
-      revokedAt: null,
-    });
-    res.json({ token, user: buildAuthUserPayload({ ...user, tenantId: normalizedTenantId }, tenantPolicy) });
-  } catch (error) {
-    res.status(500).json({ error: 'Login failed' });
-  }
-});
-
-router.post('/logout', async (req, res) => {
-  try {
-    const token = extractToken(req);
-    if (!token) {
-      res.json({ ok: true });
-      return;
-    }
-    let payload;
-    try {
-      payload = jwt.verify(token, JWT_SECRET);
-    } catch (error) {
-      res.json({ ok: true });
-      return;
-    }
-    const tenantDb = await req.getTenantDb(normalizeTenantId(payload.tenantId) || 'master');
-    if (payload.jti) {
-      await tenantDb.collection('authSessions').updateOne(
-        { tokenId: payload.jti, revokedAt: null },
-        { $set: { revokedAt: new Date().toISOString() } }
-      );
-    }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Logout failed' });
-  }
-});
-
-router.get('/me', async (req, res) => {
-  try {
-    const user = await getAuthUser(req);
-    if (!user) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-    if (isSubscriptionExpired(user.tenantPolicy?.subscriptionExpiresAt)) {
-      res.status(403).json({ error: 'Tenant subscription has expired. Contact support.' });
-      return;
-    }
-    res.json({ user: buildAuthUserPayload(user, user.tenantPolicy) });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load current user' });
-  }
-});
-
-router.get('/users', requireSuperAdmin, async (req, res) => {
-  try {
-    const rows = await usersCollection(req.db).find({}).project({ passwordHash: 0 }).sort({ createdAt: -1 }).toArray();
-    res.json({
-      users: rows.map((user) => ({
-        id: user._id.toString(),
-        username: user.username,
-        fullName: user.fullName || user.username,
-        role: user.role || 'employee',
-        employeeId: user.employeeId || '',
-        tenantId: user.tenantId || req.tenantId || 'master',
-        allowedModules: Array.isArray(user.allowedModules) ? user.allowedModules : [],
-        isActive: user.isActive !== false,
-        createdAt: user.createdAt,
-      })),
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load users' });
-  }
-});
-
-router.post('/users', requireSuperAdmin, async (req, res) => {
-  try {
-    const { username, fullName, password, role, employeeId, allowedModules, isActive } = req.body || {};
-    const trimmedUsername = String(username || '').trim();
-    if (!trimmedUsername || !password) {
-      res.status(400).json({ error: 'Username and password are required' });
-      return;
-    }
-    const users = usersCollection(req.db);
-    if (await users.findOne({ username: trimmedUsername })) {
-      res.status(409).json({ error: 'Username already exists' });
-      return;
-    }
-    const normalizedAllowedModules = Array.isArray(allowedModules)
-      ? allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
-      : typeof allowedModules === 'string'
-        ? allowedModules
-            .split(',')
-            .map((value) => value.trim())
-            .filter(Boolean)
-        : [];
-    const now = new Date().toISOString();
-    const doc = {
-      username: trimmedUsername,
-      fullName: fullName && String(fullName).trim() ? String(fullName).trim() : trimmedUsername,
-      passwordHash: await bcrypt.hash(String(password), 10),
-      role: role || 'employee',
-      tenantId: req.tenantId,
-      employeeId: employeeId && String(employeeId).trim() ? String(employeeId).trim() : '',
-      allowedModules: normalizedAllowedModules,
-      isActive: isActive !== false,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const result = await users.insertOne(doc);
-    res.status(201).json({
-      user: {
-        id: result.insertedId.toString(),
-        username: doc.username,
-        fullName: doc.fullName,
-        role: doc.role,
-        tenantId: doc.tenantId,
-        employeeId: doc.employeeId || '',
-        allowedModules: doc.allowedModules,
-        isActive: doc.isActive,
-        createdAt: doc.createdAt,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create user' });
-  }
-});
-
-module.exports = { router, ensureSuperAdmin };
+module.exports = {
+  router,
+  ensureSuperAdmin,
+};
