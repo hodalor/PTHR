@@ -644,22 +644,29 @@ function App({ initialModuleId }) {
 
   const normalizedCurrentUserRole = String(currentUser?.role || '').toLowerCase();
   const isSuperAdmin = normalizedCurrentUserRole === 'superadmin';
+  const isMasterSuperAdmin = isSuperAdmin && String(currentUser?.tenantId || '').toLowerCase() === 'master';
 
   const allowedModulesByRole = useMemo(() => {
     if (!currentUser) {
       return new Set();
     }
-    if (isSuperAdmin) {
+    if (isMasterSuperAdmin) {
       return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
     }
     if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
-      return new Set(currentUser.allowedModules);
+      const filteredModules = currentUser.allowedModules.filter((moduleId) => {
+        if (moduleId === 'tenant-management') {
+          return false;
+        }
+        return true;
+      });
+      return new Set(filteredModules);
     }
     if (normalizedCurrentUserRole === 'employee') {
       return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
     }
     return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
-  }, [currentUser, isSuperAdmin, normalizedCurrentUserRole]);
+  }, [currentUser, isMasterSuperAdmin, normalizedCurrentUserRole]);
 
   const mobileModuleOptions = useMemo(
     () =>
@@ -778,7 +785,48 @@ function App({ initialModuleId }) {
   }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      return;
+    }
+    let cancelled = false;
+    const validateSession = async () => {
+      try {
+        const response = await fetch(toApiUrl('http://localhost:8000/api/auth/me'), {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        });
+        if (!response.ok) {
+          if ((response.status === 401 || response.status === 403) && !cancelled) {
+            setCurrentUser(null);
+            setAuthToken('');
+            clearAuth();
+          }
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled && data?.user) {
+          setCurrentUser(data.user);
+          storeAuth({
+            token: authToken,
+            user: data.user,
+            tenantId: data.user.tenantId || '',
+            lastModuleId: activeModuleId,
+          });
+        }
+      } catch (error) {
+      }
+    };
+    validateSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
+
+  useEffect(() => {
     if (
+      !currentUser ||
+      !authToken ||
       !activeModuleId ||
       isSettingsPage ||
       activeModuleId === 'monitoring-tracking' ||
@@ -812,7 +860,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, authHeaders, isSettingsPage]);
+  }, [activeModuleId, authHeaders, authToken, currentUser, isSettingsPage]);
   const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
   useEffect(() => {
     if (!currentUser) {
@@ -3452,7 +3500,7 @@ function App({ initialModuleId }) {
     let effectiveEmployee = selectedAttendanceEmployee || getCurrentEmployeeRow();
     if (!effectiveEmployee || !effectiveEmployee.id) {
       showToast('Select an employee before clock in.', 'error');
-      return;
+      return false;
     }
     const checkInTime = getCurrentClockValue();
     const nowDate = getTodayIsoDate();
@@ -3510,7 +3558,7 @@ function App({ initialModuleId }) {
     );
     if (openClockInCount > 0) {
       showToast('Clock out the last active session before clocking in again.', 'error');
-      return;
+      return false;
     }
     const baseRow = {
       id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
@@ -3563,12 +3611,13 @@ function App({ initialModuleId }) {
     } catch (error) {
     }
     showToast(`Thank you ${effectiveEmployee.fullName}, clock in captured successfully.`, 'success');
+    return true;
   };
 
   const handleClockOut = async () => {
     if (!selectedAttendanceEmployee) {
       showToast('Select an employee before clock out.', 'error');
-      return;
+      return false;
     }
     const checkOutTime = getCurrentClockValue();
     const nowDate = getTodayIsoDate();
@@ -3578,7 +3627,7 @@ function App({ initialModuleId }) {
     );
     if (!existingRow) {
       showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
-      return;
+      return false;
     }
     const stateRows = moduleRowsState['attendance-time'] || [];
     const existingRowIndex = stateRows.findIndex(
@@ -3586,7 +3635,7 @@ function App({ initialModuleId }) {
     );
     if (existingRowIndex < 0) {
       showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
-      return;
+      return false;
     }
     const matchedRow = stateRows[existingRowIndex];
     const existingClockings = normalizeAttendanceClockings(matchedRow);
@@ -3596,12 +3645,12 @@ function App({ initialModuleId }) {
     );
     if (openClockInCount <= 0) {
       showToast('No open clock-in session found for clock-out.', 'error');
-      return;
+      return false;
     }
     const lastClockIn = [...existingClockings].reverse().find((clocking) => clocking.mode === 'clock-in') || null;
     if (!lastClockIn || getMinutesBetweenClocks(lastClockIn.time, checkOutTime) <= 0) {
       showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
-      return;
+      return false;
     }
     const nextClocking = {
       id: `CLK-${Date.now().toString().slice(-7)}`,
@@ -3657,6 +3706,7 @@ function App({ initialModuleId }) {
     } catch (error) {
     }
     showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock out captured successfully.`, 'success');
+    return true;
   };
 
   const handleEnrollFingerprint = () => {
@@ -7221,7 +7271,7 @@ function App({ initialModuleId }) {
                 />
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}
-              {activeModuleId === 'user-management' ? <UserManagementPage authToken={authToken} /> : null}
+              {activeModuleId === 'user-management' ? <UserManagementPage authToken={authToken} currentUser={currentUser} /> : null}
               {activeModuleId === 'tenant-management' ? <TenantManagementPage authToken={authToken} /> : null}
               {activeModuleId === 'leave-management' ? (
                 <LeaveManagementPage

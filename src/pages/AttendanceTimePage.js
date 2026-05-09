@@ -203,6 +203,30 @@ export default function AttendanceTimePage({
     };
   }, [attendanceViewTab]);
 
+  const resetClockModalState = useCallback(() => {
+    setAttendanceSearchText('');
+    setAttendanceClockDraft((prev) => ({
+      ...prev,
+      employeeId: '',
+      shift: shiftOptions[0] || prev.shift || 'Default',
+    }));
+    setIsClockModalOpen(false);
+  }, [setAttendanceClockDraft, setAttendanceSearchText, shiftOptions]);
+
+  const handleClockInSubmit = useCallback(async () => {
+    const success = await handleClockIn();
+    if (success) {
+      resetClockModalState();
+    }
+  }, [handleClockIn, resetClockModalState]);
+
+  const handleClockOutSubmit = useCallback(async () => {
+    const success = await handleClockOut();
+    if (success) {
+      resetClockModalState();
+    }
+  }, [handleClockOut, resetClockModalState]);
+
   return (
     <div className="attendance-ops-card">
       <div className="attendance-ops-head">
@@ -1028,7 +1052,7 @@ export default function AttendanceTimePage({
                                 employeeId: employee.id,
                                 shift: String(employee.assignedShift || prev.shift || shiftOptions[0] || 'Default'),
                               }));
-                              setAttendanceSearchText('');
+                              setAttendanceSearchText(`${employee.fullName} (${employee.id})`);
                             }}
                           >
                             {employee.fullName} ({employee.id})
@@ -1041,6 +1065,20 @@ export default function AttendanceTimePage({
                   ) : null}
                 </label>
               )}
+              {currentUser && currentUser.role !== 'employee' ? (
+                <label>
+                  <span>Selected Employee</span>
+                  <input
+                    readOnly
+                    value={
+                      selectedAttendanceEmployee
+                        ? `${selectedAttendanceEmployee.fullName} (${selectedAttendanceEmployee.id})`
+                        : ''
+                    }
+                    placeholder="Select an employee from search results"
+                  />
+                </label>
+              ) : null}
               <label>
                 <span>Shift</span>
                 <select
@@ -1065,10 +1103,10 @@ export default function AttendanceTimePage({
                 <input value={getCurrentClockValue()} readOnly />
               </label>
               <div className="attendance-ops-actions">
-                <button type="button" className="primary-btn" onClick={handleClockIn}>
+                <button type="button" className="primary-btn" onClick={handleClockInSubmit}>
                   Clock In
                 </button>
-                <button type="button" className="neutral-btn" onClick={handleClockOut}>
+                <button type="button" className="neutral-btn" onClick={handleClockOutSubmit}>
                   Clock Out
                 </button>
               </div>

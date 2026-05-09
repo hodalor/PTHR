@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toApiUrl } from '../config/api';
@@ -661,6 +661,8 @@ export default function AdminTrackingPage() {
                 <th>Employee</th>
                 <th>Status</th>
                 <th>Distance (m)</th>
+                <th>Coordinates</th>
+                <th>Real Location</th>
                 <th>Last Seen</th>
                 <th>WiFi</th>
                 <th>Flags</th>
@@ -670,7 +672,7 @@ export default function AdminTrackingPage() {
             <tbody>
               {trackingLoading ? (
                 <tr>
-                  <td colSpan={7}>Loading tracking data...</td>
+                  <td colSpan={9}>Loading tracking data...</td>
                 </tr>
               ) : trackingEmployees.length > 0 ? (
                 trackingEmployees.map((employee) => (
@@ -687,6 +689,12 @@ export default function AdminTrackingPage() {
                     </td>
                     <td>{employee.status || 'OFFLINE'}</td>
                     <td>{typeof employee.distanceMeters === 'number' ? Math.round(employee.distanceMeters) : '—'}</td>
+                    <td>
+                      {typeof employee.lat === 'number' && typeof employee.lng === 'number'
+                        ? `${employee.lat.toFixed(6)}, ${employee.lng.toFixed(6)}`
+                        : '—'}
+                    </td>
+                    <td>{employee.locationAddress || employee.locationLabel || '—'}</td>
                     <td>{employee.lastSeen || '—'}</td>
                     <td>{employee.wifiSsid || '—'}</td>
                     <td>
@@ -726,7 +734,7 @@ export default function AdminTrackingPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7}>No tracking data available.</td>
+                  <td colSpan={9}>No tracking data available.</td>
                 </tr>
               )}
             </tbody>

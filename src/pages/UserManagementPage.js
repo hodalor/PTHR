@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { sidebarSections } from '../config/moduleUiData';
 import { toApiUrl } from '../config/api';
 
-function UserManagementPage({ authToken }) {
+function UserManagementPage({ authToken, currentUser }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -20,6 +20,31 @@ function UserManagementPage({ authToken }) {
     () => sidebarSections.flatMap((section) => section.items.map((item) => item.id)),
     []
   );
+  const normalizedRole = String(currentUser?.role || '').toLowerCase();
+  const isMasterSuperAdmin =
+    normalizedRole === 'superadmin' && String(currentUser?.tenantId || '').toLowerCase() === 'master';
+  const assignableRoles = useMemo(() => {
+    if (isMasterSuperAdmin) {
+      return [
+        { value: 'employee', label: 'Employee' },
+        { value: 'manager', label: 'Manager' },
+        { value: 'admin', label: 'Admin' },
+        { value: 'superadmin', label: 'Super Admin' },
+      ];
+    }
+    if (normalizedRole === 'admin' || normalizedRole === 'tenant-admin') {
+      return [
+        { value: 'employee', label: 'Employee' },
+        { value: 'manager', label: 'Manager' },
+      ];
+    }
+    if (normalizedRole === 'manager') {
+      return [{ value: 'employee', label: 'Employee' }];
+    }
+    return [
+      { value: 'employee', label: 'Employee' },
+    ];
+  }, [isMasterSuperAdmin, normalizedRole]);
 
   const fetchUsers = useMemo(
     () => async () => {
@@ -163,9 +188,11 @@ function UserManagementPage({ authToken }) {
                 value={formValues.role}
                 onChange={(event) => handleChange('role', event.target.value)}
               >
-                <option value="employee">Employee</option>
-                <option value="manager">Manager</option>
-                <option value="superadmin">Super Admin</option>
+                {assignableRoles.map((roleOption) => (
+                  <option key={roleOption.value} value={roleOption.value}>
+                    {roleOption.label}
+                  </option>
+                ))}
               </select>
             </label>
             <div>
