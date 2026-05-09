@@ -19,6 +19,14 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const SUPERADMIN_USERNAME = String(process.env.SUPERADMIN_USERNAME || 'superadmin').trim();
 const SUPERADMIN_PASSWORD = String(process.env.SUPERADMIN_PASSWORD || 'admin1234').trim();
 const SUPERADMIN_FULL_NAME = String(process.env.SUPERADMIN_FULL_NAME || 'Platform Super Admin').trim();
+const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const roleRank = {
+  employee: 1,
+  manager: 2,
+  admin: 3,
+  'tenant-admin': 3,
+  superadmin: 4,
+};
 
 function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -51,6 +59,7 @@ function sanitizeUser(user, tenantId, tenant) {
     fullName: String(user?.fullName || user?.username || ''),
     role: String(user?.role || ''),
     employeeId: String(user?.employeeId || ''),
+    isActive: Boolean(user?.isActive),
     tenantId: String(tenantId || 'master'),
     packageType: tenant?.packageType || (tenantId === 'master' ? 'enterprise' : undefined),
     allowedModules: Array.isArray(user?.allowedModules)
@@ -117,6 +126,76 @@ async function requireSuperAdmin(req, res, next) {
   } catch (error) {
     res.status(500).json({ error: 'Authorization failed' });
   }
+}
+
+function normalizeModuleIds(value) {
+  const moduleSet = new Set(allModules);
+  const requestedModules = Array.isArray(value)
+    ? value
+    : String(value || '')
+        .split(',')
+        .map((item) => item.trim());
+  return requestedModules.filter((moduleId) => moduleSet.has(moduleId));
+}
+
+function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
+  const role = String(user?.role || '').toLowerCase();
+  if (role === 'superadmin' && tenantId === 'master') {
+    return ['*'];
+  }
+  const packageModules = tenant ? resolvePackageModules(tenant.packageType) : [];
+  const tenantGrants = tenant
+    ? resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules)
+    : packageModules;
+  const requestedModules = Array.isArray(user?.allowedModules)
+    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const baseline =
+    role === 'employee' && requestedModules.length === 0
+      ? defaultEmployeeModules
+      : requestedModules.length > 0
+        ? requestedModules
+        : tenantGrants;
+  const tenantSet = new Set(tenantGrants);
+  if (tenantSet.size === 0) {
+    return baseline;
+  }
+  return baseline.filter((moduleId) => tenantSet.has(moduleId));
+}
+
+async function requireUserManagementAccess(req, res, next) {
+  try {
+    const auth = await loadAuthUserFromToken(req);
+    if (!auth) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const role = String(auth.user.role || '').toLowerCase();
+    if (role === 'superadmin' && req.tenantId === 'master') {
+      req.authUser = auth.user;
+      req.authTokenPayload = auth.payload;
+      next();
+      return;
+    }
+    if (req.tenantId === 'master') {
+      res.status(403).json({ error: 'Super admin access is required' });
+      return;
+    }
+    const allowedModules = resolveUserAllowedModulesForTenant(auth.user, req.tenant, req.tenantId);
+    if (role === 'employee' || !allowedModules.includes('user-management')) {
+      res.status(403).json({ error: 'User management access is required' });
+      return;
+    }
+    req.authUser = auth.user;
+    req.authTokenPayload = auth.payload;
+    next();
+  } catch (error) {
+    res.status(500).json({ error: 'Authorization failed' });
+  }
+}
+
+function getRoleLevel(value) {
+  return roleRank[String(value || '').trim().toLowerCase()] || 0;
 }
 
 async function createTenantAdminUser(db, tenantId, payload) {
@@ -281,6 +360,88 @@ router.post('/logout', async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+router.get('/users', requireUserManagementAccess, async (req, res) => {
+  try {
+    await ensureTenantIndexes(req.db);
+    const users = await req.db.collection('users').find({}).sort({ createdAt: -1, username: 1 }).toArray();
+    res.json({
+      users: users.map((user) => sanitizeUser(user, req.tenantId, req.tenant)),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load users' });
+  }
+});
+
+router.post('/users', requireUserManagementAccess, async (req, res) => {
+  try {
+    await ensureTenantIndexes(req.db);
+    const username = String(req.body?.username || '').trim();
+    const fullName = String(req.body?.fullName || username).trim();
+    const password = String(req.body?.password || '');
+    const requestedRole = String(req.body?.role || 'employee').trim().toLowerCase();
+    const employeeId = String(req.body?.employeeId || '').trim();
+    const allowedModules = normalizeModuleIds(req.body?.allowedModules);
+    const actorRole = String(req.authUser?.role || '').trim().toLowerCase();
+    const actorRoleLevel = getRoleLevel(actorRole);
+    const requestedRoleLevel = getRoleLevel(requestedRole);
+    if (!username || !fullName || !password) {
+      res.status(400).json({ error: 'Username, full name, and password are required' });
+      return;
+    }
+    if (!requestedRoleLevel) {
+      res.status(400).json({ error: 'Invalid role selected' });
+      return;
+    }
+    const isMasterSuperAdmin = actorRole === 'superadmin' && req.tenantId === 'master';
+    if (!isMasterSuperAdmin && requestedRole === 'superadmin') {
+      res.status(403).json({ error: 'Only the master super admin can create super admin users' });
+      return;
+    }
+    if (!isMasterSuperAdmin && requestedRoleLevel >= actorRoleLevel) {
+      res.status(403).json({ error: 'You can only create users with a lower role than your own' });
+      return;
+    }
+    if (!isMasterSuperAdmin) {
+      const actorAllowedModules = new Set(resolveUserAllowedModulesForTenant(req.authUser, req.tenant, req.tenantId));
+      const hasForbiddenModule = allowedModules.some((moduleId) => !actorAllowedModules.has(moduleId));
+      if (hasForbiddenModule) {
+        res.status(403).json({ error: 'You can only assign modules that are already enabled for your account' });
+        return;
+      }
+    }
+    const existingUser = await req.db.collection('users').findOne({
+      $or: [{ username: new RegExp(`^${escapeRegex(username)}$`, 'i') }, ...(employeeId ? [{ employeeId }] : [])],
+    });
+    if (existingUser) {
+      res.status(409).json({ error: employeeId && existingUser.employeeId === employeeId ? 'Employee ID already exists' : 'Username already exists' });
+      return;
+    }
+    const now = new Date().toISOString();
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userDoc = {
+      username,
+      fullName,
+      passwordHash,
+      role: requestedRole,
+      employeeId,
+      allowedModules,
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const result = await req.db.collection('users').insertOne(userDoc);
+    res.status(201).json({
+      user: sanitizeUser({ ...userDoc, _id: result.insertedId }, req.tenantId, req.tenant),
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      res.status(409).json({ error: 'Username or employee ID already exists' });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
