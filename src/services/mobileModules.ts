@@ -498,6 +498,7 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
 
   const persisted = await apiRequest<{ record?: AttendanceRecord }>(apiBaseUrl, endpoint, {
     method,
+    token: session.token,
     body: payload,
   });
   const persistedRecord = persisted?.record || payload;
