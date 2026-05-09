@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
-import { toApiUrl } from './config/api';
+ import { toApiUrl } from './config/api';
 import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
@@ -790,13 +790,9 @@ function App({ initialModuleId }) {
     let cancelled = false;
     const loadModuleRows = async () => {
       try {
-<<<<<<< HEAD
-        const response = await fetch(`http://localhost:8000/api/modules/${activeModuleId}`, {
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`), {
           headers: authHeaders,
         });
-=======
-        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`));
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
         if (!response.ok) {
           return;
         }
@@ -816,10 +812,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-<<<<<<< HEAD
   }, [activeModuleId, authHeaders, isSettingsPage]);
-=======
-  }, [activeModuleId, isSettingsPage]);
   const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
   useEffect(() => {
     if (!currentUser) {
@@ -835,7 +828,9 @@ function App({ initialModuleId }) {
     employeeModuleLoadingRef.current = true;
     const loadEmployees = async () => {
       try {
-        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'));
+        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'), {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           return;
         }
@@ -857,8 +852,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [currentUser, employeeRowsCount]);
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
+  }, [authHeaders, currentUser, employeeRowsCount]);
 
   useEffect(() => {
     const fetchTrackingSettings = async () => {
@@ -2145,12 +2139,10 @@ function App({ initialModuleId }) {
     if (!field) {
       return null;
     }
-<<<<<<< HEAD
     const inputMax =
       activeModuleId === 'employee-management' && field.key === 'dob' && field.type === 'date'
         ? getLatestAllowedEmployeeDob()
         : undefined;
-=======
     const isEmployeeSelfServiceLoan =
       activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
     if (
@@ -2169,7 +2161,6 @@ function App({ initialModuleId }) {
         </label>
       );
     }
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
     return (
       <label key={field.key}>
         <span>
@@ -4331,7 +4322,6 @@ function App({ initialModuleId }) {
         setFormError(`${getFieldLabel(missingRequiredField)} is required.`);
         return;
       }
-<<<<<<< HEAD
       if (activeModuleId === 'employee-management') {
         const latestAllowedEmployeeDob = getLatestAllowedEmployeeDob();
         if (String(formValues.dob || '') > latestAllowedEmployeeDob) {
@@ -4354,100 +4344,14 @@ function App({ initialModuleId }) {
       }
       let computedPayrollValues = {};
       let computedLoanValues = {};
-      if (activeModuleId === 'payroll-management') {
-      const basicPay = toNumberValue(formValues.basicPay);
-      const monthlyBonuses = toNumberValue(formValues.monthlyBonuses);
-      const transportAllowance = toNumberValue(formValues.transportAllowance);
-      const housingAllowance = toNumberValue(formValues.housingAllowance);
-      const foodAllowance = toNumberValue(formValues.foodAllowance);
-      const grossPay = basicPay + monthlyBonuses + transportAllowance + housingAllowance + foodAllowance;
-      const lateDeduction = toNumberValue(formValues.lateDeduction);
-      const noClockInPenalty = toNumberValue(formValues.noClockInPenalty);
-      const noClockOutPenalty = toNumberValue(formValues.noClockOutPenalty);
-      const absentPenalty = toNumberValue(formValues.absentPenalty);
-      const totalAttendancePenalty = lateDeduction + noClockInPenalty + noClockOutPenalty + absentPenalty;
-      const statutoryRules = appSettings.statutoryRules || {};
-      const calcStatutory = (mode, value) => {
-        const numeric = Math.max(0, Number(value) || 0);
-        if (mode === 'percent-gross') {
-          return (grossPay * numeric) / 100;
+      if (moduleAdapter && moduleAdapter.active && typeof moduleAdapter.beforeSave === 'function') {
+        const adapterResult = moduleAdapter.beforeSave();
+        if (!adapterResult || adapterResult.ok === false) {
+          return;
         }
-        if (mode === 'percent-basic') {
-          return (basicPay * numeric) / 100;
-        }
-        return numeric;
-      };
-      const napsaDeduction = calcStatutory(
-        statutoryRules.napsaMode || 'percent-basic',
-        statutoryRules.napsaValue ?? 0
-      );
-      const nhimaDeduction = calcStatutory(
-        statutoryRules.nhimaMode || 'percent-basic',
-        statutoryRules.nhimaValue ?? 0
-      );
-      const taxMinAmount = Math.max(0, Number(statutoryRules.taxMinAmount) || 0);
-      const taxBaseForThreshold = grossPay;
-      const taxDeduction =
-        taxBaseForThreshold >= taxMinAmount
-          ? calcStatutory(statutoryRules.taxMode || 'percent-basic', statutoryRules.taxValue ?? 0)
-          : 0;
-      const otherDeduction = toNumberValue(formValues.otherDeduction);
-      const totalDeductions =
-        napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + totalAttendancePenalty;
-      const netPayable = grossPay - totalDeductions;
-      const loanRules = appSettings.loanRules || {};
-      const minTakeHomePercent = Math.max(1, Math.min(100, Number(loanRules.minTakeHomePercent) || 45));
-      const maxLoanDeductionPercentOfGross = Math.max(
-        0,
-        Math.min(100, Number(loanRules.maxLoanDeductionPercentOfGross) || 35)
-      );
-      const grossPositive = grossPay > 0;
-      const effectiveLoanPercentOfGross = grossPositive ? (otherDeduction / grossPay) * 100 : 0;
-      const takeHomePercent = grossPositive ? (netPayable / grossPay) * 100 : 0;
-      if (grossPositive && effectiveLoanPercentOfGross > maxLoanDeductionPercentOfGross) {
-        const message = `Loan and other deductions exceed allowed ${maxLoanDeductionPercentOfGross.toFixed(
-          1
-        )}% of gross pay.`;
-        setFormError(message);
-        showToast(message, 'error');
-        return;
-      }
-      if (grossPositive && takeHomePercent < minTakeHomePercent) {
-        const message = `Net pay (${takeHomePercent.toFixed(
-          1
-        )}%) is below minimum take-home of ${minTakeHomePercent.toFixed(1)}%.`;
-        setFormError(message);
-        showToast(message, 'error');
-        return;
-      }
-      computedPayrollValues = {
-        grossPay: grossPay ? grossPay.toFixed(2) : '',
-        totalAttendancePenalty: totalAttendancePenalty ? totalAttendancePenalty.toFixed(2) : '',
-        totalDeductions: totalDeductions ? totalDeductions.toFixed(2) : '',
-        netPayable: netPayable ? netPayable.toFixed(2) : '',
-        napsaDeduction: napsaDeduction ? napsaDeduction.toFixed(2) : '',
-        nhimaDeduction: nhimaDeduction ? nhimaDeduction.toFixed(2) : '',
-        taxDeduction: taxDeduction ? taxDeduction.toFixed(2) : '',
-      };
+        computedPayrollValues = adapterResult.computedValues || {};
       }
       if (activeModuleId === 'loan-records') {
-=======
-    }
-    if (activeModuleId === 'attendance-time') {
-      setFormError('Manual attendance edits are disabled. Use Clock In / Clock Out only.');
-      return;
-    }
-    let computedPayrollValues = {};
-    let computedLoanValues = {};
-    if (moduleAdapter && moduleAdapter.active && typeof moduleAdapter.beforeSave === 'function') {
-      const adapterResult = moduleAdapter.beforeSave();
-      if (!adapterResult || adapterResult.ok === false) {
-        return;
-      }
-      computedPayrollValues = adapterResult.computedValues || {};
-    }
-    if (activeModuleId === 'loan-records') {
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
       const principal = toNumberValue(formValues.amount);
       let rawInterestPercent =
         formValues.interestPercent !== undefined && formValues.interestPercent !== null
@@ -4509,8 +4413,6 @@ function App({ initialModuleId }) {
         balance: formValues.balance || principal ? String(formValues.balance || principal) : '',
         overduePenaltyPercentPerDay: appSettings.loanRules.overduePenaltyPercentPerDay,
       };
-<<<<<<< HEAD
-=======
       const requestedDepartmentApproval =
         currentUser && currentUser.role === 'employee'
           ? 'Pending'
@@ -4550,20 +4452,13 @@ function App({ initialModuleId }) {
           issuedOn: formValues.issuedOn || todayIsoDate,
         };
       }
-    }
-    if (activeModuleId === 'leave-management') {
-      let employeeForLeave = selectedLeaveFormEmployee;
-      if (currentUser && currentUser.role === 'employee') {
-        employeeForLeave = getCurrentEmployeeRow();
-      }
-      if (!employeeForLeave) {
-        setFormError('Select a valid employee from search.');
-        showToast('Select a valid employee from search.', 'error');
-        return;
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
       }
       if (activeModuleId === 'leave-management') {
-        if (!selectedLeaveFormEmployee) {
+        let employeeForLeave = selectedLeaveFormEmployee;
+        if (currentUser && currentUser.role === 'employee') {
+          employeeForLeave = getCurrentEmployeeRow();
+        }
+        if (!employeeForLeave) {
           setFormError('Select a valid employee from search.');
           showToast('Select a valid employee from search.', 'error');
           return;
@@ -4678,7 +4573,7 @@ function App({ initialModuleId }) {
         );
         showToast(
           editRowId === 'new'
-            ? `Leave request submitted for ${selectedLeaveFormEmployee.fullName}.`
+            ? `Leave request submitted for ${employeeForLeave.fullName}.`
             : 'Leave request updated successfully.',
           'success'
         );
@@ -4686,97 +4581,6 @@ function App({ initialModuleId }) {
         closeModal();
         return;
       }
-<<<<<<< HEAD
-=======
-      const rowId =
-        editRowId === 'new' ? `LEV-${Date.now().toString().slice(-7)}` : formValues.id || editRowId;
-      const requestPayload = {
-        id: rowId,
-        employee: employeeForLeave.fullName,
-        employeeId: employeeForLeave.id,
-        department: employeeForLeave.department || 'Unassigned',
-        type: formValues.type || 'Annual',
-        startDate: formValues.startDate,
-        endDate: formValues.endDate,
-        daysRequested: leaveDays,
-        reason,
-        requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-        departmentApproval: formValues.departmentApproval || 'Pending',
-        departmentApprover: formValues.departmentApprover || '',
-        departmentComment: formValues.departmentComment || '',
-        departmentApprovedOn: formValues.departmentApprovedOn || '',
-        hrApproval: formValues.hrApproval || 'Pending',
-        hrApprover: formValues.hrApprover || '',
-        hrComment: formValues.hrComment || '',
-        hrApprovedOn: formValues.hrApprovedOn || '',
-        managerApproval: formValues.managerApproval || 'Pending',
-        managerApprover: formValues.managerApprover || '',
-        managerComment: formValues.managerComment || '',
-        managerApprovedOn: formValues.managerApprovedOn || '',
-        status:
-          formValues.status ||
-          (formValues.departmentApproval === 'Rejected' || formValues.hrApproval === 'Rejected' || formValues.managerApproval === 'Rejected'
-            ? 'Rejected'
-            : formValues.departmentApproval === 'Approved'
-              ? formValues.hrApproval === 'Approved'
-                ? formValues.managerApproval === 'Approved'
-                  ? 'Approved'
-                  : 'Pending Manager'
-                : 'Pending HR'
-              : 'Pending Department'),
-      };
-      setIsSavingRecord(true);
-      try {
-        const url =
-          editRowId === 'new'
-            ? toApiUrl('http://localhost:8000/api/modules/leave-management')
-            : toApiUrl(`http://localhost:8000/api/modules/leave-management/${encodeURIComponent(rowId)}`);
-        const method = editRowId === 'new' ? 'POST' : 'PUT';
-        const response = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestPayload),
-        });
-        if (!response.ok) {
-          const failurePayload = await response.json().catch(() => ({}));
-          const message = String(failurePayload.error || 'Failed to save leave request.');
-          setFormError(message);
-          showToast(message, 'error');
-          return;
-        }
-        const data = await response.json();
-        const saved = data.record || requestPayload;
-        setModuleRowsState((prev) => ({
-          ...prev,
-          'leave-management':
-            editRowId === 'new'
-              ? [saved, ...(prev['leave-management'] || [])]
-              : (prev['leave-management'] || []).map((row) => (row.id === rowId ? saved : row)),
-        }));
-      } catch (error) {
-        const message = 'Failed to save leave request.';
-        setFormError(message);
-        showToast(message, 'error');
-        return;
-      } finally {
-        setIsSavingRecord(false);
-      }
-      setLeaveActionMessage(
-        editRowId === 'new'
-          ? 'Leave request submitted to department approval.'
-          : 'Leave request updated successfully.'
-      );
-      showToast(
-        editRowId === 'new'
-          ? `Leave request submitted for ${employeeForLeave.fullName}.`
-          : 'Leave request updated successfully.',
-        'success'
-      );
-      setSelectedRowId(rowId);
-      closeModal();
-      return;
-    }
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
 
       const payload = activeModuleConfig.formFields.reduce((acc, field) => {
         if (computedPayrollValues[field.key] !== undefined) {
@@ -4843,7 +4647,6 @@ function App({ initialModuleId }) {
         ...employeeFilesPayload,
         id:
           editRowId === 'new'
-<<<<<<< HEAD
             ? activeModuleId === 'employee-management'
               ? employeeGeneratedId
               : formValues.id || fallbackId
@@ -4854,8 +4657,8 @@ function App({ initialModuleId }) {
         try {
           const url =
             editRowId === 'new'
-              ? `http://localhost:8000/api/modules/${activeModuleId}`
-              : `http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`;
+              ? toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`)
+              : toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`);
           const method = editRowId === 'new' ? 'POST' : 'PUT';
           const response = await fetch(url, {
             method,
@@ -4871,19 +4674,6 @@ function App({ initialModuleId }) {
           }
           const data = await response.json().catch(() => null);
           const saved = data?.record || rowWithId;
-=======
-            ? toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`)
-            : toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}/${encodeURIComponent(rowWithId.id)}`);
-        const method = editRowId === 'new' ? 'POST' : 'PUT';
-        const response = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(rowWithId),
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const saved = data.record || rowWithId;
->>>>>>> 8dc8d186d7c8ea8beddfd48eaec9bc38898b001d
           setModuleRowsState((prev) => {
             const currentRows = prev[activeModuleId] || [];
             if (editRowId === 'new') {
