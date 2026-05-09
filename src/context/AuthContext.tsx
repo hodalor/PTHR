@@ -2,9 +2,10 @@ import { createContext, PropsWithChildren, useContext, useEffect, useMemo, useSt
 import { defaultApiBaseUrl, resolveApiBaseUrl } from '../config/env';
 import { fetchCurrentUser, loginWithCredentials, logoutSession } from '../services/auth';
 import {
-  clearApiBaseUrl,
   clearAuthSession,
+  loadApiBaseUrl,
   loadAuthSession,
+  saveApiBaseUrl,
   saveAuthSession,
 } from '../services/storage';
 import { AuthSession } from '../types/app';
@@ -14,6 +15,7 @@ type AuthContextValue = {
   authReady: boolean;
   isAuthenticating: boolean;
   session: AuthSession | null;
+  setApiBaseUrl: (value: string) => Promise<void>;
   login: (tenantId: string, username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -30,9 +32,9 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     const restore = async () => {
       try {
         const storedSession = await loadAuthSession();
-        const nextApiBaseUrl = resolveApiBaseUrl(defaultApiBaseUrl);
+        const storedApiBaseUrl = await loadApiBaseUrl();
+        const nextApiBaseUrl = resolveApiBaseUrl(storedApiBaseUrl || defaultApiBaseUrl);
         updateApiBaseUrl(nextApiBaseUrl);
-        await clearApiBaseUrl();
         if (!storedSession) {
           return;
         }
@@ -52,9 +54,16 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     restore();
   }, []);
 
+  const setApiBaseUrl = async (value: string) => {
+    const nextApiBaseUrl = resolveApiBaseUrl(value || defaultApiBaseUrl);
+    updateApiBaseUrl(nextApiBaseUrl);
+    await saveApiBaseUrl(nextApiBaseUrl);
+  };
+
   const login = async (tenantId: string, username: string, password: string) => {
-    const normalizedApiBaseUrl = resolveApiBaseUrl(defaultApiBaseUrl);
+    const normalizedApiBaseUrl = resolveApiBaseUrl(apiBaseUrl || defaultApiBaseUrl);
     updateApiBaseUrl(normalizedApiBaseUrl);
+    await saveApiBaseUrl(normalizedApiBaseUrl);
     setIsAuthenticating(true);
     try {
       const nextSession = await loginWithCredentials(normalizedApiBaseUrl, tenantId, username, password);
@@ -82,10 +91,11 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       authReady,
       isAuthenticating,
       session,
+      setApiBaseUrl,
       login,
       logout,
     }),
-    [apiBaseUrl, authReady, isAuthenticating, session]
+    [apiBaseUrl, authReady, isAuthenticating, login, logout, session, setApiBaseUrl]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

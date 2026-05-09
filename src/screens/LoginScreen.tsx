@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme';
 
 export const LoginScreen = () => {
-  const { apiBaseUrl, isAuthenticating, login } = useAuth();
+  const { apiBaseUrl, isAuthenticating, login, setApiBaseUrl } = useAuth();
+  const [backendUrl, setBackendUrl] = useState(apiBaseUrl);
   const [tenantId, setTenantId] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setBackendUrl(apiBaseUrl);
+  }, [apiBaseUrl]);
 
   const handleLogin = async () => {
     setError('');
@@ -22,6 +27,7 @@ export const LoginScreen = () => {
       return;
     }
     try {
+      await setApiBaseUrl(backendUrl.trim() || apiBaseUrl);
       await login(normalizedTenantId, identifier.trim(), password);
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'Unable to sign in');
@@ -34,6 +40,19 @@ export const LoginScreen = () => {
         <Text style={styles.eyebrow}>PTHR Mobile</Text>
         <Text style={styles.title}>Live employee location tracking</Text>
         <Text style={styles.subtitle}>Sign in with employee ID or username, then keep background tracking active for iOS and Android.</Text>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Backend URL</Text>
+          <TextInput
+            value={backendUrl}
+            onChangeText={setBackendUrl}
+            placeholder="http://192.168.1.10:8000"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
+        </View>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Tenant ID</Text>
@@ -80,7 +99,7 @@ export const LoginScreen = () => {
         </Pressable>
 
         <Text style={styles.helper}>Backend endpoint: {apiBaseUrl}</Text>
-        <Text style={styles.helper}>For a physical phone, set EXPO_PUBLIC_API_BASE_URL to your computer&apos;s LAN IP instead of localhost.</Text>
+        <Text style={styles.helper}>For a physical phone, use your computer&apos;s LAN IP like `http://192.168.x.x:8000` instead of localhost.</Text>
       </View>
     </KeyboardAvoidingView>
   );
