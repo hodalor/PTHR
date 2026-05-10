@@ -446,6 +446,7 @@ function App({ initialModuleId }) {
   const [identifierTaxLabelInput, setIdentifierTaxLabelInput] = useState('');
   const [identifierLabelError, setIdentifierLabelError] = useState('');
   const [employeeDetailRecordTab, setEmployeeDetailRecordTab] = useState('leave');
+  const [showEmployeePortalPassword, setShowEmployeePortalPassword] = useState(false);
   const [attendanceClockDraft, setAttendanceClockDraft] = useState({
     employeeId: '',
     shift: 'Morning',
@@ -2156,6 +2157,7 @@ function App({ initialModuleId }) {
     if (!field || employeeImageFields.includes(field.key)) {
       return null;
     }
+    const detailValue = modalRow[field.key];
     return (
       <div className="detail-cell" key={field.key}>
         <span>{getFieldLabel(field)}</span>
@@ -2178,7 +2180,22 @@ function App({ initialModuleId }) {
             ))}
           </div>
         ) : (
-          <strong>{field.key === 'password' ? '••••••••' : modalRow[field.key] || '—'}</strong>
+          field.key === 'password' && activeModuleId === 'employee-management' ? (
+            <div className="row-actions">
+              <strong>{detailValue ? (showEmployeePortalPassword ? detailValue : '••••••••') : '—'}</strong>
+              {detailValue ? (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() => setShowEmployeePortalPassword((prev) => !prev)}
+                >
+                  {showEmployeePortalPassword ? 'Hide' : 'Show'}
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <strong>{detailValue || '—'}</strong>
+          )
         )}
       </div>
     );
@@ -3312,6 +3329,7 @@ function App({ initialModuleId }) {
     setFormValues({});
     setFormError('');
     setRecordSaving(false);
+    setShowEmployeePortalPassword(false);
   };
   const leaveSubmenuItems = useMemo(() => {
     const items = [
@@ -3614,27 +3632,32 @@ function App({ initialModuleId }) {
     return true;
   };
 
-  const handleClockOut = async () => {
-    if (!selectedAttendanceEmployee) {
+  const handleClockOut = async (clockOutTarget = null) => {
+    const targetEmployeeId = String(clockOutTarget?.employeeId || '').trim();
+    const targetDate = String(clockOutTarget?.date || getTodayIsoDate()).trim();
+    const effectiveEmployee =
+      (targetEmployeeId
+        ? employeeBaseRows.find((employee) => String(employee.id || '') === targetEmployeeId)
+        : null) || selectedAttendanceEmployee;
+    if (!effectiveEmployee) {
       showToast('Select an employee before clock out.', 'error');
       return false;
     }
     const checkOutTime = getCurrentClockValue();
-    const nowDate = getTodayIsoDate();
     const currentRows = moduleRowsState['attendance-time'] || [];
     const existingRow = currentRows.find(
-      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
+      (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
     );
     if (!existingRow) {
-      showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
+      showToast(`No clock-in record found for ${effectiveEmployee.fullName} on ${targetDate}.`, 'error');
       return false;
     }
     const stateRows = moduleRowsState['attendance-time'] || [];
     const existingRowIndex = stateRows.findIndex(
-      (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
+      (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
     );
     if (existingRowIndex < 0) {
-      showToast(`No clock-in record found for ${selectedAttendanceEmployee.fullName} today.`, 'error');
+      showToast(`No clock-in record found for ${effectiveEmployee.fullName} on ${targetDate}.`, 'error');
       return false;
     }
     const matchedRow = stateRows[existingRowIndex];
@@ -3684,7 +3707,7 @@ function App({ initialModuleId }) {
     setModuleRowsState((prev) => {
       const prevRows = prev['attendance-time'] || [];
       const idx = prevRows.findIndex(
-        (row) => String(row.employeeId || '') === String(selectedAttendanceEmployee.id || '') && String(row.date || '') === nowDate
+        (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
       );
       if (idx < 0) {
         return prev;
@@ -3705,7 +3728,7 @@ function App({ initialModuleId }) {
       );
     } catch (error) {
     }
-    showToast(`Thank you ${selectedAttendanceEmployee.fullName}, clock out captured successfully.`, 'success');
+    showToast(`Thank you ${effectiveEmployee.fullName}, clock out captured successfully.`, 'success');
     return true;
   };
 
@@ -4235,6 +4258,7 @@ function App({ initialModuleId }) {
     setSelectedRowId(rowId);
     setModalState({ mode: 'details', rowId });
     setEmployeeDetailRecordTab('leave');
+    setShowEmployeePortalPassword(false);
   };
 
   const startCreate = () => {
@@ -7477,6 +7501,29 @@ function App({ initialModuleId }) {
                           ))}
                           <td>
                             <div className="row-actions">
+                              {activeModuleId === 'attendance-time' ? (
+                                <button
+                                  type="button"
+                                  className="mini-btn"
+                                  onClick={async (event) => {
+                                    event.stopPropagation();
+                                    await handleClockOut({
+                                      employeeId: row.employeeId,
+                                      date: row.date,
+                                    });
+                                  }}
+                                  disabled={
+                                    String(row.date || '') !== getTodayIsoDate() ||
+                                    normalizeAttendanceClockings(row).reduce(
+                                      (acc, clocking) =>
+                                        clocking.mode === 'clock-in' ? acc + 1 : Math.max(0, acc - 1),
+                                      0
+                                    ) <= 0
+                                  }
+                                >
+                                  Clock Out
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 className="mini-btn"
