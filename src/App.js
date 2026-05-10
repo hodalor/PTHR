@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
- import { toApiUrl } from './config/api';
+import { toApiUrl } from './config/api';
 import { clearAuth, getStoredAuth, storeAuth } from './auth';
 import FingerprintPage from './pages/FingerprintPage';
 import AttendanceTimePage from './pages/AttendanceTimePage';
@@ -120,6 +120,24 @@ const getTodayIsoDate = () => {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const getAllowedModuleSetForUser = (user) => {
+  if (!user) {
+    return new Set();
+  }
+  const normalizedRole = String(user.role || '').toLowerCase();
+  const isMasterSuperAdmin = normalizedRole === 'superadmin' && String(user.tenantId || '').toLowerCase() === 'master';
+  if (isMasterSuperAdmin) {
+    return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
+  }
+  if (Array.isArray(user.allowedModules) && user.allowedModules.length > 0) {
+    return new Set(user.allowedModules.filter((moduleId) => moduleId !== 'tenant-management'));
+  }
+  if (normalizedRole === 'employee') {
+    return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
+  }
+  return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
 };
 
 const getLatestAllowedEmployeeDob = () => `${new Date().getFullYear() - 11}-12-31`;
@@ -647,27 +665,7 @@ function App({ initialModuleId }) {
   const isSuperAdmin = normalizedCurrentUserRole === 'superadmin';
   const isMasterSuperAdmin = isSuperAdmin && String(currentUser?.tenantId || '').toLowerCase() === 'master';
 
-  const allowedModulesByRole = useMemo(() => {
-    if (!currentUser) {
-      return new Set();
-    }
-    if (isMasterSuperAdmin) {
-      return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
-    }
-    if (Array.isArray(currentUser.allowedModules) && currentUser.allowedModules.length > 0) {
-      const filteredModules = currentUser.allowedModules.filter((moduleId) => {
-        if (moduleId === 'tenant-management') {
-          return false;
-        }
-        return true;
-      });
-      return new Set(filteredModules);
-    }
-    if (normalizedCurrentUserRole === 'employee') {
-      return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
-    }
-    return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
-  }, [currentUser, isMasterSuperAdmin, normalizedCurrentUserRole]);
+  const allowedModulesByRole = useMemo(() => getAllowedModuleSetForUser(currentUser), [currentUser]);
 
   const mobileModuleOptions = useMemo(
     () =>
@@ -751,9 +749,10 @@ function App({ initialModuleId }) {
       };
       storeAuth(payload);
       setLoginForm((prev) => ({ ...prev, username: '', password: '' }));
+      const nextAllowedModules = getAllowedModuleSetForUser(data.user);
       const firstAllowed = sidebarSections
         .flatMap((section) => section.items)
-        .find((item) => allowedModulesByRole.has(item.id));
+        .find((item) => nextAllowedModules.has(item.id));
       if (firstAllowed) {
         setActiveModuleId(firstAllowed.id);
       }
