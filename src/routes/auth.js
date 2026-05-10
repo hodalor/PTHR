@@ -62,9 +62,7 @@ function sanitizeUser(user, tenantId, tenant) {
     isActive: Boolean(user?.isActive),
     tenantId: String(tenantId || 'master'),
     packageType: tenant?.packageType || (tenantId === 'master' ? 'enterprise' : undefined),
-    allowedModules: Array.isArray(user?.allowedModules)
-      ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
-      : [],
+    allowedModules: resolveUserAllowedModulesForTenant(user, tenant, tenantId),
   };
 }
 
