@@ -1,0 +1,13 @@
+0 verbose cli /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.11.0
+2 info using node@v24.14.1
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.npmrc
+5 silly config load:file:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm exec expo start --lan --non-interactive
+8 verbose argv "exec" "--" "expo" "start" "--lan" "--non-interactive"
+9 verbose logfile logs-max:10 dir:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npm/_logs/2026-05-09T19_22_09_845Z-
+10 verbose logfile /Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npm/_logs/2026-05-09T19_22_09_845Z-debug-0.log
+11 silly logfile done cleaning log files
+12 http fetch GET 200 https://registry.npmjs.org/npm 1164ms

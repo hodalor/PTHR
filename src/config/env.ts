@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 
-export const defaultApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || 'http://localhost:8000';
+export const defaultApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || 'https://pthr.onrender.com';
 
 export const normalizeApiBaseUrl = (value: string) => {
   const trimmed = String(value || '').trim().replace(/\/+$/, '');

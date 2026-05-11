@@ -1,0 +1,18 @@
+0 verbose cli /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.11.0
+2 info using node@v24.14.1
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.npmrc
+5 silly config load:file:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm exec expo start --ios --lan --port 8082
+8 verbose argv "exec" "--" "expo" "start" "--ios" "--lan" "--port" "8082"
+9 verbose logfile logs-max:10 dir:/Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npm/_logs/2026-05-09T20_00_03_314Z-
+10 verbose logfile /Users/macbook/Documents/projects/ReactJS/pthr/mobile/.home/.npm/_logs/2026-05-09T20_00_03_314Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd /Users/macbook/Documents/projects/ReactJS/pthr/mobile
+13 verbose os Darwin 21.6.0
+14 verbose node v24.14.1
+15 verbose npm  v11.11.0
+16 verbose exit 1
+17 verbose code 1

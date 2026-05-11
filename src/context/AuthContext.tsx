@@ -3,7 +3,6 @@ import { defaultApiBaseUrl, resolveApiBaseUrl } from '../config/env';
 import { fetchCurrentUser, loginWithCredentials, logoutSession } from '../services/auth';
 import {
   clearAuthSession,
-  loadApiBaseUrl,
   loadAuthSession,
   saveApiBaseUrl,
   saveAuthSession,
@@ -26,15 +25,15 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [apiBaseUrl, updateApiBaseUrl] = useState(defaultApiBaseUrl);
+  const [apiBaseUrl, updateApiBaseUrl] = useState(resolveApiBaseUrl(defaultApiBaseUrl));
 
   useEffect(() => {
     const restore = async () => {
       try {
         const storedSession = await loadAuthSession();
-        const storedApiBaseUrl = await loadApiBaseUrl();
-        const nextApiBaseUrl = resolveApiBaseUrl(storedApiBaseUrl || defaultApiBaseUrl);
+        const nextApiBaseUrl = resolveApiBaseUrl(defaultApiBaseUrl);
         updateApiBaseUrl(nextApiBaseUrl);
+        await saveApiBaseUrl(nextApiBaseUrl);
         if (!storedSession) {
           return;
         }

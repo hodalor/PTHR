@@ -20,7 +20,7 @@ export const apiRequest = async <T>(apiBaseUrl: string, path: string, options: R
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     });
   } catch (error) {
-    throw new Error(`Unable to reach backend at ${requestUrl}`);
+    throw new Error('Unable to reach the server. Check your internet connection and try again.');
   }
 
   const data = (await response.json().catch(() => null)) as T | { error?: string } | null;
