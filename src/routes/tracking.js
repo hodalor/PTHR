@@ -20,6 +20,10 @@ const defaultSettings = {
 };
 
 const tenantRuntimeStore = new Map();
+const TRACKING_STATE_COLLECTION = 'trackingEmployeeState';
+const TRACKING_MOVEMENT_COLLECTION = 'trackingMovementLogs';
+const TRACKING_ALERTS_COLLECTION = 'trackingWhatsappAlerts';
+const TRACKING_EVENTS_COLLECTION = 'trackingRiskEvents';
 
 function normalizeTrackingSettings(settings) {
   return {
@@ -67,6 +71,154 @@ function getTenantRuntime(tenantIdRaw) {
     });
   }
   return tenantRuntimeStore.get(tenantId);
+}
+
+async function persistEmployeeState(db, record) {
+  if (!db || !record?.employeeId) {
+    return;
+  }
+  const timestamp = String(record.lastSeen || new Date().toISOString());
+  await db.collection(TRACKING_STATE_COLLECTION).updateOne(
+    { _id: String(record.employeeId) },
+    {
+      $set: {
+        ...record,
+        employeeId: String(record.employeeId),
+        updatedAt: timestamp,
+      },
+      $setOnInsert: {
+        createdAt: timestamp,
+      },
+    },
+    { upsert: true }
+  );
+}
+
+async function persistMovementLog(db, entry) {
+  if (!db || !entry?.employeeId) {
+    return;
+  }
+  await db.collection(TRACKING_MOVEMENT_COLLECTION).insertOne({
+    ...entry,
+    employeeId: String(entry.employeeId),
+  });
+}
+
+async function persistWhatsappAlert(db, alert) {
+  if (!db || !alert?.id) {
+    return;
+  }
+  await db.collection(TRACKING_ALERTS_COLLECTION).updateOne(
+    { _id: String(alert.id) },
+    {
+      $set: {
+        ...alert,
+        id: String(alert.id),
+      },
+      $setOnInsert: {
+        createdAt: String(alert.createdAt || new Date().toISOString()),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+async function persistRiskEvent(db, event) {
+  if (!db || !event?.id) {
+    return;
+  }
+  await db.collection(TRACKING_EVENTS_COLLECTION).updateOne(
+    { _id: String(event.id) },
+    {
+      $set: {
+        ...event,
+        id: String(event.id),
+      },
+      $setOnInsert: {
+        createdAt: String(event.createdAt || new Date().toISOString()),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+async function loadPersistedEmployeeState(db) {
+  if (!db) {
+    return [];
+  }
+  return db
+    .collection(TRACKING_STATE_COLLECTION)
+    .find({})
+    .toArray()
+    .catch(() => []);
+}
+
+async function loadPersistedMovement(db, employeeId, limit) {
+  if (!db) {
+    return [];
+  }
+  const rows = await db
+    .collection(TRACKING_MOVEMENT_COLLECTION)
+    .find({ employeeId: String(employeeId || '') })
+    .sort({ recordedAt: -1, createdAt: -1, _id: -1 })
+    .limit(limit)
+    .toArray()
+    .catch(() => []);
+  return rows.reverse();
+}
+
+async function loadPersistedAlerts(db, limit) {
+  if (!db) {
+    return [];
+  }
+  const rows = await db
+    .collection(TRACKING_ALERTS_COLLECTION)
+    .find({})
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(limit)
+    .toArray()
+    .catch(() => []);
+  return rows.reverse();
+}
+
+async function loadPersistedRiskEvents(db, { limit, employeeId, riskType }) {
+  if (!db) {
+    return [];
+  }
+  const filter = employeeId ? { employeeId: String(employeeId) } : {};
+  const rows = await db
+    .collection(TRACKING_EVENTS_COLLECTION)
+    .find(filter)
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(Math.max(limit * 3, limit))
+    .toArray()
+    .catch(() => []);
+  return rows
+    .filter((event) => !riskType || String(event.riskType || '').toLowerCase() === riskType)
+    .slice(0, limit)
+    .reverse();
+}
+
+function mergeEmployeeStateRecords(runtime, persistedRows) {
+  const merged = new Map();
+  persistedRows.forEach((row) => {
+    if (row?.employeeId) {
+      merged.set(String(row.employeeId), row);
+    }
+  });
+  runtime.employeeState.forEach((row, employeeId) => {
+    const key = String(employeeId || row?.employeeId || '');
+    if (!key) {
+      return;
+    }
+    const existing = merged.get(key);
+    const existingSeen = new Date(existing?.lastSeen || 0).getTime();
+    const nextSeen = new Date(row?.lastSeen || 0).getTime();
+    if (!existing || nextSeen >= existingSeen) {
+      merged.set(key, row);
+    }
+  });
+  return Array.from(merged.values());
 }
 
 async function loadTrackingSettings(db) {
@@ -134,7 +286,7 @@ function classifyStatus(record, settings, now) {
   return 'INSIDE';
 }
 
-function recordWhatsappAlert(runtime, record, reason) {
+async function recordWhatsappAlert(runtime, db, record, reason) {
   const alert = {
     id: `${record.employeeId}-${Date.now()}`,
     employeeId: record.employeeId,
@@ -144,9 +296,10 @@ function recordWhatsappAlert(runtime, record, reason) {
     createdAt: new Date().toISOString(),
   };
   runtime.whatsappAlerts.push(alert);
+  await persistWhatsappAlert(db, alert);
 }
 
-function recordRiskEvent(runtime, { employeeId, fullName, riskType, severity = 'high', details = '', status = '' }) {
+async function recordRiskEvent(runtime, db, { employeeId, fullName, riskType, severity = 'high', details = '', status = '' }) {
   const event = {
     id: `${employeeId || 'unknown'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     employeeId: employeeId || null,
@@ -161,6 +314,7 @@ function recordRiskEvent(runtime, { employeeId, fullName, riskType, severity = '
   if (runtime.riskEvents.length > 5000) {
     runtime.riskEvents.splice(0, runtime.riskEvents.length - 5000);
   }
+  await persistRiskEvent(db, event);
 }
 
 function validateWifi(settings, wifiSsid) {
@@ -270,7 +424,7 @@ router.post('/location', async (req, res) => {
   const networkRisk = (!wifiValid && trackingSettings.wifiValidationEnabled) || !ipValid;
 
   if (trackingSettings.antiGpsSpoofingEnabled && Boolean(isMockLocation)) {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'gps-spoofing',
@@ -313,21 +467,21 @@ router.post('/location', async (req, res) => {
 
   if (trackingSettings.whatsappAlertsEnabled) {
     if (status === 'OUTSIDE' && previousStatus !== 'OUTSIDE') {
-      recordWhatsappAlert(runtime, record, 'outside-premises');
+      await recordWhatsappAlert(runtime, req.db, record, 'outside-premises');
     }
     if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
-      recordWhatsappAlert(runtime, record, 'offline-threshold');
+      await recordWhatsappAlert(runtime, req.db, record, 'offline-threshold');
     }
     if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF' && trackingSettings.locationOffAlertEnabled) {
-      recordWhatsappAlert(runtime, record, 'location-disabled');
+      await recordWhatsappAlert(runtime, req.db, record, 'location-disabled');
     }
     if (record.networkRisk && !previousRecord?.networkRisk) {
-      recordWhatsappAlert(runtime, record, 'network-risk');
+      await recordWhatsappAlert(runtime, req.db, record, 'network-risk');
     }
   }
 
   if (status === 'OUTSIDE' && previousStatus !== 'OUTSIDE') {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'outside-premises',
@@ -337,7 +491,7 @@ router.post('/location', async (req, res) => {
     });
   }
   if (status === 'OFFLINE' && previousStatus !== 'OFFLINE') {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'offline-threshold',
@@ -347,7 +501,7 @@ router.post('/location', async (req, res) => {
     });
   }
   if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'location-disabled',
@@ -357,7 +511,7 @@ router.post('/location', async (req, res) => {
     });
   }
   if (gpsSpoofSuspected && !previousRecord?.gpsSpoofSuspected) {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'gps-spoof-suspected',
@@ -367,7 +521,7 @@ router.post('/location', async (req, res) => {
     });
   }
   if (!wifiValid && previousRecord?.wifiValid !== false) {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'wifi-mismatch',
@@ -377,7 +531,7 @@ router.post('/location', async (req, res) => {
     });
   }
   if (networkRisk && !previousRecord?.networkRisk) {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || employeeId,
       riskType: 'network-risk',
@@ -388,12 +542,16 @@ router.post('/location', async (req, res) => {
   }
 
   runtime.employeeState.set(employeeId, record);
+  await persistEmployeeState(req.db, record);
 
-  runtime.movementLogs.push({
+  const movementEntry = {
+    id: `${employeeId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     employeeId,
     lat: latNum,
     lng: lngNum,
     timestamp: lastSeen,
+    recordedAt: lastSeen,
+    createdAt: lastSeen,
     distanceMeters,
     status,
     locationLabel: locationLabel || null,
@@ -402,7 +560,9 @@ router.post('/location', async (req, res) => {
     ipAddress: ipAddress || null,
     networkRisk,
     locationDisabled: locationDisabledFlag,
-  });
+  };
+  runtime.movementLogs.push(movementEntry);
+  await persistMovementLog(req.db, movementEntry);
   if (runtime.movementLogs.length > 5000) {
     runtime.movementLogs.splice(0, runtime.movementLogs.length - 5000);
   }
@@ -438,10 +598,10 @@ router.post('/location-status', async (req, res) => {
     status === 'LOCATION_OFF' &&
     previousStatus !== 'LOCATION_OFF'
   ) {
-    recordWhatsappAlert(runtime, nextRecord, 'location-disabled');
+    await recordWhatsappAlert(runtime, req.db, nextRecord, 'location-disabled');
   }
   if (status === 'LOCATION_OFF' && previousStatus !== 'LOCATION_OFF') {
-    recordRiskEvent(runtime, {
+    await recordRiskEvent(runtime, req.db, {
       employeeId,
       fullName: fullName || previousRecord.fullName || employeeId,
       riskType: 'location-disabled',
@@ -451,6 +611,7 @@ router.post('/location-status', async (req, res) => {
     });
   }
   runtime.employeeState.set(employeeId, nextRecord);
+  await persistEmployeeState(req.db, nextRecord);
   return res.json({ ok: true, status });
 });
 
@@ -459,7 +620,9 @@ router.get('/employees', async (req, res) => {
   const runtime = getTenantRuntime(tenantId);
   const trackingSettings = await loadTrackingSettings(req.db);
   const now = new Date();
-  const employees = Array.from(runtime.employeeState.values()).map((record) => {
+  const persistedRows = await loadPersistedEmployeeState(req.db);
+  const employeeRecords = mergeEmployeeStateRecords(runtime, persistedRows);
+  const employees = employeeRecords.map((record) => {
     const status = classifyStatus(record, trackingSettings, now);
     const outsidePremises = status === 'OUTSIDE';
     const offline = status === 'OFFLINE';
@@ -489,30 +652,36 @@ router.get('/employees', async (req, res) => {
   res.json({ employees });
 });
 
-router.get('/movement/:employeeId', (req, res) => {
+router.get('/movement/:employeeId', async (req, res) => {
   const tenantId = req.tenantId || 'master';
   const runtime = getTenantRuntime(tenantId);
   const { employeeId } = req.params;
   const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 120));
-  const movement = runtime.movementLogs
-    .filter((row) => String(row.employeeId || '') === String(employeeId || ''))
-    .slice(-limit);
+  const persistedMovement = await loadPersistedMovement(req.db, employeeId, limit);
+  const movement =
+    persistedMovement.length > 0
+      ? persistedMovement
+      : runtime.movementLogs.filter((row) => String(row.employeeId || '') === String(employeeId || '')).slice(-limit);
   res.json({ movement });
 });
 
-router.get('/events', (req, res) => {
+router.get('/events', async (req, res) => {
   const tenantId = req.tenantId || 'master';
   const runtime = getTenantRuntime(tenantId);
   const limit = Math.max(1, Math.min(1000, Number(req.query.limit) || 200));
   const employeeId = String(req.query.employeeId || '').trim();
   const riskType = String(req.query.riskType || '').trim().toLowerCase();
-  const rows = runtime.riskEvents
-    .filter((event) => {
-      const matchEmployee = !employeeId || String(event.employeeId || '') === employeeId;
-      const matchType = !riskType || String(event.riskType || '').toLowerCase() === riskType;
-      return matchEmployee && matchType;
-    })
-    .slice(-limit);
+  const persistedRows = await loadPersistedRiskEvents(req.db, { limit, employeeId, riskType });
+  const rows =
+    persistedRows.length > 0
+      ? persistedRows
+      : runtime.riskEvents
+          .filter((event) => {
+            const matchEmployee = !employeeId || String(event.employeeId || '') === employeeId;
+            const matchType = !riskType || String(event.riskType || '').toLowerCase() === riskType;
+            return matchEmployee && matchType;
+          })
+          .slice(-limit);
   res.json({ events: rows });
 });
 
@@ -629,10 +798,11 @@ router.post('/alerts/whatsapp', (req, res) => {
   return res.json({ ok: true });
 });
 
-router.get('/alerts/whatsapp', (req, res) => {
+router.get('/alerts/whatsapp', async (req, res) => {
   const tenantId = req.tenantId || 'master';
   const runtime = getTenantRuntime(tenantId);
-  res.json({ alerts: runtime.whatsappAlerts });
+  const persistedAlerts = await loadPersistedAlerts(req.db, 500);
+  res.json({ alerts: persistedAlerts.length > 0 ? persistedAlerts : runtime.whatsappAlerts });
 });
 
 module.exports = router;
