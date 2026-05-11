@@ -25,12 +25,6 @@ const moduleLabels: Record<string, string> = {
   'leave-management': 'Leaves',
   'monitoring-tracking': 'Tracking',
 };
-const moduleDescriptions: Record<string, string> = {
-  'attendance-time': 'Clock in and out with verified location',
-  'loan-records': 'Review and request employee loans',
-  'leave-management': 'Review balances and submit leave requests',
-  'monitoring-tracking': 'Keep live location tracking active',
-};
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const initialLoanForm = {
   type: 'Salary Advance',
@@ -157,14 +151,6 @@ export const TrackingScreen = () => {
     () => attendanceRows.find((row) => String(row.date || '') === todayIso()) || null,
     [attendanceRows]
   );
-  const trackingPriorityText = tracking.enabled ? 'Tracking is actively watching location' : 'Tracking is currently stopped';
-  const antiCheatItems = [
-    `Geofence ${tracking.settings?.geofenceEnabled ? 'enforced' : 'optional'}`,
-    `Anti-spoof ${tracking.settings?.antiGpsSpoofingEnabled ? 'enabled' : 'disabled'}`,
-    `Location on clock ${mobileSettings?.requireLocationOnClock ? 'required' : 'optional'}`,
-    `Random selfie ${tracking.settings?.randomSelfieEnabled ? 'enabled' : 'disabled'}`,
-    `Activity monitor ${tracking.settings?.activityMonitoringEnabled ? 'enabled' : 'disabled'}`,
-  ];
 
   const handleClockAction = async (mode: 'clock-in' | 'clock-out') => {
     if (!session || !mobileSettings) {
@@ -447,7 +433,6 @@ export const TrackingScreen = () => {
     <>
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Tracking mission control</Text>
-        <Text style={styles.detailText}>{trackingPriorityText}</Text>
         <View style={styles.buttonRow}>
           <Pressable style={styles.smallButton} onPress={tracking.enableTracking} disabled={tracking.loading}>
             <Text style={styles.buttonText}>
@@ -555,30 +540,8 @@ export const TrackingScreen = () => {
             ) : null}
           </MapView>
         ) : (
-          <Text style={styles.detailText}>No location yet. Start tracking and send location to load map.</Text>
+          <View style={styles.mapView} />
         )}
-        <Text style={styles.mutedTiny}>
-          {hasGoogleMapsKey
-            ? 'Google Maps provider active.'
-            : 'No Google Maps key detected; using default native map provider.'}
-        </Text>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Anti-cheat and policy</Text>
-        {antiCheatItems.map((item) => (
-          <View style={styles.bulletRow} key={item}>
-            <View style={styles.bulletDot} />
-            <Text style={styles.detailText}>{item}</Text>
-          </View>
-        ))}
-        <Text style={styles.detailText}>
-          Office GPS: {formatCoordinate(tracking.settings?.officeLat ?? undefined)}, {formatCoordinate(tracking.settings?.officeLng ?? undefined)}
-        </Text>
-        <Text style={styles.detailText}>
-          Geofence radius: {tracking.settings?.geofenceRadiusMeters ?? '—'} m • Offline threshold {tracking.settings?.offlineMinutesThreshold ?? '—'} minute(s)
-        </Text>
-        <Text style={styles.mutedTiny}>Expo Go limits background location on Android. For full production tracking, use a development or native build.</Text>
       </View>
     </>
   );
@@ -613,7 +576,6 @@ export const TrackingScreen = () => {
       {menuOpen ? (
         <View style={styles.drawer}>
           <Text style={styles.sectionTitle}>Mobile menu</Text>
-          <Text style={styles.detailText}>Choose a module quickly or close the menu to focus on live tracking.</Text>
           <View style={styles.drawerActions}>
             {availableModules.map((moduleId) => (
               <Pressable
@@ -627,7 +589,6 @@ export const TrackingScreen = () => {
                 <Text style={[styles.drawerItemTitle, selectedModule === moduleId ? styles.drawerItemTitleActive : null]}>
                   {moduleLabels[moduleId] || moduleId}
                 </Text>
-                <Text style={styles.drawerItemSubtitle}>{moduleDescriptions[moduleId] || 'Employee module'}</Text>
               </Pressable>
             ))}
             <Pressable style={[styles.smallButton, styles.ghostButton]} onPress={logout}>
@@ -754,11 +715,6 @@ const styles = StyleSheet.create({
   },
   drawerItemTitleActive: {
     color: colors.primary,
-  },
-  drawerItemSubtitle: {
-    color: colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
   },
   moduleTabs: {
     flexDirection: 'row',
@@ -914,17 +870,6 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.45,
-  },
-  bulletRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  bulletDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: colors.primary,
   },
   error: {
     color: colors.danger,

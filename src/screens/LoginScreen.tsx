@@ -32,8 +32,7 @@ export const LoginScreen = () => {
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.card}>
         <Text style={styles.eyebrow}>PTHR Mobile</Text>
-        <Text style={styles.title}>Live employee location tracking</Text>
-        <Text style={styles.subtitle}>Sign in with employee ID or username, then keep background tracking active for iOS and Android.</Text>
+        <Text style={styles.title}>Sign In</Text>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Tenant ID</Text>
@@ -109,11 +108,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 28,
     fontWeight: '800',
-  },
-  subtitle: {
-    color: colors.textMuted,
-    fontSize: 14,
-    lineHeight: 20,
   },
   fieldGroup: {
     gap: 8,
