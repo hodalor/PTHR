@@ -61,6 +61,7 @@ export type MobileSettings = {
 export type EmployeeProfile = {
   id: string;
   fullName: string;
+  gender?: string;
   department?: string;
   employeeId?: string;
   basicPay?: string;
@@ -100,6 +101,10 @@ export type AttendanceClocking = {
   lng?: number;
   accuracy?: number | null;
   photoDataUrl?: string;
+  photoLocationAddress?: string;
+  photoLat?: number;
+  photoLng?: number;
+  photoCapturedAt?: string;
   source?: string;
   createdAt?: string;
 };

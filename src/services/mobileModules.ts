@@ -101,6 +101,22 @@ const captureClockInPhoto = async () => {
   return `data:image/jpeg;base64,${asset.base64}`;
 };
 
+const fetchReverseGeocodeLabel = async (apiBaseUrl: string, token: string, lat?: number, lng?: number) => {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return '';
+  }
+  try {
+    const response = await apiRequest<{ displayName?: string }>(
+      apiBaseUrl,
+      `/api/tracking/reverse-geocode?lat=${encodeURIComponent(Number(lat))}&lng=${encodeURIComponent(Number(lng))}`,
+      { token }
+    );
+    return String(response?.displayName || '').trim();
+  } catch (error) {
+    return '';
+  }
+};
+
 const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[] => {
   if (Array.isArray(row?.clockings) && row.clockings.length > 0) {
     return row.clockings
@@ -114,6 +130,10 @@ const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[]
           lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
           photoDataUrl: String(clocking?.photoDataUrl || '').trim(),
+          photoLocationAddress: String(clocking?.photoLocationAddress || '').trim(),
+          photoLat: typeof clocking?.photoLat === 'number' ? clocking.photoLat : undefined,
+          photoLng: typeof clocking?.photoLng === 'number' ? clocking.photoLng : undefined,
+          photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || ''),
           source: String(clocking?.source || 'Mobile App'),
           createdAt: String(clocking?.createdAt || ''),
         };
@@ -426,9 +446,6 @@ type AttendanceMutationInput = {
 };
 
 export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, trackingSettings, rows, mode }: AttendanceMutationInput) => {
-  const photoDataUrl =
-    mode === 'clock-in' && settings.requireClockInPhoto ? await captureClockInPhoto() : '';
-
   await runWithTimeout(
     requestForegroundLocationPermission(),
     8000,
@@ -469,6 +486,19 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     }
   }
 
+  const capturedAt = new Date().toISOString();
+  const photoDataUrl =
+    mode === 'clock-in' && settings.requireClockInPhoto ? await captureClockInPhoto() : '';
+  const reverseGeocodeLabel =
+    mode === 'clock-in'
+      ? await fetchReverseGeocodeLabel(
+          apiBaseUrl,
+          session.token,
+          position?.coords?.latitude,
+          position?.coords?.longitude
+        )
+      : '';
+
   const today = nowDate();
   const clockValue = nowClock();
   const existingRow =
@@ -501,8 +531,12 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     lng: position?.coords.longitude,
     accuracy: position?.coords.accuracy ?? null,
     photoDataUrl,
+    photoLocationAddress: reverseGeocodeLabel,
+    photoLat: position?.coords?.latitude,
+    photoLng: position?.coords?.longitude,
+    photoCapturedAt: capturedAt,
     source: 'Mobile App',
-    createdAt: new Date().toISOString(),
+    createdAt: capturedAt,
   };
 
   const mergedClockings = [...existingClockings, nextClocking];
