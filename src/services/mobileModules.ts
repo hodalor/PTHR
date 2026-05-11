@@ -1,4 +1,5 @@
 import { apiRequest } from './http';
+import * as ImagePicker from 'expo-image-picker';
 import {
   AttendanceClocking,
   AttendanceRecord,
@@ -23,6 +24,7 @@ const defaultMobileSettings: MobileSettings = {
   enabledModules: defaultEmployeeModules,
   allowClockIn: true,
   allowClockOut: true,
+  requireClockInPhoto: false,
   requireLocationOnClock: true,
   autoSendLocationOnClock: true,
   autoStartTrackingOnClockIn: true,
@@ -73,6 +75,32 @@ const formatWorkedHours = (start?: string, end?: string) => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 };
 
+const captureClockInPhoto = async () => {
+  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) {
+    throw new Error('Camera permission is required before mobile clock-in can continue');
+  }
+
+  const captureResult = await ImagePicker.launchCameraAsync({
+    allowsEditing: false,
+    base64: true,
+    cameraType: ImagePicker.CameraType.front,
+    mediaTypes: ['images'],
+    quality: 0.35,
+  });
+
+  if (captureResult.canceled) {
+    throw new Error('Clock-in photo capture was canceled');
+  }
+
+  const asset = captureResult.assets?.[0];
+  if (!asset?.base64) {
+    throw new Error('Unable to read the captured clock-in photo');
+  }
+
+  return `data:image/jpeg;base64,${asset.base64}`;
+};
+
 const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[] => {
   if (Array.isArray(row?.clockings) && row.clockings.length > 0) {
     return row.clockings
@@ -85,6 +113,7 @@ const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[]
           lat: typeof clocking?.lat === 'number' ? clocking.lat : undefined,
           lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
+          photoDataUrl: String(clocking?.photoDataUrl || '').trim(),
           source: String(clocking?.source || 'Mobile App'),
           createdAt: String(clocking?.createdAt || ''),
         };
@@ -397,6 +426,9 @@ type AttendanceMutationInput = {
 };
 
 export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, trackingSettings, rows, mode }: AttendanceMutationInput) => {
+  const photoDataUrl =
+    mode === 'clock-in' && settings.requireClockInPhoto ? await captureClockInPhoto() : '';
+
   await runWithTimeout(
     requestForegroundLocationPermission(),
     8000,
@@ -468,6 +500,7 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     lat: position?.coords.latitude,
     lng: position?.coords.longitude,
     accuracy: position?.coords.accuracy ?? null,
+    photoDataUrl,
     source: 'Mobile App',
     createdAt: new Date().toISOString(),
   };

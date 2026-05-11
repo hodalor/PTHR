@@ -47,6 +47,7 @@ export type MobileSettings = {
   enabledModules: string[];
   allowClockIn: boolean;
   allowClockOut: boolean;
+  requireClockInPhoto: boolean;
   requireLocationOnClock: boolean;
   autoSendLocationOnClock: boolean;
   autoStartTrackingOnClockIn: boolean;
@@ -98,6 +99,7 @@ export type AttendanceClocking = {
   lat?: number;
   lng?: number;
   accuracy?: number | null;
+  photoDataUrl?: string;
   source?: string;
   createdAt?: string;
 };

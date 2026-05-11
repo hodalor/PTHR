@@ -31,6 +31,7 @@
         "UIBackgroundModes": [
           "location"
         ],
+        "NSCameraUsageDescription": "PTHR uses the camera to capture a clock-in photo when your tenant requires it.",
         "NSLocationWhenInUseUsageDescription": "PTHR uses your location to send live attendance and movement updates.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "PTHR uses background location to keep live tracking active while you work."
       }
@@ -48,6 +49,7 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION"
       ]
@@ -74,6 +76,12 @@
           "isAndroidBackgroundLocationEnabled": true,
           "locationAlwaysAndWhenInUsePermission": "Allow PTHR to access your location so live tracking keeps running while the app is in the background.",
           "locationWhenInUsePermission": "Allow PTHR to access your location so your work location can be tracked."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow PTHR to use the camera to capture a required clock-in photo."
         }
       ],
       "expo-build-properties"
