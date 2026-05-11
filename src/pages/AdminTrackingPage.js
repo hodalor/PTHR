@@ -38,6 +38,76 @@ const createViewState = () => ({
   lastMarkerCount: 0,
 });
 
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const resolveAvatarVariant = (employee) => {
+  const normalizedGender = String(employee?.gender || employee?.sex || '').trim().toLowerCase();
+  if (normalizedGender.startsWith('f')) {
+    return 'female';
+  }
+  if (normalizedGender.startsWith('m')) {
+    return 'male';
+  }
+  return 'neutral';
+};
+
+const createEmployeeAvatarIcon = (employee, isSelected) => {
+  const variant = resolveAvatarVariant(employee);
+  const statusTone = resolveMarkerColor(employee?.status);
+  const palette =
+    variant === 'female'
+      ? { accent: '#e56aa6', background: '#fff0f7', hair: '#7a2857' }
+      : variant === 'male'
+        ? { accent: '#3c78d8', background: '#eff5ff', hair: '#1e3766' }
+        : { accent: '#6d7ca8', background: '#f1f4fb', hair: '#334155' };
+  const initial = escapeHtml(String(employee?.fullName || employee?.employeeId || 'U').trim().charAt(0).toUpperCase() || 'U');
+  const selectedRing = isSelected ? 'box-shadow:0 0 0 4px rgba(10,115,217,0.18); transform:scale(1.04);' : '';
+  return L.divIcon({
+    className: 'tracking-avatar-marker',
+    html: `
+      <div style="position:relative; width:42px; height:54px; display:flex; align-items:flex-start; justify-content:center;">
+        <div style="position:absolute; top:0; left:50%; transform:translateX(-50%); width:38px; height:38px; border-radius:50%; background:${palette.background}; border:2px solid ${palette.accent}; ${selectedRing} display:flex; align-items:center; justify-content:center; overflow:hidden;">
+          <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+            <circle cx="15" cy="11" r="6" fill="#f4c7a1"></circle>
+            <path d="${variant === 'female' ? 'M5 12 C5 4, 25 4, 25 12 L25 15 L5 15 Z' : variant === 'male' ? 'M6 10 C8 3, 22 3, 24 10 L24 14 L6 14 Z' : 'M6 10 C7 4, 23 4, 24 10 L24 14 L6 14 Z'}" fill="${palette.hair}"></path>
+            <path d="M7 29 C8 21, 22 21, 23 29 Z" fill="${palette.accent}"></path>
+          </svg>
+          <div style="position:absolute; right:-1px; bottom:-1px; width:16px; height:16px; border-radius:50%; background:${palette.accent}; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; border:2px solid #fff;">
+            ${initial}
+          </div>
+        </div>
+        <div style="position:absolute; bottom:2px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:8px solid transparent; border-right:8px solid transparent; border-top:14px solid ${statusTone}; filter:drop-shadow(0 2px 4px rgba(15,23,42,0.24));"></div>
+      </div>
+    `,
+    iconSize: [42, 54],
+    iconAnchor: [21, 52],
+    popupAnchor: [0, -40],
+  });
+};
+
+const buildEmployeeHoverCard = (employee) => {
+  const resolvedLocation = String(employee?.locationAddress || employee?.locationLabel || 'Location not resolved yet');
+  const coordinates =
+    typeof employee?.lat === 'number' && typeof employee?.lng === 'number'
+      ? `${employee.lat.toFixed(6)}, ${employee.lng.toFixed(6)}`
+      : 'Coordinates unavailable';
+  return `
+    <div style="min-width:220px; max-width:280px;">
+      <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">${escapeHtml(employee?.fullName || 'Unknown Employee')}</div>
+      <div style="font-size:12px; color:#334155; margin-bottom:6px;">ID: ${escapeHtml(employee?.employeeId || '—')}</div>
+      <div style="font-size:12px; color:#1e293b; margin-bottom:4px;"><strong>Status:</strong> ${escapeHtml(employee?.status || 'UNKNOWN')}</div>
+      <div style="font-size:12px; color:#1e293b; margin-bottom:4px;"><strong>Location:</strong> ${escapeHtml(resolvedLocation)}</div>
+      <div style="font-size:12px; color:#475569;"><strong>Coords:</strong> ${escapeHtml(coordinates)}</div>
+    </div>
+  `;
+};
+
 export default function AdminTrackingPage() {
   const todayTrackingDate = getIsoDateString();
   const [trackingTab, setTrackingTab] = useState('overview');
@@ -427,23 +497,21 @@ export default function AdminTrackingPage() {
       : employeesWithCoordinates.filter((employee) => employee.employeeId === focusEmployeeId);
     markerSource.forEach((employee) => {
       const isSelected = employee.employeeId === focusEmployeeId;
-      L.circleMarker([employee.lat, employee.lng], {
-        radius: isSelected ? 9 : 7,
-        weight: isSelected ? 3 : 2,
-        color: '#ffffff',
-        fillColor: resolveMarkerColor(employee.status),
-        fillOpacity: 0.95,
+      L.marker([employee.lat, employee.lng], {
+        icon: createEmployeeAvatarIcon(employee, isSelected),
       })
-        .bindTooltip(`${employee.fullName} (${employee.employeeId})`, {
-          direction: 'top',
-          offset: [0, -8],
-          opacity: 0.95,
+        .bindPopup(buildEmployeeHoverCard(employee), {
+          autoClose: false,
+          closeButton: false,
+          closeOnClick: false,
+          className: 'tracking-employee-popup',
+          offset: [0, -28],
         })
         .on('mouseover', function handleMouseOver() {
-          this.openTooltip();
+          this.openPopup();
         })
         .on('mouseout', function handleMouseOut() {
-          this.closeTooltip();
+          this.closePopup();
         })
         .on('click', () => setSelectedEmployeeId(employee.employeeId))
         .addTo(layerGroup);

@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { moduleUiData, sidebarSections } from './config/moduleUiData';
 import { toApiUrl } from './config/api';
 import { clearAuth, getStoredAuth, storeAuth } from './auth';
@@ -42,6 +44,102 @@ const shouldDisplayField = (field, currentValues) => {
     return true;
   }
   return String(currentValues[field.showWhen.field] || '') === String(field.showWhen.value);
+};
+
+const googleMapsTileKey = (process.env.REACT_APP_GOOGLE_MAPS_TILE_KEY || '').trim();
+const googleTileBaseUrl = googleMapsTileKey
+  ? `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=${encodeURIComponent(googleMapsTileKey)}`
+  : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}';
+
+const escapeSvgAttribute = (value) =>
+  String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const splitStampLines = (value, maxLineLength = 34) => {
+  const words = String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) {
+    return [];
+  }
+  const lines = [];
+  let current = '';
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLineLength && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current) {
+    lines.push(current);
+  }
+  return lines.slice(0, 3);
+};
+
+const formatPhotoStampTime = (value) => {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleString('en-GB', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+};
+
+const buildStampedPhotoDataUrl = ({ photoDataUrl, locationAddress, lat, lng, capturedAt }) => {
+  if (!photoDataUrl) {
+    return '';
+  }
+  const resolvedAddress = String(locationAddress || '').trim() || 'Location pending';
+  const titleText = splitStampLines(resolvedAddress, 28)[0] || 'Location Verified';
+  const addressLines = splitStampLines(resolvedAddress, 34).slice(0, 2);
+  const latLngText =
+    Number.isFinite(lat) && Number.isFinite(lng)
+      ? `Lat ${Number(lat).toFixed(6)}  Long ${Number(lng).toFixed(6)}`
+      : 'Coordinates unavailable';
+  const capturedAtText = formatPhotoStampTime(capturedAt) || 'Time unavailable';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960">
+      <image href="${escapeSvgAttribute(photoDataUrl)}" x="0" y="0" width="720" height="960" preserveAspectRatio="xMidYMid slice" />
+      <defs>
+        <linearGradient id="stampGlow" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="rgba(11,18,32,0.96)" />
+          <stop offset="100%" stop-color="rgba(15,23,42,0.88)" />
+        </linearGradient>
+      </defs>
+      <g>
+        <rect x="34" y="736" width="652" height="190" rx="24" fill="url(#stampGlow)" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
+        <circle cx="78" cy="785" r="18" fill="#ef4444" />
+        <path d="M78 758 C87 758 94 765 94 774 C94 787 78 803 78 803 C78 803 62 787 62 774 C62 765 69 758 78 758 Z" fill="#ef4444" />
+        <circle cx="78" cy="774" r="7" fill="#ffffff" />
+        <text x="120" y="786" fill="#ffffff" font-size="18" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
+        <text x="52" y="830" fill="#ffffff" font-size="38" font-weight="700" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(titleText)}</text>
+        ${addressLines
+          .map(
+            (line, index) =>
+              `<text x="52" y="${870 + index * 26}" fill="#d7e3ff" font-size="22" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(line)}</text>`
+          )
+          .join('')}
+        <text x="52" y="924" fill="#d7e3ff" font-size="20" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(latLngText)}</text>
+        <text x="52" y="948" fill="#d7e3ff" font-size="20" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(capturedAtText)}</text>
+      </g>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -494,6 +592,9 @@ function App({ initialModuleId }) {
   const [complianceReplayIndex, setComplianceReplayIndex] = useState(0);
   const [complianceReplaySpeed, setComplianceReplaySpeed] = useState(1);
   const [complianceShowPointLabels, setComplianceShowPointLabels] = useState(true);
+  const complianceTrailMapElementRef = useRef(null);
+  const complianceTrailMapRef = useRef(null);
+  const complianceTrailMapLayerRef = useRef(null);
   const [leaveViewTab, setLeaveViewTab] = useState('requests');
   const [leaveRequestPageTab, setLeaveRequestPageTab] = useState('requests');
   const [leaveMenuExpanded, setLeaveMenuExpanded] = useState(false);
@@ -3148,6 +3249,13 @@ function App({ initialModuleId }) {
     }
     return selectedComplianceClockingMapNodes.slice(0, complianceReplayIndex + 1);
   }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes]);
+  const displayedComplianceTrailMapPoints = useMemo(
+    () =>
+      displayedComplianceTrailNodes.filter(
+        (point) => typeof point.lat === 'number' && !Number.isNaN(point.lat) && typeof point.lng === 'number' && !Number.isNaN(point.lng)
+      ),
+    [displayedComplianceTrailNodes]
+  );
   const selectedComplianceClockingSessions = useMemo(() => {
     const sessions = [];
     let activeClockIn = null;
@@ -3203,6 +3311,96 @@ function App({ initialModuleId }) {
       setComplianceReplayActive(false);
     }
   }, [complianceReplayActive, complianceReplayIndex, selectedComplianceClockingMapNodes.length]);
+  useEffect(() => {
+    if (attendanceDetailModal.type !== 'compliance' || !complianceTrailMapElementRef.current) {
+      return;
+    }
+    const boundsSource = selectedComplianceClockingMapPoints.filter(
+      (point) => typeof point.lat === 'number' && !Number.isNaN(point.lat) && typeof point.lng === 'number' && !Number.isNaN(point.lng)
+    );
+    if (boundsSource.length === 0) {
+      if (complianceTrailMapLayerRef.current && complianceTrailMapRef.current) {
+        complianceTrailMapRef.current.removeLayer(complianceTrailMapLayerRef.current);
+        complianceTrailMapLayerRef.current = null;
+      }
+      return;
+    }
+    if (!complianceTrailMapRef.current) {
+      complianceTrailMapRef.current = L.map(complianceTrailMapElementRef.current, {
+        zoomControl: true,
+        attributionControl: true,
+      }).setView([boundsSource[0].lat, boundsSource[0].lng], 16);
+      L.tileLayer(googleTileBaseUrl, {
+        subdomains: ['0', '1', '2', '3'],
+        maxZoom: 20,
+        attribution: '&copy; Google Maps',
+      }).addTo(complianceTrailMapRef.current);
+    }
+    const map = complianceTrailMapRef.current;
+    requestAnimationFrame(() => map.invalidateSize());
+    if (complianceTrailMapLayerRef.current) {
+      map.removeLayer(complianceTrailMapLayerRef.current);
+      complianceTrailMapLayerRef.current = null;
+    }
+    const layerGroup = L.layerGroup();
+    if (displayedComplianceTrailMapPoints.length > 1) {
+      L.polyline(
+        displayedComplianceTrailMapPoints.map((point) => [point.lat, point.lng]),
+        {
+          color: '#0a73d9',
+          weight: 4,
+          opacity: 0.92,
+        }
+      ).addTo(layerGroup);
+    }
+    displayedComplianceTrailMapPoints.forEach((point) => {
+      L.circleMarker([point.lat, point.lng], {
+        radius: 7,
+        weight: 2,
+        color: '#ffffff',
+        fillColor: point.mode === 'clock-in' ? '#0f9d58' : '#db4437',
+        fillOpacity: 0.95,
+      })
+        .bindTooltip(`${point.mode === 'clock-in' ? 'IN' : 'OUT'} ${point.time || ''}`, {
+          permanent: Boolean(complianceShowPointLabels),
+          direction: 'top',
+          offset: [0, -8],
+          opacity: 0.92,
+        })
+        .addTo(layerGroup);
+    });
+    const activePoint = selectedComplianceClockingMapNodes[Math.min(complianceReplayIndex, Math.max(0, selectedComplianceClockingMapNodes.length - 1))];
+    if (activePoint && typeof activePoint.lat === 'number' && typeof activePoint.lng === 'number') {
+      L.circleMarker([activePoint.lat, activePoint.lng], {
+        radius: 10,
+        weight: 4,
+        color: '#0a73d9',
+        fillColor: '#ffffff',
+        fillOpacity: 1,
+      }).addTo(layerGroup);
+    }
+    layerGroup.addTo(map);
+    complianceTrailMapLayerRef.current = layerGroup;
+    map.fitBounds(
+      boundsSource.map((point) => [point.lat, point.lng]),
+      { padding: [32, 32], maxZoom: 18 }
+    );
+  }, [
+    attendanceDetailModal.type,
+    complianceReplayIndex,
+    complianceShowPointLabels,
+    displayedComplianceTrailMapPoints,
+    selectedComplianceClockingMapNodes,
+    selectedComplianceClockingMapPoints,
+  ]);
+  useEffect(() => {
+    return () => {
+      if (complianceTrailMapRef.current) {
+        complianceTrailMapRef.current.remove();
+        complianceTrailMapRef.current = null;
+      }
+    };
+  }, []);
   const selectedPerformanceAttendanceRows = useMemo(() => {
     if (!selectedPerformanceRow) {
       return [];
@@ -3511,7 +3709,50 @@ function App({ initialModuleId }) {
     });
     closeModal();
   };
-
+  const getWebClockLocationMetadata = useCallback(async () => {
+    if (typeof window === 'undefined' || !navigator?.geolocation) {
+      return null;
+    }
+    try {
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        });
+      });
+      const lat = Number(position?.coords?.latitude);
+      const lng = Number(position?.coords?.longitude);
+      const accuracy = Number(position?.coords?.accuracy);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null;
+      }
+      let locationAddress = '';
+      try {
+        const response = await fetch(
+          toApiUrl(
+            `http://localhost:8000/api/tracking/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+          ),
+          {
+            headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          locationAddress = String(data?.displayName || '').trim();
+        }
+      } catch (error) {
+      }
+      return {
+        lat,
+        lng,
+        accuracy: Number.isFinite(accuracy) ? accuracy : null,
+        locationAddress,
+      };
+    } catch (error) {
+      return null;
+    }
+  }, [authToken]);
   const buildAttendanceFromClockings = (baseRow, clockings) => {
     const sortedClockings = [...clockings].sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
     const firstClockIn = sortedClockings.find((clocking) => clocking.mode === 'clock-in') || null;
@@ -3603,6 +3844,17 @@ function App({ initialModuleId }) {
       showToast('Clock out the last active session before clocking in again.', 'error');
       return false;
     }
+    const capturedAt = new Date().toISOString();
+    const locationMetadata = await getWebClockLocationMetadata();
+    const stampedPhotoDataUrl = photoDataUrl
+      ? buildStampedPhotoDataUrl({
+          photoDataUrl,
+          locationAddress: locationMetadata?.locationAddress || '',
+          lat: locationMetadata?.lat,
+          lng: locationMetadata?.lng,
+          capturedAt,
+        })
+      : '';
     const baseRow = {
       id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
       employee: effectiveEmployee.fullName,
@@ -3622,12 +3874,12 @@ function App({ initialModuleId }) {
       id: `CLK-${Date.now().toString().slice(-7)}`,
       mode: 'clock-in',
       time: checkInTime,
-      lat: null,
-      lng: null,
-      accuracy: null,
-      photoDataUrl,
+      lat: Number.isFinite(locationMetadata?.lat) ? locationMetadata.lat : null,
+      lng: Number.isFinite(locationMetadata?.lng) ? locationMetadata.lng : null,
+      accuracy: typeof locationMetadata?.accuracy === 'number' ? locationMetadata.accuracy : null,
+      photoDataUrl: stampedPhotoDataUrl,
       source: baseRow.source,
-      createdAt: new Date().toISOString(),
+      createdAt: capturedAt,
     };
     const newRow = buildAttendanceFromClockings(baseRow, [...existingClockings, newClocking]);
 
@@ -8558,94 +8810,19 @@ function App({ initialModuleId }) {
                         position: 'relative',
                         height: 240,
                         borderRadius: 10,
-                        background: 'radial-gradient(circle at 50% 50%, rgba(10,115,217,0.12), rgba(10,115,217,0.04))',
                         overflow: 'hidden',
+                        border: '1px solid #d9e6fb',
+                        background: '#ecf2ff',
                       }}
                     >
-                      <div
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          backgroundImage:
-                            'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                          backgroundSize: '30px 30px',
-                          opacity: 0.4,
-                        }}
-                      />
                       {selectedComplianceClockingMapNodes.length > 0 ? (
-                        <>
-                          <svg
-                            viewBox="0 0 100 100"
-                            preserveAspectRatio="none"
-                            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
-                          >
-                            {displayedComplianceTrailNodes.length > 1 ? (
-                              <polyline
-                                points={displayedComplianceTrailNodes
-                                  .map((point) => `${point.x},${point.y}`)
-                                  .join(' ')}
-                                fill="none"
-                                stroke="rgba(10,115,217,0.8)"
-                                strokeWidth="0.8"
-                              />
-                            ) : null}
-                          </svg>
-                          {displayedComplianceTrailNodes.map((point, index) => (
-                            <div
-                              key={`clocking-map-point-${index}`}
-                              style={{
-                                position: 'absolute',
-                                left: `${point.x}%`,
-                                top: `${point.y}%`,
-                              }}
-                            >
-                              <div
-                                title={`${point.mode === 'clock-in' ? 'IN' : 'OUT'} ${point.time || ''}`}
-                                style={{
-                                  width: 14,
-                                  height: 14,
-                                  borderRadius: '50%',
-                                  transform: 'translate(-50%, -50%)',
-                                  backgroundColor: point.mode === 'clock-in' ? '#0f9d58' : '#db4437',
-                                  boxShadow: '0 0 0 5px rgba(0,0,0,0.16)',
-                                }}
-                              />
-                              {complianceShowPointLabels ? (
-                                <div
-                                  style={{
-                                    transform: 'translate(-50%, -165%)',
-                                    backgroundColor: 'rgba(11, 25, 58, 0.88)',
-                                    color: '#e9f0ff',
-                                    fontSize: 10,
-                                    padding: '2px 6px',
-                                    borderRadius: 6,
-                                    whiteSpace: 'nowrap',
-                                    pointerEvents: 'none',
-                                  }}
-                                >
-                                  {point.mode === 'clock-in' ? 'IN' : 'OUT'} {point.time || ''}
-                                </div>
-                              ) : null}
-                            </div>
-                          ))}
-                          {selectedComplianceClockingMapNodes[complianceReplayIndex] ? (
-                            <div
-                              style={{
-                                position: 'absolute',
-                                width: 18,
-                                height: 18,
-                                borderRadius: '50%',
-                                left: `${selectedComplianceClockingMapNodes[complianceReplayIndex].x}%`,
-                                top: `${selectedComplianceClockingMapNodes[complianceReplayIndex].y}%`,
-                                transform: 'translate(-50%, -50%)',
-                                border: '3px solid rgba(10,115,217,0.9)',
-                                backgroundColor: '#ffffff',
-                                boxShadow: '0 0 0 10px rgba(10,115,217,0.22)',
-                                pointerEvents: 'none',
-                              }}
-                            />
-                          ) : null}
-                        </>
+                        <div
+                          ref={complianceTrailMapElementRef}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                          }}
+                        />
                       ) : (
                         <div
                           style={{
