@@ -47,6 +47,7 @@ const defaultAttendanceSettings = {
   attendanceLateAfter: '08:15',
   attendanceReportTime: '08:00',
   attendanceShiftEnd: '17:00',
+  requireWebClockInPhoto: false,
   payrollWorkingDays: 26,
   attendanceCalculationMode: 'auto',
   attendanceFixedDeductionPerMinute: 0.128,
@@ -94,6 +95,10 @@ function normalizeAttendanceSettings(payload) {
     attendanceLateAfter: String(source.attendanceLateAfter || defaultAttendanceSettings.attendanceLateAfter),
     attendanceReportTime: String(source.attendanceReportTime || defaultAttendanceSettings.attendanceReportTime),
     attendanceShiftEnd: String(source.attendanceShiftEnd || defaultAttendanceSettings.attendanceShiftEnd),
+    requireWebClockInPhoto:
+      source.requireWebClockInPhoto === undefined
+        ? defaultAttendanceSettings.requireWebClockInPhoto
+        : Boolean(source.requireWebClockInPhoto),
     payrollWorkingDays: Math.max(1, Number(source.payrollWorkingDays) || defaultAttendanceSettings.payrollWorkingDays),
     attendanceCalculationMode: source.attendanceCalculationMode === 'fixed' ? 'fixed' : 'auto',
     attendanceFixedDeductionPerMinute: Math.max(
@@ -144,6 +149,7 @@ function normalizeAttendanceClockings(row) {
           lat: typeof clocking?.lat === 'number' ? clocking.lat : undefined,
           lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
+          photoDataUrl: String(clocking?.photoDataUrl || '').trim(),
           source: String(clocking?.source || row?.source || 'System'),
           createdAt: String(clocking?.createdAt || ''),
         }))

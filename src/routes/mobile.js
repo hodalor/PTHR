@@ -6,6 +6,7 @@ const defaultMobileSettings = {
   enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
   allowClockIn: true,
   allowClockOut: true,
+  requireClockInPhoto: false,
   requireLocationOnClock: true,
   autoSendLocationOnClock: true,
   autoStartTrackingOnClockIn: true,
@@ -28,6 +29,10 @@ function normalizeMobileSettings(payload) {
       : defaultMobileSettings.enabledModules,
     allowClockIn: source.allowClockIn === undefined ? defaultMobileSettings.allowClockIn : Boolean(source.allowClockIn),
     allowClockOut: source.allowClockOut === undefined ? defaultMobileSettings.allowClockOut : Boolean(source.allowClockOut),
+    requireClockInPhoto:
+      source.requireClockInPhoto === undefined
+        ? defaultMobileSettings.requireClockInPhoto
+        : Boolean(source.requireClockInPhoto),
     requireLocationOnClock:
       source.requireLocationOnClock === undefined
         ? defaultMobileSettings.requireLocationOnClock
