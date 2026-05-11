@@ -51,96 +51,6 @@ const googleTileBaseUrl = googleMapsTileKey
   ? `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=${encodeURIComponent(googleMapsTileKey)}`
   : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}';
 
-const escapeSvgAttribute = (value) =>
-  String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-
-const splitStampLines = (value, maxLineLength = 34) => {
-  const words = String(value || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (words.length === 0) {
-    return [];
-  }
-  const lines = [];
-  let current = '';
-  words.forEach((word) => {
-    const next = current ? `${current} ${word}` : word;
-    if (next.length > maxLineLength && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = next;
-    }
-  });
-  if (current) {
-    lines.push(current);
-  }
-  return lines.slice(0, 3);
-};
-
-const formatPhotoStampTime = (value) => {
-  const date = new Date(value || Date.now());
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-  return date.toLocaleString('en-GB', {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true,
-  });
-};
-
-const buildStampedPhotoDataUrl = ({ photoDataUrl, locationAddress, lat, lng, capturedAt }) => {
-  if (!photoDataUrl) {
-    return '';
-  }
-  const resolvedAddress = String(locationAddress || '').trim() || 'Location pending';
-  const titleText = splitStampLines(resolvedAddress, 28)[0] || 'Location Verified';
-  const addressLines = splitStampLines(resolvedAddress, 34).slice(0, 2);
-  const latLngText =
-    Number.isFinite(lat) && Number.isFinite(lng)
-      ? `Lat ${Number(lat).toFixed(6)}  Long ${Number(lng).toFixed(6)}`
-      : 'Coordinates unavailable';
-  const capturedAtText = formatPhotoStampTime(capturedAt) || 'Time unavailable';
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960">
-      <image href="${escapeSvgAttribute(photoDataUrl)}" x="0" y="0" width="720" height="960" preserveAspectRatio="xMidYMid slice" />
-      <defs>
-        <linearGradient id="stampGlow" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="rgba(11,18,32,0.96)" />
-          <stop offset="100%" stop-color="rgba(15,23,42,0.88)" />
-        </linearGradient>
-      </defs>
-      <g>
-        <rect x="34" y="736" width="652" height="190" rx="24" fill="url(#stampGlow)" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
-        <circle cx="78" cy="785" r="18" fill="#ef4444" />
-        <path d="M78 758 C87 758 94 765 94 774 C94 787 78 803 78 803 C78 803 62 787 62 774 C62 765 69 758 78 758 Z" fill="#ef4444" />
-        <circle cx="78" cy="774" r="7" fill="#ffffff" />
-        <text x="120" y="786" fill="#ffffff" font-size="18" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
-        <text x="52" y="830" fill="#ffffff" font-size="38" font-weight="700" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(titleText)}</text>
-        ${addressLines
-          .map(
-            (line, index) =>
-              `<text x="52" y="${870 + index * 26}" fill="#d7e3ff" font-size="22" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(line)}</text>`
-          )
-          .join('')}
-        <text x="52" y="924" fill="#d7e3ff" font-size="20" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(latLngText)}</text>
-        <text x="52" y="948" fill="#d7e3ff" font-size="20" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(capturedAtText)}</text>
-      </g>
-    </svg>
-  `;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-};
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -1553,6 +1463,7 @@ function App({ initialModuleId }) {
               fields: [
                 'fullName',
                 'dob',
+                'gender',
                 'idCardType',
                 'idCardNumber',
                 'nhimaNumber',
@@ -2530,6 +2441,10 @@ function App({ initialModuleId }) {
           lng: typeof clocking.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking.accuracy === 'number' ? clocking.accuracy : null,
           photoDataUrl: String(clocking.photoDataUrl || '').trim(),
+          photoLocationAddress: String(clocking.photoLocationAddress || '').trim(),
+          photoLat: typeof clocking.photoLat === 'number' ? clocking.photoLat : undefined,
+          photoLng: typeof clocking.photoLng === 'number' ? clocking.photoLng : undefined,
+          photoCapturedAt: String(clocking.photoCapturedAt || clocking.createdAt || ''),
           source: String(clocking.source || row.source || 'System'),
           createdAt: String(clocking.createdAt || ''),
         }))
@@ -3846,15 +3761,6 @@ function App({ initialModuleId }) {
     }
     const capturedAt = new Date().toISOString();
     const locationMetadata = await getWebClockLocationMetadata();
-    const stampedPhotoDataUrl = photoDataUrl
-      ? buildStampedPhotoDataUrl({
-          photoDataUrl,
-          locationAddress: locationMetadata?.locationAddress || '',
-          lat: locationMetadata?.lat,
-          lng: locationMetadata?.lng,
-          capturedAt,
-        })
-      : '';
     const baseRow = {
       id: existingRowIndex >= 0 ? currentRows[existingRowIndex].id : rowId,
       employee: effectiveEmployee.fullName,
@@ -3877,7 +3783,11 @@ function App({ initialModuleId }) {
       lat: Number.isFinite(locationMetadata?.lat) ? locationMetadata.lat : null,
       lng: Number.isFinite(locationMetadata?.lng) ? locationMetadata.lng : null,
       accuracy: typeof locationMetadata?.accuracy === 'number' ? locationMetadata.accuracy : null,
-      photoDataUrl: stampedPhotoDataUrl,
+      photoDataUrl,
+      photoLocationAddress: String(locationMetadata?.locationAddress || '').trim(),
+      photoLat: Number.isFinite(locationMetadata?.lat) ? locationMetadata.lat : undefined,
+      photoLng: Number.isFinite(locationMetadata?.lng) ? locationMetadata.lng : undefined,
+      photoCapturedAt: capturedAt,
       source: baseRow.source,
       createdAt: capturedAt,
     };
@@ -3910,6 +3820,14 @@ function App({ initialModuleId }) {
       if (!response.ok) {
         throw new Error('Failed to save clock-in record');
       }
+      const data = await response.json();
+      const savedRecord = data?.record || newRow;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'attendance-time': (prev['attendance-time'] || []).map((row) =>
+          String(row.id || '') === String(savedRecord.id || newRow.id) ? savedRecord : row
+        ),
+      }));
     } catch (error) {
       setModuleRowsState((prev) => ({
         ...prev,
@@ -9055,7 +8973,7 @@ function App({ initialModuleId }) {
           <div
             className="modal-card"
             onClick={(event) => event.stopPropagation()}
-            style={{ maxWidth: 'min(92vw, 960px)' }}
+            style={{ maxWidth: 'min(96vw, 1280px)', width: 'min(96vw, 1280px)' }}
           >
             <div className="modal-header">
               <h3>{attendancePhotoPreview.title || 'Clock Photo'}</h3>
@@ -9092,20 +9010,35 @@ function App({ initialModuleId }) {
                 </button>
               </div>
             </div>
-            <div className="attendance-ops-form" style={{ overflow: 'auto' }}>
-              <img
-                src={attendancePhotoPreview.src}
-                alt={attendancePhotoPreview.title || 'Clock photo'}
+            <div
+              className="attendance-ops-form"
+              style={{
+                overflow: 'auto',
+                maxHeight: '82vh',
+                background: '#020617',
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
+              <div
                 style={{
-                  width: '100%',
-                  maxHeight: '75vh',
-                  objectFit: 'contain',
-                  borderRadius: 16,
-                  background: '#0f172a',
-                  transform: `scale(${attendancePhotoPreviewZoom})`,
-                  transformOrigin: 'center center',
+                  width: `${Math.max(100, Math.round(attendancePhotoPreviewZoom * 100))}%`,
+                  minWidth: '420px',
+                  margin: '0 auto',
                 }}
-              />
+              >
+                <img
+                  src={attendancePhotoPreview.src}
+                  alt={attendancePhotoPreview.title || 'Clock photo'}
+                  style={{
+                    width: '100%',
+                    height: 'auto',
+                    display: 'block',
+                    borderRadius: 16,
+                    background: '#0f172a',
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>

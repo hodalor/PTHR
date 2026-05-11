@@ -1351,7 +1351,7 @@ export default function AttendanceTimePage({
           <div
             className="modal-card"
             onClick={(event) => event.stopPropagation()}
-            style={{ maxWidth: 'min(92vw, 960px)' }}
+            style={{ maxWidth: 'min(96vw, 1280px)', width: 'min(96vw, 1280px)' }}
           >
             <div className="modal-header">
               <h3>{attendancePhotoModal.title || 'Clock Photo'}</h3>
@@ -1388,20 +1388,35 @@ export default function AttendanceTimePage({
                 </button>
               </div>
             </div>
-            <div className="attendance-ops-form" style={{ overflow: 'auto' }}>
-              <img
-                src={attendancePhotoModal.src}
-                alt={attendancePhotoModal.title || 'Clock photo'}
+            <div
+              className="attendance-ops-form"
+              style={{
+                overflow: 'auto',
+                maxHeight: '82vh',
+                background: '#020617',
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
+              <div
                 style={{
-                  width: '100%',
-                  maxHeight: '75vh',
-                  objectFit: 'contain',
-                  borderRadius: 16,
-                  background: '#0f172a',
-                  transform: `scale(${attendancePhotoZoom})`,
-                  transformOrigin: 'center center',
+                  width: `${Math.max(100, Math.round(attendancePhotoZoom * 100))}%`,
+                  minWidth: '420px',
+                  margin: '0 auto',
                 }}
-              />
+              >
+                <img
+                  src={attendancePhotoModal.src}
+                  alt={attendancePhotoModal.title || 'Clock photo'}
+                  style={{
+                    width: '100%',
+                    height: 'auto',
+                    display: 'block',
+                    borderRadius: 16,
+                    background: '#0f172a',
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>

@@ -500,6 +500,12 @@ export default function AdminTrackingPage() {
       L.marker([employee.lat, employee.lng], {
         icon: createEmployeeAvatarIcon(employee, isSelected),
       })
+        .bindTooltip(employee.fullName || employee.employeeId || 'Employee', {
+          direction: 'top',
+          offset: [0, -32],
+          opacity: 0.94,
+          sticky: true,
+        })
         .bindPopup(buildEmployeeHoverCard(employee), {
           autoClose: false,
           closeButton: false,
@@ -508,9 +514,11 @@ export default function AdminTrackingPage() {
           offset: [0, -28],
         })
         .on('mouseover', function handleMouseOver() {
+          this.openTooltip();
           this.openPopup();
         })
         .on('mouseout', function handleMouseOut() {
+          this.closeTooltip();
           this.closePopup();
         })
         .on('click', () => setSelectedEmployeeId(employee.employeeId))

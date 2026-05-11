@@ -43,6 +43,12 @@ export const moduleUiData = {
       { key: 'fullName', label: 'Full Name', required: true },
       { key: 'dob', label: 'Date of Birth', type: 'date', required: true },
       {
+        key: 'gender',
+        label: 'Gender',
+        type: 'select',
+        options: ['Male', 'Female', 'Other'],
+      },
+      {
         key: 'idCardType',
         label: 'ID Card Type',
         type: 'select',
