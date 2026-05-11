@@ -485,6 +485,8 @@ function App({ initialModuleId }) {
   const [attendancePerformanceSearchText, setAttendancePerformanceSearchText] = useState('');
   const [selectedPerformanceEmployeeId, setSelectedPerformanceEmployeeId] = useState('');
   const [attendanceDetailModal, setAttendanceDetailModal] = useState({ type: '', key: '' });
+  const [attendancePhotoPreview, setAttendancePhotoPreview] = useState({ open: false, src: '', title: '' });
+  const [attendancePhotoPreviewZoom, setAttendancePhotoPreviewZoom] = useState(1);
   const [complianceReplayActive, setComplianceReplayActive] = useState(false);
   const [complianceReplayIndex, setComplianceReplayIndex] = useState(0);
   const [complianceReplaySpeed, setComplianceReplaySpeed] = useState(1);
@@ -552,6 +554,7 @@ function App({ initialModuleId }) {
     attendanceLateAfter: '08:15',
     attendanceReportTime: '08:00',
     attendanceShiftEnd: '17:00',
+    requireWebClockInPhoto: false,
     shifts: [
       {
         id: 'SHIFT-MORNING',
@@ -631,6 +634,7 @@ function App({ initialModuleId }) {
       enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
       allowClockIn: true,
       allowClockOut: true,
+      requireClockInPhoto: false,
       requireLocationOnClock: true,
       autoSendLocationOnClock: true,
       autoStartTrackingOnClockIn: true,
@@ -666,6 +670,17 @@ function App({ initialModuleId }) {
   const isMasterSuperAdmin = isSuperAdmin && String(currentUser?.tenantId || '').toLowerCase() === 'master';
 
   const allowedModulesByRole = useMemo(() => getAllowedModuleSetForUser(currentUser), [currentUser]);
+  const downloadAttendancePreviewPhoto = useCallback(() => {
+    if (!attendancePhotoPreview.src) {
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = attendancePhotoPreview.src;
+    link.download = `${String(attendancePhotoPreview.title || 'clock-photo')
+      .replace(/[^a-z0-9-_]+/gi, '-')
+      .replace(/^-+|-+$/g, '') || 'clock-photo'}.jpg`;
+    link.click();
+  }, [attendancePhotoPreview.src, attendancePhotoPreview.title]);
 
   const mobileModuleOptions = useMemo(
     () =>
@@ -995,6 +1010,10 @@ function App({ initialModuleId }) {
           attendanceLateAfter: String(data?.attendanceLateAfter || prev.attendanceLateAfter || '08:15'),
           attendanceReportTime: String(data?.attendanceReportTime || prev.attendanceReportTime || '08:00'),
           attendanceShiftEnd: String(data?.attendanceShiftEnd || prev.attendanceShiftEnd || '17:00'),
+          requireWebClockInPhoto:
+            data?.requireWebClockInPhoto === undefined
+              ? Boolean(prev.requireWebClockInPhoto)
+              : Boolean(data.requireWebClockInPhoto),
           payrollWorkingDays: Math.max(1, Number(data?.payrollWorkingDays) || prev.payrollWorkingDays || 26),
           attendanceCalculationMode: data?.attendanceCalculationMode === 'fixed' ? 'fixed' : 'auto',
           attendanceFixedDeductionPerMinute: Math.max(
@@ -1024,6 +1043,7 @@ function App({ initialModuleId }) {
       attendanceLateAfter: source.attendanceLateAfter,
       attendanceReportTime: source.attendanceReportTime,
       attendanceShiftEnd: source.attendanceShiftEnd,
+      requireWebClockInPhoto: Boolean(source.requireWebClockInPhoto),
       payrollWorkingDays: source.payrollWorkingDays,
       attendanceCalculationMode: source.attendanceCalculationMode,
       attendanceFixedDeductionPerMinute: source.attendanceFixedDeductionPerMinute,
@@ -2409,6 +2429,7 @@ function App({ initialModuleId }) {
           lat: typeof clocking.lat === 'number' ? clocking.lat : undefined,
           lng: typeof clocking.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking.accuracy === 'number' ? clocking.accuracy : null,
+          photoDataUrl: String(clocking.photoDataUrl || '').trim(),
           source: String(clocking.source || row.source || 'System'),
           createdAt: String(clocking.createdAt || ''),
         }))
@@ -3513,10 +3534,15 @@ function App({ initialModuleId }) {
       checkOutAccuracy: lastClockOut?.accuracy ?? null,
     };
   };
-  const handleClockIn = async () => {
+  const handleClockIn = async (options = {}) => {
+    const photoDataUrl = String(options?.photoDataUrl || '').trim();
     let effectiveEmployee = selectedAttendanceEmployee || getCurrentEmployeeRow();
     if (!effectiveEmployee || !effectiveEmployee.id) {
       showToast('Select an employee before clock in.', 'error');
+      return false;
+    }
+    if (Boolean(appSettings.requireWebClockInPhoto) && !photoDataUrl) {
+      showToast('Clock-in photo is required before clocking in on web.', 'error');
       return false;
     }
     const checkInTime = getCurrentClockValue();
@@ -3599,6 +3625,7 @@ function App({ initialModuleId }) {
       lat: null,
       lng: null,
       accuracy: null,
+      photoDataUrl,
       source: baseRow.source,
       createdAt: new Date().toISOString(),
     };
@@ -5690,6 +5717,21 @@ function App({ initialModuleId }) {
                         onBlur={() => saveAttendanceSettings({ ...appSettings })}
                       />
                     </label>
+                    <label className="inline-field">
+                      <span>Require Photo On Web Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.requireWebClockInPhoto)}
+                        onChange={(event) => {
+                          const nextSettings = {
+                            ...appSettings,
+                            requireWebClockInPhoto: event.target.checked,
+                          };
+                          setAppSettings(nextSettings);
+                          void saveAttendanceSettings(nextSettings);
+                        }}
+                      />
+                    </label>
                     <div className="attendance-audit-wrap" style={{ gridColumn: '1 / -1' }}>
                       <div className="attendance-audit-head">
                         <h4>Shift Templates</h4>
@@ -6418,6 +6460,22 @@ function App({ initialModuleId }) {
                             mobileApp: {
                               ...prev.mobileApp,
                               allowClockOut: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="inline-field">
+                      <span>Require Photo On Mobile Clock In</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(appSettings.mobileApp.requireClockInPhoto)}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            mobileApp: {
+                              ...prev.mobileApp,
+                              requireClockInPhoto: event.target.checked,
                             },
                           }))
                         }
@@ -8210,6 +8268,7 @@ function App({ initialModuleId }) {
                           <th>#</th>
                           <th>Mode</th>
                           <th>Time</th>
+                          <th>Photo</th>
                           <th>Latitude</th>
                           <th>Longitude</th>
                           <th>Accuracy</th>
@@ -8224,6 +8283,41 @@ function App({ initialModuleId }) {
                               <td>{index + 1}</td>
                               <td>{clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'}</td>
                               <td>{clocking.time || '—'}</td>
+                              <td>
+                                {clocking.photoDataUrl ? (
+                                  <button
+                                    type="button"
+                                    className="neutral-btn"
+                                    style={{ padding: 0, border: 'none', background: 'transparent' }}
+                                    onClick={() =>
+                                      {
+                                        setAttendancePhotoPreview({
+                                          open: true,
+                                          src: clocking.photoDataUrl,
+                                          title: `${selectedComplianceRow.employee} (${selectedComplianceRow.employeeId}) • ${
+                                            clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'
+                                          } ${clocking.time || ''}`,
+                                        });
+                                        setAttendancePhotoPreviewZoom(1);
+                                      }
+                                    }
+                                  >
+                                    <img
+                                      src={clocking.photoDataUrl}
+                                      alt={`${clocking.mode === 'clock-in' ? 'Clock-in' : 'Clock-out'} capture ${clocking.time || ''}`}
+                                      style={{
+                                        width: 56,
+                                        height: 56,
+                                        objectFit: 'cover',
+                                        borderRadius: 10,
+                                        border: '1px solid rgba(15, 23, 42, 0.12)',
+                                      }}
+                                    />
+                                  </button>
+                                ) : (
+                                  '—'
+                                )}
+                              </td>
                               <td>{typeof clocking.lat === 'number' ? clocking.lat.toFixed(6) : '—'}</td>
                               <td>{typeof clocking.lng === 'number' ? clocking.lng.toFixed(6) : '—'}</td>
                               <td>{typeof clocking.accuracy === 'number' ? `${Math.round(clocking.accuracy)} m` : '—'}</td>
@@ -8241,12 +8335,79 @@ function App({ initialModuleId }) {
                           ))
                         ) : (
                           <tr>
-                            <td colSpan={8}>No clocking events for this day.</td>
+                            <td colSpan={9}>No clocking events for this day.</td>
                           </tr>
                         )}
                       </tbody>
                     </table>
                   </div>
+                  {selectedComplianceClockings.some((clocking) => clocking.photoDataUrl) ? (
+                    <div className="employee-ops-card">
+                      <div className="employee-ops-header">
+                        <h5>Captured Clock Photos</h5>
+                        <span>
+                          {selectedComplianceClockings.filter((clocking) => clocking.photoDataUrl).length} photo(s)
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                          gap: 12,
+                        }}
+                      >
+                        {selectedComplianceClockings
+                          .filter((clocking) => clocking.photoDataUrl)
+                          .map((clocking, index) => (
+                            <button
+                              type="button"
+                              key={`${clocking.id || clocking.time || index}-photo`}
+                              onClick={() =>
+                                {
+                                  setAttendancePhotoPreview({
+                                    open: true,
+                                    src: clocking.photoDataUrl,
+                                    title: `${selectedComplianceRow.employee} (${selectedComplianceRow.employeeId}) • ${
+                                      clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'
+                                    } ${clocking.time || ''}`,
+                                  });
+                                  setAttendancePhotoPreviewZoom(1);
+                                }
+                              }
+                              style={{
+                                display: 'block',
+                                borderRadius: 14,
+                                overflow: 'hidden',
+                                background: '#f8fafc',
+                                border: '1px solid rgba(15, 23, 42, 0.08)',
+                                color: 'inherit',
+                                textAlign: 'left',
+                                padding: 0,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <img
+                                src={clocking.photoDataUrl}
+                                alt={`${clocking.mode === 'clock-in' ? 'Clock-in' : 'Clock-out'} proof ${clocking.time || ''}`}
+                                style={{
+                                  width: '100%',
+                                  height: 180,
+                                  objectFit: 'cover',
+                                  display: 'block',
+                                }}
+                              />
+                              <div style={{ padding: 10 }}>
+                                <strong>{clocking.mode === 'clock-in' ? 'Clock In' : 'Clock Out'}</strong>
+                                <div>{clocking.time || '—'}</div>
+                                <div style={{ color: '#64748b', fontSize: 12 }}>
+                                  Click to preview
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="attendance-audit-table">
                     <table>
                       <thead>
@@ -8672,6 +8833,72 @@ function App({ initialModuleId }) {
                 <p className="empty-state">No performance detail selected.</p>
               )
             ) : null}
+          </div>
+        </div>
+      ) : null}
+      {attendancePhotoPreview.open && attendancePhotoPreview.src ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setAttendancePhotoPreview({ open: false, src: '', title: '' });
+            setAttendancePhotoPreviewZoom(1);
+          }}
+        >
+          <div
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+            style={{ maxWidth: 'min(92vw, 960px)' }}
+          >
+            <div className="modal-header">
+              <h3>{attendancePhotoPreview.title || 'Clock Photo'}</h3>
+              <div className="employee-ops-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => setAttendancePhotoPreviewZoom((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))))}
+                >
+                  Zoom Out
+                </button>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => setAttendancePhotoPreviewZoom((prev) => Math.min(3, Number((prev + 0.25).toFixed(2))))}
+                >
+                  Zoom In
+                </button>
+                <button type="button" className="neutral-btn" onClick={() => setAttendancePhotoPreviewZoom(1)}>
+                  Reset
+                </button>
+                <button type="button" className="neutral-btn" onClick={downloadAttendancePreviewPhoto}>
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => {
+                    setAttendancePhotoPreview({ open: false, src: '', title: '' });
+                    setAttendancePhotoPreviewZoom(1);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="attendance-ops-form" style={{ overflow: 'auto' }}>
+              <img
+                src={attendancePhotoPreview.src}
+                alt={attendancePhotoPreview.title || 'Clock photo'}
+                style={{
+                  width: '100%',
+                  maxHeight: '75vh',
+                  objectFit: 'contain',
+                  borderRadius: 16,
+                  background: '#0f172a',
+                  transform: `scale(${attendancePhotoPreviewZoom})`,
+                  transformOrigin: 'center center',
+                }}
+              />
+            </div>
           </div>
         </div>
       ) : null}

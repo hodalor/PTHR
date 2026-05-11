@@ -1,6 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { filterEmployeesBySearch } from '../utils/employeeSearch';
 import { toApiUrl } from '../config/api';
+
+const getAttendanceRowPhoto = (row) => {
+  if (!Array.isArray(row?.clockings)) {
+    return '';
+  }
+  const clockingWithPhoto = row.clockings.find((clocking) => String(clocking?.photoDataUrl || '').trim());
+  return String(clockingWithPhoto?.photoDataUrl || '').trim();
+};
 
 export default function AttendanceTimePage({
   appSettings,
@@ -66,6 +74,13 @@ export default function AttendanceTimePage({
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
   const [isClockModalOpen, setIsClockModalOpen] = useState(false);
+  const [isClockCameraOpen, setIsClockCameraOpen] = useState(false);
+  const [clockCameraError, setClockCameraError] = useState('');
+  const [attendancePhotoModal, setAttendancePhotoModal] = useState({ open: false, src: '', title: '' });
+  const [attendancePhotoZoom, setAttendancePhotoZoom] = useState(1);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
   const [complianceSort, setComplianceSort] = useState({ key: 'employee', direction: 'asc' });
   const [penaltySort, setPenaltySort] = useState({ key: 'date', direction: 'desc' });
   const [performanceSort, setPerformanceSort] = useState({ key: 'attendanceScore', direction: 'desc' });
@@ -105,6 +120,17 @@ export default function AttendanceTimePage({
     }
     return state.direction === 'asc' ? ' ▲' : ' ▼';
   };
+  const downloadAttendancePhoto = useCallback(() => {
+    if (!attendancePhotoModal.src) {
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = attendancePhotoModal.src;
+    link.download = `${String(attendancePhotoModal.title || 'clock-photo')
+      .replace(/[^a-z0-9-_]+/gi, '-')
+      .replace(/^-+|-+$/g, '') || 'clock-photo'}.jpg`;
+    link.click();
+  }, [attendancePhotoModal.src, attendancePhotoModal.title]);
   const sortedComplianceRows = useMemo(() => {
     return [...attendanceComplianceFilteredRows].sort((a, b) => {
       if (complianceSort.key === 'lateFlag') {
@@ -162,6 +188,63 @@ export default function AttendanceTimePage({
     shiftOptions,
   ]);
 
+  const stopClockCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopClockCamera();
+    };
+  }, [stopClockCamera]);
+
+  useEffect(() => {
+    if (!isClockCameraOpen) {
+      stopClockCamera();
+      return undefined;
+    }
+    let cancelled = false;
+    const startClockCamera = async () => {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setClockCameraError('Camera access is not available in this browser. Use HTTPS or localhost and try again.');
+        return;
+      }
+      setClockCameraError('');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+      } catch (error) {
+        setClockCameraError('Camera permission was denied or the camera is unavailable.');
+      }
+    };
+    startClockCamera();
+    return () => {
+      cancelled = true;
+      stopClockCamera();
+    };
+  }, [isClockCameraOpen, stopClockCamera]);
+
   useEffect(() => {
     if (attendanceViewTab !== 'tracking') {
       return undefined;
@@ -205,16 +288,48 @@ export default function AttendanceTimePage({
 
   const resetClockModalState = useCallback(() => {
     setAttendanceSearchText('');
+    setIsClockCameraOpen(false);
+    setClockCameraError('');
+    stopClockCamera();
     setAttendanceClockDraft((prev) => ({
       ...prev,
       employeeId: '',
       shift: shiftOptions[0] || prev.shift || 'Default',
     }));
     setIsClockModalOpen(false);
-  }, [setAttendanceClockDraft, setAttendanceSearchText, shiftOptions]);
+  }, [setAttendanceClockDraft, setAttendanceSearchText, shiftOptions, stopClockCamera]);
 
   const handleClockInSubmit = useCallback(async () => {
+    if (Boolean(appSettings.requireWebClockInPhoto)) {
+      setClockCameraError('');
+      setIsClockCameraOpen(true);
+      return;
+    }
     const success = await handleClockIn();
+    if (success) {
+      resetClockModalState();
+    }
+  }, [appSettings.requireWebClockInPhoto, handleClockIn, resetClockModalState]);
+
+  const handleCaptureClockInPhoto = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current) {
+      setClockCameraError('Camera preview is not ready yet. Please wait a moment and try again.');
+      return;
+    }
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    const width = video.videoWidth || 720;
+    const height = video.videoHeight || 960;
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      setClockCameraError('Unable to process the captured photo.');
+      return;
+    }
+    context.drawImage(video, 0, 0, width, height);
+    const photoDataUrl = canvas.toDataURL('image/jpeg', 0.72);
+    const success = await handleClockIn({ photoDataUrl });
     if (success) {
       resetClockModalState();
     }
@@ -318,6 +433,7 @@ export default function AttendanceTimePage({
                 <tr>
                   <th>Employee</th>
                   <th>Shift</th>
+                  <th>Photo</th>
                   <th>Clock In</th>
                   <th>Clock Out</th>
                   <th>Status</th>
@@ -332,6 +448,37 @@ export default function AttendanceTimePage({
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.shift}</td>
+                      <td>
+                        {getAttendanceRowPhoto(row) ? (
+                          <button
+                            type="button"
+                            className="neutral-btn"
+                            style={{ padding: 0, border: 'none', background: 'transparent' }}
+                            onClick={() => {
+                              setAttendancePhotoModal({
+                                open: true,
+                                src: getAttendanceRowPhoto(row),
+                                title: `${row.employee} (${row.employeeId})`,
+                              });
+                              setAttendancePhotoZoom(1);
+                            }}
+                          >
+                            <img
+                              src={getAttendanceRowPhoto(row)}
+                              alt={`${row.employee} attendance proof`}
+                              style={{
+                                width: 48,
+                                height: 48,
+                                objectFit: 'cover',
+                                borderRadius: 10,
+                                border: '1px solid rgba(15, 23, 42, 0.12)',
+                              }}
+                            />
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td>{row.checkIn || '—'}</td>
                       <td>{row.checkOut || '—'}</td>
                       <td>{row.status}</td>
@@ -340,7 +487,7 @@ export default function AttendanceTimePage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={6}>No attendance logs for today.</td>
+                    <td colSpan={7}>No attendance logs for today.</td>
                   </tr>
                 )}
               </tbody>
@@ -411,6 +558,7 @@ export default function AttendanceTimePage({
                       Shift{sortArrow(complianceSort, 'shift')}
                     </button>
                   </th>
+                  <th>Photo</th>
                   <th>
                     <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'checkIn')}>
                       Clock In{sortArrow(complianceSort, 'checkIn')}
@@ -449,6 +597,37 @@ export default function AttendanceTimePage({
                         {row.employee} ({row.employeeId})
                       </td>
                       <td>{row.shift}</td>
+                      <td>
+                        {getAttendanceRowPhoto(row) ? (
+                          <button
+                            type="button"
+                            className="neutral-btn"
+                            style={{ padding: 0, border: 'none', background: 'transparent' }}
+                            onClick={() => {
+                              setAttendancePhotoModal({
+                                open: true,
+                                src: getAttendanceRowPhoto(row),
+                                title: `${row.employee} (${row.employeeId})`,
+                              });
+                              setAttendancePhotoZoom(1);
+                            }}
+                          >
+                            <img
+                              src={getAttendanceRowPhoto(row)}
+                              alt={`${row.employee} compliance proof`}
+                              style={{
+                                width: 44,
+                                height: 44,
+                                objectFit: 'cover',
+                                borderRadius: 10,
+                                border: '1px solid rgba(15, 23, 42, 0.12)',
+                              }}
+                            />
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td>{row.checkIn || '—'}</td>
                       <td>{row.checkOut || '—'}</td>
                       <td>{row.dailyStatus}</td>
@@ -457,7 +636,7 @@ export default function AttendanceTimePage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={6}>No records for the selected filters.</td>
+                    <td colSpan={7}>No records for the selected filters.</td>
                   </tr>
                 )}
               </tbody>
@@ -1110,6 +1289,120 @@ export default function AttendanceTimePage({
                   Clock Out
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {attendanceViewTab === 'clock' && isClockCameraOpen ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setIsClockCameraOpen(false);
+            setClockCameraError('');
+          }}
+        >
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Capture Clock-In Photo</h3>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() => {
+                  setIsClockCameraOpen(false);
+                  setClockCameraError('');
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="attendance-ops-form">
+              <p>Take a clear photo to complete this web clock-in.</p>
+              {clockCameraError ? <p className="form-error">{clockCameraError}</p> : null}
+              <video
+                ref={videoRef}
+                autoPlay
+                muted
+                playsInline
+                style={{
+                  width: '100%',
+                  maxHeight: '360px',
+                  backgroundColor: '#111827',
+                  borderRadius: '16px',
+                  objectFit: 'cover',
+                }}
+              />
+              <canvas ref={canvasRef} style={{ display: 'none' }} />
+              <div className="attendance-ops-actions">
+                <button type="button" className="primary-btn" onClick={handleCaptureClockInPhoto}>
+                  Take Photo & Clock In
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {attendancePhotoModal.open && attendancePhotoModal.src ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setAttendancePhotoModal({ open: false, src: '', title: '' });
+            setAttendancePhotoZoom(1);
+          }}
+        >
+          <div
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+            style={{ maxWidth: 'min(92vw, 960px)' }}
+          >
+            <div className="modal-header">
+              <h3>{attendancePhotoModal.title || 'Clock Photo'}</h3>
+              <div className="employee-ops-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => setAttendancePhotoZoom((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))))}
+                >
+                  Zoom Out
+                </button>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => setAttendancePhotoZoom((prev) => Math.min(3, Number((prev + 0.25).toFixed(2))))}
+                >
+                  Zoom In
+                </button>
+                <button type="button" className="neutral-btn" onClick={() => setAttendancePhotoZoom(1)}>
+                  Reset
+                </button>
+                <button type="button" className="neutral-btn" onClick={downloadAttendancePhoto}>
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() => {
+                    setAttendancePhotoModal({ open: false, src: '', title: '' });
+                    setAttendancePhotoZoom(1);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="attendance-ops-form" style={{ overflow: 'auto' }}>
+              <img
+                src={attendancePhotoModal.src}
+                alt={attendancePhotoModal.title || 'Clock photo'}
+                style={{
+                  width: '100%',
+                  maxHeight: '75vh',
+                  objectFit: 'contain',
+                  borderRadius: 16,
+                  background: '#0f172a',
+                  transform: `scale(${attendancePhotoZoom})`,
+                  transformOrigin: 'center center',
+                }}
+              />
             </div>
           </div>
         </div>
