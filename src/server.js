@@ -174,6 +174,21 @@ function splitStampLines(value, maxLineLength = 34) {
   return lines.slice(0, 3);
 }
 
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function firstNonEmpty(values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || '';
+}
+
+function compactUnique(values) {
+  return values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .filter((value, index, list) => list.indexOf(value) === index);
+}
+
 function formatPhotoStampTime(value) {
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) {
@@ -204,9 +219,39 @@ function buildCoordinateFallbackLabel(lat, lng) {
   return 'Location unavailable';
 }
 
-async function fetchReverseGeocodeLabel(lat, lng) {
+function buildLocationStampParts(locationDetails, lat, lng) {
+  const details = locationDetails || {};
+  const address = details.address || {};
+  const country = firstNonEmpty([address.country]);
+  const region = firstNonEmpty([address.state, address.region, address.province]);
+  const city = firstNonEmpty([address.city, address.town, address.village, address.municipality, address.county]);
+  const suburb = firstNonEmpty([
+    address.suburb,
+    address.neighbourhood,
+    address.city_district,
+    address.quarter,
+    address.residential,
+    address.hamlet,
+  ]);
+  const district = firstNonEmpty([address.city_district, address.state_district, address.county]);
+  const street = firstNonEmpty([address.road, address.street, address.pedestrian, address.footway, address.path]);
+  const block = firstNonEmpty([address.house_number, address.block, address.building, address.house_name, address.amenity]);
+  const preferredTitle = compactUnique([city, suburb, region, country]).join(', ');
+  const fallbackDisplay = String(details.displayName || '').trim();
+  const detailPrimary = compactUnique([street, block]).join(', ');
+  const detailSecondary = compactUnique([district, city, region, country]).join(', ');
+  const title = preferredTitle || fallbackDisplay || buildCoordinateFallbackLabel(lat, lng);
+  const detailLines = compactUnique([detailPrimary, detailSecondary]).filter((line) => line && line !== title);
+  return {
+    title,
+    detailLines,
+    displayLabel: compactUnique([title, ...detailLines]).join(' • ') || buildCoordinateFallbackLabel(lat, lng),
+  };
+}
+
+async function fetchReverseGeocodeDetails(lat, lng) {
   if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
-    return '';
+    return { displayName: '', address: {} };
   }
   try {
     const response = await fetch(
@@ -222,12 +267,15 @@ async function fetchReverseGeocodeLabel(lat, lng) {
       }
     );
     if (!response.ok) {
-      return '';
+      return { displayName: '', address: {} };
     }
     const data = await response.json();
-    return String(data?.display_name || '').trim();
+    return {
+      displayName: String(data?.display_name || '').trim(),
+      address: data?.address || {},
+    };
   } catch (error) {
-    return '';
+    return { displayName: '', address: {} };
   }
 }
 
@@ -250,9 +298,73 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
       metadata.height > 0
         ? Math.max(480, Math.round((metadata.height / metadata.width) * targetWidth))
         : 960;
-    const resolvedAddress = String(locationAddress || '').trim() || buildCoordinateFallbackLabel(lat, lng);
-    const titleText = splitStampLines(resolvedAddress, 28)[0] || 'Location Verified';
-    const addressLines = splitStampLines(resolvedAddress, 34).slice(0, 2);
+    const isLandscape = targetWidth >= targetHeight;
+    const shortestEdge = Math.min(targetWidth, targetHeight);
+    const locationDetails = String(locationAddress || '').trim()
+      ? { displayName: String(locationAddress || '').trim(), address: {} }
+      : await fetchReverseGeocodeDetails(lat, lng);
+    const stampParts = buildLocationStampParts(locationDetails, lat, lng);
+    const titleLines = splitStampLines(stampParts.title, isLandscape ? 30 : 22).slice(0, 2);
+    const detailLines = stampParts.detailLines
+      .flatMap((line) => splitStampLines(line, isLandscape ? 40 : 28))
+      .slice(0, isLandscape ? 2 : 3);
+    const margin = Math.round(shortestEdge * 0.04);
+    const panelWidth = Math.round(targetWidth * (isLandscape ? 0.56 : 0.86));
+    const padX = Math.round(shortestEdge * (isLandscape ? 0.035 : 0.045));
+    const padY = Math.round(shortestEdge * (isLandscape ? 0.03 : 0.038));
+    const headerFont = clamp(Math.round(shortestEdge * 0.026), 14, 24);
+    const titleFont = clamp(Math.round(shortestEdge * (isLandscape ? 0.042 : 0.05)), 22, 40);
+    const detailFont = clamp(Math.round(shortestEdge * 0.027), 15, 23);
+    const metaFont = clamp(Math.round(shortestEdge * 0.024), 13, 20);
+    const iconRadius = clamp(Math.round(shortestEdge * 0.017), 12, 20);
+    const headerLineHeight = Math.round(headerFont * 1.25);
+    const titleLineHeight = Math.round(titleFont * 1.08);
+    const detailLineHeight = Math.round(detailFont * 1.18);
+    const metaLineHeight = Math.round(metaFont * 1.2);
+    const lineGap = clamp(Math.round(shortestEdge * 0.008), 4, 10);
+    const sectionGap = clamp(Math.round(shortestEdge * 0.014), 8, 16);
+    const panelHeight =
+      padY * 2 +
+      Math.max(iconRadius * 2, headerLineHeight) +
+      sectionGap +
+      titleLines.length * titleLineHeight +
+      Math.max(0, titleLines.length - 1) * lineGap +
+      (detailLines.length > 0 ? sectionGap + detailLines.length * detailLineHeight + Math.max(0, detailLines.length - 1) * lineGap : 0) +
+      sectionGap +
+      metaLineHeight * 2 +
+      lineGap;
+    const panelX = Math.max(margin, targetWidth - panelWidth - margin);
+    const panelY = Math.max(margin, targetHeight - panelHeight - margin);
+    const headerTextX = panelX + padX + iconRadius * 2 + 16;
+    const coordinateText = formatCoordinateLabel(lat, lng);
+    const timeText = formatPhotoStampTime(capturedAt) || 'Time unavailable';
+    let textCursorY = panelY + padY;
+    const headerBaselineY = textCursorY + Math.max(iconRadius * 2, headerLineHeight) * 0.72;
+    textCursorY += Math.max(iconRadius * 2, headerLineHeight) + sectionGap;
+    const titleSvg = titleLines
+      .map((line) => {
+        const y = textCursorY + titleLineHeight * 0.84;
+        textCursorY += titleLineHeight + lineGap;
+        return `<text x="${panelX + padX}" y="${Math.round(y)}" fill="#ffffff" font-size="${titleFont}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(
+          line
+        )}</text>`;
+      })
+      .join('');
+    if (titleLines.length > 0) {
+      textCursorY += sectionGap - lineGap;
+    }
+    const detailSvg = detailLines
+      .map((line) => {
+        const y = textCursorY + detailLineHeight * 0.82;
+        textCursorY += detailLineHeight + lineGap;
+        return `<text x="${panelX + padX}" y="${Math.round(y)}" fill="#d7e3ff" font-size="${detailFont}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(
+          line
+        )}</text>`;
+      })
+      .join('');
+    if (detailLines.length > 0) {
+      textCursorY += sectionGap - lineGap;
+    }
     const overlaySvg = `
       <svg xmlns="http://www.w3.org/2000/svg" width="${targetWidth}" height="${targetHeight}" viewBox="0 0 ${targetWidth} ${targetHeight}">
         <defs>
@@ -262,60 +374,42 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
           </linearGradient>
         </defs>
         <g>
-          <rect x="${Math.round(targetWidth * 0.045)}" y="${Math.round(targetHeight * 0.77)}" width="${Math.round(
-            targetWidth * 0.91
-          )}" height="${Math.round(targetHeight * 0.19)}" rx="24" fill="url(#stampGlow)" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
-          <circle cx="${Math.round(targetWidth * 0.105)}" cy="${Math.round(targetHeight * 0.817)}" r="${Math.round(
-            targetWidth * 0.025
-          )}" fill="#ef4444" />
-          <path d="M${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.787)} C${Math.round(
-            targetWidth * 0.118
-          )} ${Math.round(targetHeight * 0.787)} ${Math.round(targetWidth * 0.128)} ${Math.round(
-            targetHeight * 0.797
-          )} ${Math.round(targetWidth * 0.128)} ${Math.round(targetHeight * 0.809)} C${Math.round(
-            targetWidth * 0.128
-          )} ${Math.round(targetHeight * 0.825)} ${Math.round(targetWidth * 0.105)} ${Math.round(
-            targetHeight * 0.844
-          )} ${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.844)} C${Math.round(
-            targetWidth * 0.105
-          )} ${Math.round(targetHeight * 0.844)} ${Math.round(targetWidth * 0.082)} ${Math.round(
-            targetHeight * 0.825
-          )} ${Math.round(targetWidth * 0.082)} ${Math.round(targetHeight * 0.809)} C${Math.round(
-            targetWidth * 0.082
-          )} ${Math.round(targetHeight * 0.797)} ${Math.round(targetWidth * 0.092)} ${Math.round(
-            targetHeight * 0.787
-          )} ${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.787)} Z" fill="#ef4444" />
-          <circle cx="${Math.round(targetWidth * 0.105)}" cy="${Math.round(targetHeight * 0.809)}" r="${Math.round(
-            targetWidth * 0.0105
-          )}" fill="#ffffff" />
-          <text x="${Math.round(targetWidth * 0.165)}" y="${Math.round(
-            targetHeight * 0.818
-          )}" fill="#ffffff" font-size="${Math.round(targetWidth * 0.025)}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
-          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
-            targetHeight * 0.865
-          )}" fill="#ffffff" font-size="${Math.round(targetWidth * 0.053)}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(
-      titleText
-    )}</text>
-          ${addressLines
-            .map(
-              (line, index) =>
-                `<text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
-                  targetHeight * (0.907 + index * 0.027)
-                )}" fill="#d7e3ff" font-size="${Math.round(
-                  targetWidth * 0.031
-                )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(line)}</text>`
-            )
-            .join('')}
-          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
-            targetHeight * 0.963
-          )}" fill="#d7e3ff" font-size="${Math.round(
-      targetWidth * 0.028
-    )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(formatCoordinateLabel(lat, lng))}</text>
-          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
-            targetHeight * 0.988
-          )}" fill="#d7e3ff" font-size="${Math.round(
-      targetWidth * 0.028
-    )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(formatPhotoStampTime(capturedAt) || 'Time unavailable')}</text>
+          <rect x="${panelX}" y="${panelY}" width="${panelWidth}" height="${panelHeight}" rx="${Math.round(
+      shortestEdge * 0.03
+    )}" fill="url(#stampGlow)" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
+          <circle cx="${panelX + padX + iconRadius}" cy="${panelY + padY + iconRadius}" r="${iconRadius}" fill="#ef4444" />
+          <path d="M${panelX + padX + iconRadius} ${panelY + padY + Math.round(iconRadius * 0.22)} C${panelX + padX + Math.round(
+      iconRadius * 1.55
+    )} ${panelY + padY + Math.round(iconRadius * 0.22)} ${panelX + padX + Math.round(iconRadius * 1.95)} ${
+      panelY + padY + Math.round(iconRadius * 0.62)
+    } ${panelX + padX + Math.round(iconRadius * 1.95)} ${panelY + padY + Math.round(iconRadius * 1.08)} C${
+      panelX + padX + Math.round(iconRadius * 1.95)
+    } ${panelY + padY + Math.round(iconRadius * 1.72)} ${panelX + padX + iconRadius} ${
+      panelY + padY + Math.round(iconRadius * 2.45)
+    } ${panelX + padX + iconRadius} ${panelY + padY + Math.round(iconRadius * 2.45)} C${panelX + padX + iconRadius} ${
+      panelY + padY + Math.round(iconRadius * 2.45)
+    } ${panelX + padX + Math.round(iconRadius * 0.05)} ${panelY + padY + Math.round(iconRadius * 1.72)} ${
+      panelX + padX + Math.round(iconRadius * 0.05)
+    } ${panelY + padY + Math.round(iconRadius * 1.08)} C${panelX + padX + Math.round(iconRadius * 0.05)} ${
+      panelY + padY + Math.round(iconRadius * 0.62)
+    } ${panelX + padX + Math.round(iconRadius * 0.45)} ${panelY + padY + Math.round(iconRadius * 0.22)} ${
+      panelX + padX + iconRadius
+    } ${panelY + padY + Math.round(iconRadius * 0.22)} Z" fill="#ef4444" />
+          <circle cx="${panelX + padX + iconRadius}" cy="${panelY + padY + Math.round(iconRadius * 0.95)}" r="${Math.max(
+      5,
+      Math.round(iconRadius * 0.42)
+    )}" fill="#ffffff" />
+          <text x="${headerTextX}" y="${Math.round(
+      headerBaselineY
+    )}" fill="#ffffff" font-size="${headerFont}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
+          ${titleSvg}
+          ${detailSvg}
+          <text x="${panelX + padX}" y="${Math.round(
+      textCursorY + metaLineHeight * 0.82
+    )}" fill="#d7e3ff" font-size="${metaFont}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(coordinateText)}</text>
+          <text x="${panelX + padX}" y="${Math.round(
+      textCursorY + metaLineHeight + lineGap + metaLineHeight * 0.82
+    )}" fill="#d7e3ff" font-size="${metaFont}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(timeText)}</text>
         </g>
       </svg>
     `;
@@ -336,17 +430,19 @@ async function processAttendanceClockings(clockings) {
     normalizedClockings.map(async (clocking) => {
       const lat = typeof clocking?.photoLat === 'number' ? clocking.photoLat : clocking?.lat;
       const lng = typeof clocking?.photoLng === 'number' ? clocking.photoLng : clocking?.lng;
-      const resolvedAddress =
-        String(clocking?.photoLocationAddress || '').trim() || (await fetchReverseGeocodeLabel(lat, lng));
+      const locationDetails = String(clocking?.photoLocationAddress || '').trim()
+        ? { displayName: String(clocking.photoLocationAddress).trim(), address: {} }
+        : await fetchReverseGeocodeDetails(lat, lng);
+      const stampParts = buildLocationStampParts(locationDetails, lat, lng);
       return {
         ...clocking,
-        photoLocationAddress: resolvedAddress || buildCoordinateFallbackLabel(lat, lng),
+        photoLocationAddress: stampParts.displayLabel || buildCoordinateFallbackLabel(lat, lng),
         photoLat: typeof lat === 'number' && Number.isFinite(lat) ? lat : undefined,
         photoLng: typeof lng === 'number' && Number.isFinite(lng) ? lng : undefined,
         photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),
         photoDataUrl: await buildStampedPhotoDataUrl({
           photoDataUrl: clocking?.photoDataUrl,
-          locationAddress: resolvedAddress,
+          locationAddress: stampParts.displayLabel,
           lat,
           lng,
           capturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),

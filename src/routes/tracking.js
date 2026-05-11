@@ -382,9 +382,43 @@ function buildCoordinateFallbackLabel(lat, lng) {
   return 'Location unavailable';
 }
 
-async function fetchReverseGeocodeDisplayName(lat, lng) {
+function firstNonEmpty(values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || '';
+}
+
+function compactUnique(values) {
+  return values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .filter((value, index, list) => list.indexOf(value) === index);
+}
+
+function buildLocationDisplayLabel(locationDetails, lat, lng) {
+  const details = locationDetails || {};
+  const address = details.address || {};
+  const country = firstNonEmpty([address.country]);
+  const region = firstNonEmpty([address.state, address.region, address.province]);
+  const city = firstNonEmpty([address.city, address.town, address.village, address.municipality, address.county]);
+  const suburb = firstNonEmpty([
+    address.suburb,
+    address.neighbourhood,
+    address.city_district,
+    address.quarter,
+    address.residential,
+    address.hamlet,
+  ]);
+  const district = firstNonEmpty([address.city_district, address.state_district, address.county]);
+  const street = firstNonEmpty([address.road, address.street, address.pedestrian, address.footway, address.path]);
+  const block = firstNonEmpty([address.house_number, address.block, address.building, address.house_name, address.amenity]);
+  const title = compactUnique([city, suburb, region, country]).join(', ') || String(details.displayName || '').trim();
+  const detailPrimary = compactUnique([street, block]).join(', ');
+  const detailSecondary = compactUnique([district, city, region, country]).join(', ');
+  return compactUnique([title, detailPrimary, detailSecondary]).join(' • ') || buildCoordinateFallbackLabel(lat, lng);
+}
+
+async function fetchReverseGeocodeDetails(lat, lng) {
   if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
-    return '';
+    return { displayName: '', address: {} };
   }
   try {
     const response = await fetch(
@@ -400,12 +434,15 @@ async function fetchReverseGeocodeDisplayName(lat, lng) {
       }
     );
     if (!response.ok) {
-      return '';
+      return { displayName: '', address: {} };
     }
     const data = await response.json();
-    return String(data?.display_name || '').trim();
+    return {
+      displayName: String(data?.display_name || '').trim(),
+      address: data?.address || {},
+    };
   } catch (error) {
-    return '';
+    return { displayName: '', address: {} };
   }
 }
 
@@ -436,8 +473,10 @@ router.post('/location', async (req, res) => {
 
   const latNum = toNumber(lat);
   const lngNum = toNumber(lng);
-  const resolvedLocationAddress =
-    String(locationAddress || '').trim() || (await fetchReverseGeocodeDisplayName(latNum, lngNum)) || buildCoordinateFallbackLabel(latNum, lngNum);
+  const reverseGeocodeDetails = String(locationAddress || '').trim()
+    ? { displayName: String(locationAddress || '').trim(), address: {} }
+    : await fetchReverseGeocodeDetails(latNum, lngNum);
+  const resolvedLocationAddress = buildLocationDisplayLabel(reverseGeocodeDetails, latNum, lngNum);
 
   let distanceMeters = null;
   let insideGeofence = null;
@@ -487,7 +526,6 @@ router.post('/location', async (req, res) => {
     lat: latNum,
     lng: lngNum,
     locationLabel: locationLabel || null,
-    locationAddress: locationAddress || null,
     locationAddress: resolvedLocationAddress || null,
     wifiSsid: wifiSsid || null,
     wifiBssid: wifiBssid || null,
@@ -765,10 +803,11 @@ router.get('/reverse-geocode', async (req, res) => {
     return res.status(400).json({ error: 'lat and lng are required' });
   }
   try {
-    const displayName = (await fetchReverseGeocodeDisplayName(lat, lng)) || buildCoordinateFallbackLabel(lat, lng);
+    const details = await fetchReverseGeocodeDetails(lat, lng);
+    const displayName = buildLocationDisplayLabel(details, lat, lng);
     return res.json({
       displayName,
-      address: {},
+      address: details.address || {},
     });
   } catch (error) {
     return res.json({ displayName: buildCoordinateFallbackLabel(lat, lng), address: {} });
