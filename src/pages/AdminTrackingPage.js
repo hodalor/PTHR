@@ -24,7 +24,22 @@ const resolveMarkerColor = (status) => {
   return '#8b97c4';
 };
 
+const getIsoDateString = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toISOString().slice(0, 10);
+};
+
+const createViewState = () => ({
+  hasAutoCentered: false,
+  lastFocusEmployeeId: '',
+  lastMarkerCount: 0,
+});
+
 export default function AdminTrackingPage() {
+  const todayTrackingDate = getIsoDateString();
   const [trackingTab, setTrackingTab] = useState('overview');
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
@@ -38,6 +53,7 @@ export default function AdminTrackingPage() {
   const [riskFromDate, setRiskFromDate] = useState('');
   const [riskToDate, setRiskToDate] = useState('');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [selectedTrackingDate, setSelectedTrackingDate] = useState(todayTrackingDate);
   const [movementTrail, setMovementTrail] = useState([]);
   const [trailLoading, setTrailLoading] = useState(false);
   const [trailError, setTrailError] = useState('');
@@ -56,6 +72,9 @@ export default function AdminTrackingPage() {
   const detailMapElementRef = useRef(null);
   const detailMapRef = useRef(null);
   const detailLayerRef = useRef(null);
+  const overviewViewStateRef = useRef(createViewState());
+  const fullViewStateRef = useRef(createViewState());
+  const detailViewStateRef = useRef(createViewState());
 
   const employeesWithCoordinates = useMemo(
     () =>
@@ -73,6 +92,7 @@ export default function AdminTrackingPage() {
     () => trackingEmployees.find((employee) => employee.employeeId === selectedEmployeeId) || null,
     [selectedEmployeeId, trackingEmployees]
   );
+  const isViewingToday = selectedTrackingDate === todayTrackingDate;
 
   useEffect(() => {
     if (!selectedEmployeeId && trackingEmployees.length > 0) {
@@ -150,7 +170,11 @@ export default function AdminTrackingPage() {
         setTrailLoading(true);
         setTrailError('');
         const response = await fetch(
-          toApiUrl(`http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=200`)
+          toApiUrl(
+            `http://localhost:8000/api/tracking/movement/${encodeURIComponent(selectedEmployeeId)}?limit=200&date=${encodeURIComponent(
+              selectedTrackingDate
+            )}`
+          )
         );
         if (!response.ok) {
           throw new Error('Failed to load movement trail');
@@ -171,12 +195,17 @@ export default function AdminTrackingPage() {
       }
     };
     fetchTrail();
+    if (!isViewingToday) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const intervalId = setInterval(fetchTrail, 1500);
     return () => {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [selectedEmployeeId]);
+  }, [isViewingToday, selectedEmployeeId, selectedTrackingDate]);
 
   useEffect(() => {
     if (!selectedEmployee || typeof selectedEmployee.lat !== 'number' || typeof selectedEmployee.lng !== 'number') {
@@ -356,6 +385,7 @@ export default function AdminTrackingPage() {
     mapRef,
     mapElementRef,
     layerRef,
+    viewStateRef,
     height = 400,
     focusEmployeeId = '',
     showAllEmployees = true,
@@ -385,6 +415,7 @@ export default function AdminTrackingPage() {
       }).addTo(mapRef.current);
     }
     const map = mapRef.current;
+    const viewState = viewStateRef.current;
     map.invalidateSize();
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
@@ -403,7 +434,17 @@ export default function AdminTrackingPage() {
         fillColor: resolveMarkerColor(employee.status),
         fillOpacity: 0.95,
       })
-        .bindPopup(`${employee.fullName} (${employee.employeeId}) • ${employee.status || 'UNKNOWN'}`)
+        .bindTooltip(`${employee.fullName} (${employee.employeeId})`, {
+          direction: 'top',
+          offset: [0, -8],
+          opacity: 0.95,
+        })
+        .on('mouseover', function handleMouseOver() {
+          this.openTooltip();
+        })
+        .on('mouseout', function handleMouseOut() {
+          this.closeTooltip();
+        })
         .on('click', () => setSelectedEmployeeId(employee.employeeId))
         .addTo(layerGroup);
     });
@@ -436,7 +477,11 @@ export default function AdminTrackingPage() {
     }
     layerGroup.addTo(map);
     layerRef.current = layerGroup;
-    if (enableFitBounds) {
+    const shouldReframeView =
+      !viewState.hasAutoCentered ||
+      viewState.lastFocusEmployeeId !== focusEmployeeId ||
+      (viewState.lastMarkerCount === 0 && markerSource.length > 0);
+    if (enableFitBounds && shouldReframeView) {
       const boundsCoordinates = [
         ...markerSource.map((employee) => [employee.lat, employee.lng]),
         ...pathCoordinates,
@@ -446,9 +491,12 @@ export default function AdminTrackingPage() {
       } else {
         map.setView(center, 14);
       }
-    } else {
-      map.panTo(center);
+    } else if (!enableFitBounds && shouldReframeView) {
+      map.setView(center, map.getZoom() || 15);
     }
+    viewState.hasAutoCentered = true;
+    viewState.lastFocusEmployeeId = focusEmployeeId;
+    viewState.lastMarkerCount = markerSource.length;
     element.style.height = `${height}px`;
   }, [employeesWithCoordinates, selectedEmployee]);
 
@@ -457,6 +505,7 @@ export default function AdminTrackingPage() {
       mapRef: overviewMapRef,
       mapElementRef: overviewMapElementRef,
       layerRef: overviewLayerRef,
+      viewStateRef: overviewViewStateRef,
       height: 400,
       focusEmployeeId: selectedEmployeeId,
       showAllEmployees: true,
@@ -473,6 +522,7 @@ export default function AdminTrackingPage() {
       mapRef: fullMapRef,
       mapElementRef: fullMapElementRef,
       layerRef: fullLayerRef,
+      viewStateRef: fullViewStateRef,
       height: 620,
       focusEmployeeId: selectedEmployeeId,
       showAllEmployees: true,
@@ -489,6 +539,7 @@ export default function AdminTrackingPage() {
       mapRef: detailMapRef,
       mapElementRef: detailMapElementRef,
       layerRef: detailLayerRef,
+      viewStateRef: detailViewStateRef,
       height: 280,
       focusEmployeeId: selectedEmployee.employeeId,
       showAllEmployees: false,
@@ -527,7 +578,30 @@ export default function AdminTrackingPage() {
         <div className="attendance-audit-head">
           <h4>Live Presence Monitor</h4>
           <div className="attendance-audit-filters">
-            <p>Tracking refreshes every 3 seconds. Click a marker or row to inspect movement.</p>
+            <p>
+              {isViewingToday
+                ? 'Tracking refreshes every 3 seconds. Click a marker or row to inspect movement.'
+                : `Viewing saved movement for ${selectedTrackingDate}.`}
+            </p>
+            <label>
+              <span>Tracking Date</span>
+              <input
+                type="date"
+                value={selectedTrackingDate}
+                max={todayTrackingDate}
+                onChange={(event) => setSelectedTrackingDate(event.target.value || todayTrackingDate)}
+              />
+            </label>
+            <div className="attendance-ops-actions" style={{ alignSelf: 'end' }}>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() => setSelectedTrackingDate(todayTrackingDate)}
+                disabled={isViewingToday}
+              >
+                Today
+              </button>
+            </div>
           </div>
         </div>
         <div className="attendance-ops-grid">
@@ -617,7 +691,7 @@ export default function AdminTrackingPage() {
                   <span>{trailLoading ? 'Loading trail...' : `${movementTrail.length} movement point(s)`}</span>
                 </div>
                 <div className="employee-ops-actions">
-                  <span>{trailError ? 'Trail error' : 'Ready'}</span>
+                  <span>{trailError ? 'Trail error' : isViewingToday ? 'Live today' : selectedTrackingDate}</span>
                 </div>
               </div>
               <div className="employee-ops-header">

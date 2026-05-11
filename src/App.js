@@ -3589,6 +3589,7 @@ function App({ initialModuleId }) {
     const deductionAmount = lateMinutes * deductionRatePerMinute;
 
     const currentRows = moduleRowsState['attendance-time'] || [];
+    const previousAttendanceRows = [...currentRows];
     const existingRowIndex = currentRows.findIndex(
       (row) => row.employeeId === effectiveEmployee.id && String(row.date || '') === nowDate
     );
@@ -3646,12 +3647,24 @@ function App({ initialModuleId }) {
           ? toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(newRow.id)}`)
           : toApiUrl('http://localhost:8000/api/modules/attendance-time');
       const method = existingRowIndex >= 0 ? 'PUT' : 'POST';
-      await fetch(url, {
+      const response = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify(newRow),
       });
+      if (!response.ok) {
+        throw new Error('Failed to save clock-in record');
+      }
     } catch (error) {
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'attendance-time': previousAttendanceRows,
+      }));
+      showToast('Clock-in was not saved. Please try again.', 'error');
+      return false;
     }
     showToast(`Thank you ${effectiveEmployee.fullName}, clock in captured successfully.`, 'success');
     return true;
@@ -3670,6 +3683,7 @@ function App({ initialModuleId }) {
     }
     const checkOutTime = getCurrentClockValue();
     const currentRows = moduleRowsState['attendance-time'] || [];
+    const previousAttendanceRows = [...currentRows];
     const existingRow = currentRows.find(
       (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
     );
@@ -3743,15 +3757,27 @@ function App({ initialModuleId }) {
     });
 
     try {
-      await fetch(
+      const response = await fetch(
         toApiUrl(`http://localhost:8000/api/modules/attendance-time/${encodeURIComponent(normalizedUpdatedRow.id)}`),
         {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
           body: JSON.stringify(normalizedUpdatedRow),
         }
       );
+      if (!response.ok) {
+        throw new Error('Failed to save clock-out record');
+      }
     } catch (error) {
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'attendance-time': previousAttendanceRows,
+      }));
+      showToast('Clock-out was not saved. Please try again.', 'error');
+      return false;
     }
     showToast(`Thank you ${effectiveEmployee.fullName}, clock out captured successfully.`, 'success');
     return true;
