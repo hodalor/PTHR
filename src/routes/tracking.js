@@ -161,7 +161,7 @@ async function loadPersistedMovement(db, employeeId, limit) {
     .collection(TRACKING_MOVEMENT_COLLECTION)
     .find({ employeeId: String(employeeId || '') })
     .sort({ recordedAt: -1, createdAt: -1, _id: -1 })
-    .limit(limit)
+    .limit(Math.max(limit * 10, 500))
     .toArray()
     .catch(() => []);
   return rows.reverse();
@@ -368,6 +368,11 @@ function validateOfficeIp(settings, ipAddress) {
     return false;
   }
   return settings.officeIpRanges.some((cidr) => isIpInCidr(ipAddress, cidr));
+}
+
+function extractIsoDate(value) {
+  const raw = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : '';
 }
 
 router.post('/location', async (req, res) => {
@@ -657,11 +662,23 @@ router.get('/movement/:employeeId', async (req, res) => {
   const runtime = getTenantRuntime(tenantId);
   const { employeeId } = req.params;
   const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 120));
-  const persistedMovement = await loadPersistedMovement(req.db, employeeId, limit);
+  const requestedDateRaw = String(req.query.date || new Date().toISOString().slice(0, 10)).trim();
+  const requestedDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDateRaw)
+    ? requestedDateRaw
+    : new Date().toISOString().slice(0, 10);
+  const persistedMovement = (await loadPersistedMovement(req.db, employeeId, limit))
+    .filter((row) => extractIsoDate(row.recordedAt || row.createdAt || row.lastSeen) === requestedDate)
+    .slice(-limit);
   const movement =
     persistedMovement.length > 0
       ? persistedMovement
-      : runtime.movementLogs.filter((row) => String(row.employeeId || '') === String(employeeId || '')).slice(-limit);
+      : runtime.movementLogs
+          .filter(
+            (row) =>
+              String(row.employeeId || '') === String(employeeId || '') &&
+              extractIsoDate(row.recordedAt || row.createdAt || row.lastSeen || row.timestamp) === requestedDate
+          )
+          .slice(-limit);
   res.json({ movement });
 });
 
