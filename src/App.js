@@ -438,6 +438,9 @@ function App({ initialModuleId }) {
   const storedAuth = typeof window !== 'undefined' ? getStoredAuth() : null;
   const [currentUser, setCurrentUser] = useState(storedAuth?.user || null);
   const [authToken, setAuthToken] = useState(storedAuth?.token || '');
+  const canEditApplicationName =
+    String(currentUser?.role || '').toLowerCase() === 'superadmin' &&
+    String(currentUser?.tenantId || '').toLowerCase() === 'master';
   const [activeModuleId, setActiveModuleId] = useState(
     initialModuleId || storedAuth?.lastModuleId || firstModuleId
   );
@@ -5610,6 +5613,7 @@ function App({ initialModuleId }) {
                       <span>Application Name</span>
                       <input
                         value={appSettings.appName}
+                        disabled={!canEditApplicationName}
                         onChange={(event) =>
                           setAppSettings((prev) => ({
                             ...prev,
@@ -5617,6 +5621,11 @@ function App({ initialModuleId }) {
                           }))
                         }
                       />
+                      {!canEditApplicationName ? (
+                        <small style={{ color: '#627099' }}>
+                          Only the master super admin can edit the application name.
+                        </small>
+                      ) : null}
                     </label>
                     <label>
                       <span>Default Currency</span>
