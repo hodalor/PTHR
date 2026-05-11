@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const sharp = require('sharp');
 const {
   normalizeTenantId,
   resolvePackageModules,
@@ -16,7 +17,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '12mb' }));
 
 const trackingRoutes = require('./routes/tracking');
 const mobileRoutes = require('./routes/mobile');
@@ -139,6 +140,222 @@ function formatWorkedDuration(checkIn, checkOut) {
   return `${hours}h ${minutes}m`;
 }
 
+function escapeSvgAttribute(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function splitStampLines(value, maxLineLength = 34) {
+  const words = String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) {
+    return [];
+  }
+  const lines = [];
+  let current = '';
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLineLength && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current) {
+    lines.push(current);
+  }
+  return lines.slice(0, 3);
+}
+
+function formatPhotoStampTime(value) {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleString('en-GB', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+}
+
+function formatCoordinateLabel(lat, lng) {
+  if (typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)) {
+    return `Lat ${lat.toFixed(6)}  Long ${lng.toFixed(6)}`;
+  }
+  return 'Coordinates unavailable';
+}
+
+function buildCoordinateFallbackLabel(lat, lng) {
+  if (typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)) {
+    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  }
+  return 'Location unavailable';
+}
+
+async function fetchReverseGeocodeLabel(lat, lng) {
+  if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
+    return '';
+  }
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
+        lat
+      )}&lon=${encodeURIComponent(lng)}`,
+      {
+        headers: {
+          'User-Agent': 'PTHR/1.0 support@pthr.app',
+          Accept: 'application/json',
+          'Accept-Language': 'en',
+        },
+      }
+    );
+    if (!response.ok) {
+      return '';
+    }
+    const data = await response.json();
+    return String(data?.display_name || '').trim();
+  } catch (error) {
+    return '';
+  }
+}
+
+async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, lng, capturedAt }) {
+  const rawValue = String(photoDataUrl || '').trim();
+  const match = rawValue.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    return rawValue;
+  }
+  try {
+    const inputBuffer = Buffer.from(match[2], 'base64');
+    const sourceImage = sharp(inputBuffer, { failOnError: false }).rotate();
+    const metadata = await sourceImage.metadata();
+    const targetWidth =
+      typeof metadata.width === 'number' && metadata.width > 0 ? Math.min(metadata.width, 1080) : 720;
+    const targetHeight =
+      typeof metadata.width === 'number' &&
+      metadata.width > 0 &&
+      typeof metadata.height === 'number' &&
+      metadata.height > 0
+        ? Math.max(480, Math.round((metadata.height / metadata.width) * targetWidth))
+        : 960;
+    const resolvedAddress = String(locationAddress || '').trim() || buildCoordinateFallbackLabel(lat, lng);
+    const titleText = splitStampLines(resolvedAddress, 28)[0] || 'Location Verified';
+    const addressLines = splitStampLines(resolvedAddress, 34).slice(0, 2);
+    const overlaySvg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${targetWidth}" height="${targetHeight}" viewBox="0 0 ${targetWidth} ${targetHeight}">
+        <defs>
+          <linearGradient id="stampGlow" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="rgba(11,18,32,0.96)" />
+            <stop offset="100%" stop-color="rgba(15,23,42,0.88)" />
+          </linearGradient>
+        </defs>
+        <g>
+          <rect x="${Math.round(targetWidth * 0.045)}" y="${Math.round(targetHeight * 0.77)}" width="${Math.round(
+            targetWidth * 0.91
+          )}" height="${Math.round(targetHeight * 0.19)}" rx="24" fill="url(#stampGlow)" stroke="rgba(255,255,255,0.18)" stroke-width="2" />
+          <circle cx="${Math.round(targetWidth * 0.105)}" cy="${Math.round(targetHeight * 0.817)}" r="${Math.round(
+            targetWidth * 0.025
+          )}" fill="#ef4444" />
+          <path d="M${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.787)} C${Math.round(
+            targetWidth * 0.118
+          )} ${Math.round(targetHeight * 0.787)} ${Math.round(targetWidth * 0.128)} ${Math.round(
+            targetHeight * 0.797
+          )} ${Math.round(targetWidth * 0.128)} ${Math.round(targetHeight * 0.809)} C${Math.round(
+            targetWidth * 0.128
+          )} ${Math.round(targetHeight * 0.825)} ${Math.round(targetWidth * 0.105)} ${Math.round(
+            targetHeight * 0.844
+          )} ${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.844)} C${Math.round(
+            targetWidth * 0.105
+          )} ${Math.round(targetHeight * 0.844)} ${Math.round(targetWidth * 0.082)} ${Math.round(
+            targetHeight * 0.825
+          )} ${Math.round(targetWidth * 0.082)} ${Math.round(targetHeight * 0.809)} C${Math.round(
+            targetWidth * 0.082
+          )} ${Math.round(targetHeight * 0.797)} ${Math.round(targetWidth * 0.092)} ${Math.round(
+            targetHeight * 0.787
+          )} ${Math.round(targetWidth * 0.105)} ${Math.round(targetHeight * 0.787)} Z" fill="#ef4444" />
+          <circle cx="${Math.round(targetWidth * 0.105)}" cy="${Math.round(targetHeight * 0.809)}" r="${Math.round(
+            targetWidth * 0.0105
+          )}" fill="#ffffff" />
+          <text x="${Math.round(targetWidth * 0.165)}" y="${Math.round(
+            targetHeight * 0.818
+          )}" fill="#ffffff" font-size="${Math.round(targetWidth * 0.025)}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
+          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
+            targetHeight * 0.865
+          )}" fill="#ffffff" font-size="${Math.round(targetWidth * 0.053)}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(
+      titleText
+    )}</text>
+          ${addressLines
+            .map(
+              (line, index) =>
+                `<text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
+                  targetHeight * (0.907 + index * 0.027)
+                )}" fill="#d7e3ff" font-size="${Math.round(
+                  targetWidth * 0.031
+                )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(line)}</text>`
+            )
+            .join('')}
+          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
+            targetHeight * 0.963
+          )}" fill="#d7e3ff" font-size="${Math.round(
+      targetWidth * 0.028
+    )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(formatCoordinateLabel(lat, lng))}</text>
+          <text x="${Math.round(targetWidth * 0.072)}" y="${Math.round(
+            targetHeight * 0.988
+          )}" fill="#d7e3ff" font-size="${Math.round(
+      targetWidth * 0.028
+    )}" font-family="Segoe UI, Arial, sans-serif">${escapeSvgAttribute(formatPhotoStampTime(capturedAt) || 'Time unavailable')}</text>
+        </g>
+      </svg>
+    `;
+    const stampedBuffer = await sourceImage
+      .resize({ width: targetWidth, withoutEnlargement: true })
+      .composite([{ input: Buffer.from(overlaySvg), top: 0, left: 0 }])
+      .jpeg({ quality: 74, mozjpeg: true })
+      .toBuffer();
+    return `data:image/jpeg;base64,${stampedBuffer.toString('base64')}`;
+  } catch (error) {
+    return rawValue;
+  }
+}
+
+async function processAttendanceClockings(clockings) {
+  const normalizedClockings = Array.isArray(clockings) ? clockings : [];
+  return Promise.all(
+    normalizedClockings.map(async (clocking) => {
+      const lat = typeof clocking?.photoLat === 'number' ? clocking.photoLat : clocking?.lat;
+      const lng = typeof clocking?.photoLng === 'number' ? clocking.photoLng : clocking?.lng;
+      const resolvedAddress =
+        String(clocking?.photoLocationAddress || '').trim() || (await fetchReverseGeocodeLabel(lat, lng));
+      return {
+        ...clocking,
+        photoLocationAddress: resolvedAddress || buildCoordinateFallbackLabel(lat, lng),
+        photoLat: typeof lat === 'number' && Number.isFinite(lat) ? lat : undefined,
+        photoLng: typeof lng === 'number' && Number.isFinite(lng) ? lng : undefined,
+        photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),
+        photoDataUrl: await buildStampedPhotoDataUrl({
+          photoDataUrl: clocking?.photoDataUrl,
+          locationAddress: resolvedAddress,
+          lat,
+          lng,
+          capturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),
+        }),
+      };
+    })
+  );
+}
+
 function normalizeAttendanceClockings(row) {
   const fromClockings = Array.isArray(row?.clockings)
     ? row.clockings
@@ -150,6 +367,10 @@ function normalizeAttendanceClockings(row) {
           lng: typeof clocking?.lng === 'number' ? clocking.lng : undefined,
           accuracy: typeof clocking?.accuracy === 'number' ? clocking.accuracy : null,
           photoDataUrl: String(clocking?.photoDataUrl || '').trim(),
+          photoLocationAddress: String(clocking?.photoLocationAddress || '').trim(),
+          photoLat: typeof clocking?.photoLat === 'number' ? clocking.photoLat : undefined,
+          photoLng: typeof clocking?.photoLng === 'number' ? clocking.photoLng : undefined,
+          photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || ''),
           source: String(clocking?.source || row?.source || 'System'),
           createdAt: String(clocking?.createdAt || ''),
         }))
@@ -237,7 +458,12 @@ function enrichAttendanceRecordWithContext(payload, context) {
 }
 
 async function enrichAttendanceRecord(db, payload) {
-  const source = payload || {};
+  const payloadSource = payload || {};
+  const processedClockings = await processAttendanceClockings(payloadSource.clockings);
+  const source =
+    Array.isArray(payloadSource.clockings) && payloadSource.clockings.length > 0
+      ? { ...payloadSource, clockings: processedClockings }
+      : payloadSource;
   const employeeId = String(source.employeeId || '').trim();
   const employeeName = String(source.employee || '').trim();
   const [settingsRecord, employee] = await Promise.all([

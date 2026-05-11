@@ -375,6 +375,40 @@ function extractIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : '';
 }
 
+function buildCoordinateFallbackLabel(lat, lng) {
+  if (typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)) {
+    return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  }
+  return 'Location unavailable';
+}
+
+async function fetchReverseGeocodeDisplayName(lat, lng) {
+  if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
+    return '';
+  }
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
+        lat
+      )}&lon=${encodeURIComponent(lng)}`,
+      {
+        headers: {
+          'User-Agent': 'PTHR/1.0 support@pthr.app',
+          Accept: 'application/json',
+          'Accept-Language': 'en',
+        },
+      }
+    );
+    if (!response.ok) {
+      return '';
+    }
+    const data = await response.json();
+    return String(data?.display_name || '').trim();
+  } catch (error) {
+    return '';
+  }
+}
+
 router.post('/location', async (req, res) => {
   const tenantId = req.tenantId || 'master';
   const runtime = getTenantRuntime(tenantId);
@@ -402,6 +436,8 @@ router.post('/location', async (req, res) => {
 
   const latNum = toNumber(lat);
   const lngNum = toNumber(lng);
+  const resolvedLocationAddress =
+    String(locationAddress || '').trim() || (await fetchReverseGeocodeDisplayName(latNum, lngNum)) || buildCoordinateFallbackLabel(latNum, lngNum);
 
   let distanceMeters = null;
   let insideGeofence = null;
@@ -452,6 +488,7 @@ router.post('/location', async (req, res) => {
     lng: lngNum,
     locationLabel: locationLabel || null,
     locationAddress: locationAddress || null,
+    locationAddress: resolvedLocationAddress || null,
     wifiSsid: wifiSsid || null,
     wifiBssid: wifiBssid || null,
     ipAddress: ipAddress || null,
@@ -560,7 +597,7 @@ router.post('/location', async (req, res) => {
     distanceMeters,
     status,
     locationLabel: locationLabel || null,
-    locationAddress: locationAddress || null,
+    locationAddress: resolvedLocationAddress || null,
     wifiSsid: wifiSsid || null,
     ipAddress: ipAddress || null,
     networkRisk,
@@ -627,6 +664,24 @@ router.get('/employees', async (req, res) => {
   const now = new Date();
   const persistedRows = await loadPersistedEmployeeState(req.db);
   const employeeRecords = mergeEmployeeStateRecords(runtime, persistedRows);
+  const employeeProfileRows = await req.db
+    .collection('employees')
+    .find({}, { projection: { id: 1, employeeId: 1, gender: 1, sex: 1 } })
+    .toArray()
+    .catch(() => []);
+  const employeeGenderMap = new Map();
+  employeeProfileRows.forEach((row) => {
+    const genderValue = String(row?.gender || row?.sex || '').trim();
+    if (!genderValue) {
+      return;
+    }
+    if (row?.id) {
+      employeeGenderMap.set(String(row.id), genderValue);
+    }
+    if (row?.employeeId) {
+      employeeGenderMap.set(String(row.employeeId), genderValue);
+    }
+  });
   const employees = employeeRecords.map((record) => {
     const status = classifyStatus(record, trackingSettings, now);
     const outsidePremises = status === 'OUTSIDE';
@@ -634,6 +689,7 @@ router.get('/employees', async (req, res) => {
     return {
       employeeId: record.employeeId,
       fullName: record.fullName,
+      gender: employeeGenderMap.get(String(record.employeeId || '')) || '',
       lat: record.lat,
       lng: record.lng,
       locationLabel: record.locationLabel || null,
@@ -709,19 +765,13 @@ router.get('/reverse-geocode', async (req, res) => {
     return res.status(400).json({ error: 'lat and lng are required' });
   }
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`
-    );
-    if (!response.ok) {
-      throw new Error('Reverse geocode failed');
-    }
-    const data = await response.json();
+    const displayName = (await fetchReverseGeocodeDisplayName(lat, lng)) || buildCoordinateFallbackLabel(lat, lng);
     return res.json({
-      displayName: data.display_name || '',
-      address: data.address || {},
+      displayName,
+      address: {},
     });
   } catch (error) {
-    return res.status(500).json({ error: 'Unable to reverse geocode location' });
+    return res.json({ displayName: buildCoordinateFallbackLabel(lat, lng), address: {} });
   }
 });
 
