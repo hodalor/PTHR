@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { filterEmployeesBySearch } from '../utils/employeeSearch';
 import { toApiUrl } from '../config/api';
 
@@ -28,7 +28,6 @@ export default function AttendanceTimePage({
   downloadCsv,
   downloadPdf,
   todayIsoDate,
-  getTodayIsoDate,
   attendanceAuditDate,
   setAttendanceAuditDate,
   attendanceAuditFilter,
@@ -96,7 +95,7 @@ export default function AttendanceTimePage({
         : ['Default'],
     [appSettings.shifts]
   );
-  const toggleSort = (currentSort, setSort, key) => {
+  const toggleSort = (setSort, key) => {
     setSort((prev) =>
       prev.key === key
         ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
@@ -549,33 +548,33 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'employee')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'employee')}>
                       Employee{sortArrow(complianceSort, 'employee')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'shift')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'shift')}>
                       Shift{sortArrow(complianceSort, 'shift')}
                     </button>
                   </th>
                   <th>Photo</th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'checkIn')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'checkIn')}>
                       Clock In{sortArrow(complianceSort, 'checkIn')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'checkOut')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'checkOut')}>
                       Clock Out{sortArrow(complianceSort, 'checkOut')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'dailyStatus')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'dailyStatus')}>
                       Status{sortArrow(complianceSort, 'dailyStatus')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(complianceSort, setComplianceSort, 'lateFlag')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'lateFlag')}>
                       Minutes Late{sortArrow(complianceSort, 'lateFlag')}
                     </button>
                   </th>
@@ -668,17 +667,17 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'employee')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'employee')}>
                       Employee{sortArrow(penaltySort, 'employee')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'date')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'date')}>
                       Date{sortArrow(penaltySort, 'date')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'penaltyLabel')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'penaltyLabel')}>
                       Penalty{sortArrow(penaltySort, 'penaltyLabel')}
                     </button>
                   </th>
@@ -686,13 +685,13 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(penaltySort, setPenaltySort, 'outstandingAmount')}
+                      onClick={() => toggleSort(setPenaltySort, 'outstandingAmount')}
                     >
                       Amount{sortArrow(penaltySort, 'outstandingAmount')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(penaltySort, setPenaltySort, 'status')}>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'status')}>
                       Status{sortArrow(penaltySort, 'status')}
                     </button>
                   </th>
@@ -907,7 +906,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'employee')}
+                      onClick={() => toggleSort(setPerformanceSort, 'employee')}
                     >
                       Employee{sortArrow(performanceSort, 'employee')}
                     </button>
@@ -916,7 +915,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'department')}
+                      onClick={() => toggleSort(setPerformanceSort, 'department')}
                     >
                       Department{sortArrow(performanceSort, 'department')}
                     </button>
@@ -925,7 +924,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'onTimeCompleteDays')}
+                      onClick={() => toggleSort(setPerformanceSort, 'onTimeCompleteDays')}
                     >
                       On Time{sortArrow(performanceSort, 'onTimeCompleteDays')}
                     </button>
@@ -934,7 +933,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'lateDays')}
+                      onClick={() => toggleSort(setPerformanceSort, 'lateDays')}
                     >
                       Late{sortArrow(performanceSort, 'lateDays')}
                     </button>
@@ -943,7 +942,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'absentDays')}
+                      onClick={() => toggleSort(setPerformanceSort, 'absentDays')}
                     >
                       Absent{sortArrow(performanceSort, 'absentDays')}
                     </button>
@@ -952,7 +951,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(performanceSort, setPerformanceSort, 'attendanceScore')}
+                      onClick={() => toggleSort(setPerformanceSort, 'attendanceScore')}
                     >
                       Score{sortArrow(performanceSort, 'attendanceScore')}
                     </button>
@@ -1040,7 +1039,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'fullName')}
+                      onClick={() => toggleSort(setShiftAssignmentSort, 'fullName')}
                     >
                       Employee{sortArrow(shiftAssignmentSort, 'fullName')}
                     </button>
@@ -1049,7 +1048,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'department')}
+                      onClick={() => toggleSort(setShiftAssignmentSort, 'department')}
                     >
                       Department{sortArrow(shiftAssignmentSort, 'department')}
                     </button>
@@ -1058,7 +1057,7 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(shiftAssignmentSort, setShiftAssignmentSort, 'assignedShift')}
+                      onClick={() => toggleSort(setShiftAssignmentSort, 'assignedShift')}
                     >
                       Assigned Shift{sortArrow(shiftAssignmentSort, 'assignedShift')}
                     </button>

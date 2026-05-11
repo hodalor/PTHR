@@ -665,10 +665,6 @@ function App({ initialModuleId }) {
   const isManualPage = activeModuleId === 'manual';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
 
-  const normalizedCurrentUserRole = String(currentUser?.role || '').toLowerCase();
-  const isSuperAdmin = normalizedCurrentUserRole === 'superadmin';
-  const isMasterSuperAdmin = isSuperAdmin && String(currentUser?.tenantId || '').toLowerCase() === 'master';
-
   const allowedModulesByRole = useMemo(() => getAllowedModuleSetForUser(currentUser), [currentUser]);
   const downloadAttendancePreviewPhoto = useCallback(() => {
     if (!attendancePhotoPreview.src) {
@@ -836,7 +832,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [authToken]);
+  }, [activeModuleId, authToken]);
 
   useEffect(() => {
     if (
