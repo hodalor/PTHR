@@ -3697,7 +3697,7 @@ function App({ initialModuleId }) {
       return false;
     }
     if (Boolean(appSettings.requireWebClockInPhoto) && !photoDataUrl) {
-      showToast('Clock-in photo is required before clocking in on web.', 'error');
+      showToast('Clock-in selfie is required before clocking in on web.', 'error');
       return false;
     }
     const checkInTime = getCurrentClockValue();
@@ -3840,7 +3840,8 @@ function App({ initialModuleId }) {
     return true;
   };
 
-  const handleClockOut = async (clockOutTarget = null) => {
+  const handleClockOut = async (clockOutTarget = null, options = {}) => {
+    const photoDataUrl = String(options?.photoDataUrl || '').trim();
     const targetEmployeeId = String(clockOutTarget?.employeeId || '').trim();
     const targetDate = String(clockOutTarget?.date || getTodayIsoDate()).trim();
     const effectiveEmployee =
@@ -3849,6 +3850,10 @@ function App({ initialModuleId }) {
         : null) || selectedAttendanceEmployee;
     if (!effectiveEmployee) {
       showToast('Select an employee before clock out.', 'error');
+      return false;
+    }
+    if (Boolean(appSettings.requireWebClockInPhoto) && !photoDataUrl) {
+      showToast('Clock-out selfie is required before clocking out on web.', 'error');
       return false;
     }
     const checkOutTime = getCurrentClockValue();
@@ -3884,15 +3889,22 @@ function App({ initialModuleId }) {
       showToast('Clock out time is invalid. Ensure check-in exists and time is after check-in.', 'error');
       return false;
     }
+    const capturedAt = new Date().toISOString();
+    const locationMetadata = await getWebClockLocationMetadata();
     const nextClocking = {
       id: `CLK-${Date.now().toString().slice(-7)}`,
       mode: 'clock-out',
       time: checkOutTime,
-      lat: null,
-      lng: null,
-      accuracy: null,
+      lat: Number.isFinite(locationMetadata?.lat) ? locationMetadata.lat : null,
+      lng: Number.isFinite(locationMetadata?.lng) ? locationMetadata.lng : null,
+      accuracy: typeof locationMetadata?.accuracy === 'number' ? locationMetadata.accuracy : null,
+      photoDataUrl,
+      photoLocationAddress: String(locationMetadata?.locationAddress || '').trim(),
+      photoLat: Number.isFinite(locationMetadata?.lat) ? locationMetadata.lat : undefined,
+      photoLng: Number.isFinite(locationMetadata?.lng) ? locationMetadata.lng : undefined,
+      photoCapturedAt: capturedAt,
       source: matchedRow.source || 'Manual Clock',
-      createdAt: new Date().toISOString(),
+      createdAt: capturedAt,
     };
     const updatedRow = buildAttendanceFromClockings(
       {
@@ -5919,7 +5931,7 @@ function App({ initialModuleId }) {
                       />
                     </label>
                     <label className="inline-field">
-                      <span>Require Photo On Web Clock In</span>
+                      <span>Require Selfie On Web Clock In/Out</span>
                       <input
                         type="checkbox"
                         checked={Boolean(appSettings.requireWebClockInPhoto)}
@@ -6667,7 +6679,7 @@ function App({ initialModuleId }) {
                       />
                     </label>
                     <label className="inline-field">
-                      <span>Require Photo On Mobile Clock In</span>
+                      <span>Require Selfie On Mobile Clock In/Out</span>
                       <input
                         type="checkbox"
                         checked={Boolean(appSettings.mobileApp.requireClockInPhoto)}

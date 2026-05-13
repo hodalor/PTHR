@@ -74,6 +74,7 @@ export default function AttendanceTimePage({
   const [trackingError, setTrackingError] = useState('');
   const [isClockModalOpen, setIsClockModalOpen] = useState(false);
   const [isClockCameraOpen, setIsClockCameraOpen] = useState(false);
+  const [clockCameraMode, setClockCameraMode] = useState('clock-in');
   const [clockCameraError, setClockCameraError] = useState('');
   const [attendancePhotoModal, setAttendancePhotoModal] = useState({ open: false, src: '', title: '' });
   const [attendancePhotoZoom, setAttendancePhotoZoom] = useState(1);
@@ -288,6 +289,7 @@ export default function AttendanceTimePage({
   const resetClockModalState = useCallback(() => {
     setAttendanceSearchText('');
     setIsClockCameraOpen(false);
+    setClockCameraMode('clock-in');
     setClockCameraError('');
     stopClockCamera();
     setAttendanceClockDraft((prev) => ({
@@ -300,6 +302,7 @@ export default function AttendanceTimePage({
 
   const handleClockInSubmit = useCallback(async () => {
     if (Boolean(appSettings.requireWebClockInPhoto)) {
+      setClockCameraMode('clock-in');
       setClockCameraError('');
       setIsClockCameraOpen(true);
       return;
@@ -310,7 +313,7 @@ export default function AttendanceTimePage({
     }
   }, [appSettings.requireWebClockInPhoto, handleClockIn, resetClockModalState]);
 
-  const handleCaptureClockInPhoto = useCallback(async () => {
+  const handleCaptureClockPhoto = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) {
       setClockCameraError('Camera preview is not ready yet. Please wait a moment and try again.');
       return;
@@ -328,18 +331,27 @@ export default function AttendanceTimePage({
     }
     context.drawImage(video, 0, 0, width, height);
     const photoDataUrl = canvas.toDataURL('image/jpeg', 0.72);
-    const success = await handleClockIn({ photoDataUrl });
+    const success =
+      clockCameraMode === 'clock-out'
+        ? await handleClockOut(null, { photoDataUrl })
+        : await handleClockIn({ photoDataUrl });
     if (success) {
       resetClockModalState();
     }
-  }, [handleClockIn, resetClockModalState]);
+  }, [clockCameraMode, handleClockIn, handleClockOut, resetClockModalState]);
 
   const handleClockOutSubmit = useCallback(async () => {
+    if (Boolean(appSettings.requireWebClockInPhoto)) {
+      setClockCameraMode('clock-out');
+      setClockCameraError('');
+      setIsClockCameraOpen(true);
+      return;
+    }
     const success = await handleClockOut();
     if (success) {
       resetClockModalState();
     }
-  }, [handleClockOut, resetClockModalState]);
+  }, [appSettings.requireWebClockInPhoto, handleClockOut, resetClockModalState]);
 
   return (
     <div className="attendance-ops-card">
@@ -1297,17 +1309,19 @@ export default function AttendanceTimePage({
           className="modal-backdrop"
           onClick={() => {
             setIsClockCameraOpen(false);
+            setClockCameraMode('clock-in');
             setClockCameraError('');
           }}
         >
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <h3>Capture Clock-In Photo</h3>
+              <h3>{clockCameraMode === 'clock-out' ? 'Capture Clock-Out Selfie' : 'Capture Clock-In Selfie'}</h3>
               <button
                 type="button"
                 className="neutral-btn"
                 onClick={() => {
                   setIsClockCameraOpen(false);
+                  setClockCameraMode('clock-in');
                   setClockCameraError('');
                 }}
               >
@@ -1315,7 +1329,11 @@ export default function AttendanceTimePage({
               </button>
             </div>
             <div className="attendance-ops-form">
-              <p>Take a clear photo to complete this web clock-in.</p>
+              <p>
+                {clockCameraMode === 'clock-out'
+                  ? 'Take a clear selfie to complete this web clock-out.'
+                  : 'Take a clear selfie to complete this web clock-in.'}
+              </p>
               {clockCameraError ? <p className="form-error">{clockCameraError}</p> : null}
               <video
                 ref={videoRef}
@@ -1332,8 +1350,8 @@ export default function AttendanceTimePage({
               />
               <canvas ref={canvasRef} style={{ display: 'none' }} />
               <div className="attendance-ops-actions">
-                <button type="button" className="primary-btn" onClick={handleCaptureClockInPhoto}>
-                  Take Photo & Clock In
+                <button type="button" className="primary-btn" onClick={handleCaptureClockPhoto}>
+                  {clockCameraMode === 'clock-out' ? 'Take Selfie & Clock Out' : 'Take Selfie & Clock In'}
                 </button>
               </div>
             </div>
