@@ -189,6 +189,48 @@ function compactUnique(values) {
     .filter((value, index, list) => list.indexOf(value) === index);
 }
 
+const flagImageCache = new Map();
+
+function normalizeCountryCode(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, '');
+  return normalized.length === 2 ? normalized : '';
+}
+
+async function fetchCountryFlagDataUri(countryCode) {
+  const normalizedCode = normalizeCountryCode(countryCode);
+  if (!normalizedCode) {
+    return '';
+  }
+  if (flagImageCache.has(normalizedCode)) {
+    return flagImageCache.get(normalizedCode);
+  }
+  const pendingFlag = (async () => {
+    try {
+      const response = await fetch(`https://flagcdn.com/w80/${normalizedCode}.png`, {
+        headers: {
+          'User-Agent': 'PTHR/1.0 support@pthr.app',
+          Accept: 'image/png,image/*;q=0.8,*/*;q=0.5',
+        },
+      });
+      if (!response.ok) {
+        return '';
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        return '';
+      }
+      return `data:image/png;base64,${Buffer.from(arrayBuffer).toString('base64')}`;
+    } catch (error) {
+      return '';
+    }
+  })();
+  flagImageCache.set(normalizedCode, pendingFlag);
+  return pendingFlag;
+}
+
 function formatPhotoStampTime(value) {
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) {
@@ -224,6 +266,7 @@ function buildLocationStampParts(locationDetails, lat, lng) {
   const address = details.address || {};
   const country = firstNonEmpty([address.country]);
   const region = firstNonEmpty([address.state, address.region, address.province]);
+  const countryCode = normalizeCountryCode(address.country_code);
   const city = firstNonEmpty([address.city, address.town, address.village, address.municipality, address.county]);
   const suburb = firstNonEmpty([
     address.suburb,
@@ -236,16 +279,19 @@ function buildLocationStampParts(locationDetails, lat, lng) {
   const district = firstNonEmpty([address.city_district, address.state_district, address.county]);
   const street = firstNonEmpty([address.road, address.street, address.pedestrian, address.footway, address.path]);
   const block = firstNonEmpty([address.house_number, address.block, address.building, address.house_name, address.amenity]);
-  const preferredTitle = compactUnique([city, suburb, region, country]).join(', ');
+  const locality = firstNonEmpty([suburb, city]);
+  const preferredTitle = compactUnique([locality, locality === city ? '' : city, region]).join(', ');
   const fallbackDisplay = String(details.displayName || '').trim();
   const detailPrimary = compactUnique([street, block]).join(', ');
-  const detailSecondary = compactUnique([district, city, region, country]).join(', ');
+  const detailSecondary = compactUnique([district, country]).join(', ');
   const title = preferredTitle || fallbackDisplay || buildCoordinateFallbackLabel(lat, lng);
   const detailLines = compactUnique([detailPrimary, detailSecondary]).filter((line) => line && line !== title);
   return {
     title,
     detailLines,
     displayLabel: compactUnique([title, ...detailLines]).join(' • ') || buildCoordinateFallbackLabel(lat, lng),
+    country,
+    countryCode,
   };
 }
 
@@ -279,7 +325,7 @@ async function fetchReverseGeocodeDetails(lat, lng) {
   }
 }
 
-async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, lng, capturedAt }) {
+async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locationDetails, lat, lng, capturedAt }) {
   const rawValue = String(photoDataUrl || '').trim();
   const match = rawValue.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
   if (!match) {
@@ -300,10 +346,15 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
         : 960;
     const isLandscape = targetWidth >= targetHeight;
     const shortestEdge = Math.min(targetWidth, targetHeight);
-    const locationDetails = String(locationAddress || '').trim()
-      ? { displayName: String(locationAddress || '').trim(), address: {} }
-      : await fetchReverseGeocodeDetails(lat, lng);
-    const stampParts = buildLocationStampParts(locationDetails, lat, lng);
+    const resolvedLocationDetails =
+      locationDetails ||
+      (typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)
+        ? await fetchReverseGeocodeDetails(lat, lng)
+        : String(locationAddress || '').trim()
+          ? { displayName: String(locationAddress || '').trim(), address: {} }
+          : { displayName: '', address: {} });
+    const stampParts = buildLocationStampParts(resolvedLocationDetails, lat, lng);
+    const flagDataUri = await fetchCountryFlagDataUri(stampParts.countryCode);
     const titleLines = splitStampLines(stampParts.title, isLandscape ? 30 : 22).slice(0, 2);
     const detailLines = stampParts.detailLines
       .flatMap((line) => splitStampLines(line, isLandscape ? 40 : 28))
@@ -317,6 +368,8 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
     const detailFont = clamp(Math.round(shortestEdge * 0.027), 15, 23);
     const metaFont = clamp(Math.round(shortestEdge * 0.024), 13, 20);
     const iconRadius = clamp(Math.round(shortestEdge * 0.017), 12, 20);
+    const flagHeight = clamp(Math.round(shortestEdge * 0.052), 18, 28);
+    const flagWidth = Math.round(flagHeight * 1.45);
     const headerLineHeight = Math.round(headerFont * 1.25);
     const titleLineHeight = Math.round(titleFont * 1.08);
     const detailLineHeight = Math.round(detailFont * 1.18);
@@ -338,6 +391,8 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
     const headerTextX = panelX + padX + iconRadius * 2 + 16;
     const coordinateText = formatCoordinateLabel(lat, lng);
     const timeText = formatPhotoStampTime(capturedAt) || 'Time unavailable';
+    const flagX = panelX + panelWidth - padX - flagWidth;
+    const flagY = panelY + padY + Math.max(0, Math.round((Math.max(iconRadius * 2, headerLineHeight) - flagHeight) / 2));
     let textCursorY = panelY + padY;
     const headerBaselineY = textCursorY + Math.max(iconRadius * 2, headerLineHeight) * 0.72;
     textCursorY += Math.max(iconRadius * 2, headerLineHeight) + sectionGap;
@@ -399,6 +454,12 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, lat, ln
       5,
       Math.round(iconRadius * 0.42)
     )}" fill="#ffffff" />
+          ${
+            flagDataUri
+              ? `<rect x="${flagX - 4}" y="${flagY - 4}" width="${flagWidth + 8}" height="${flagHeight + 8}" rx="8" fill="rgba(255,255,255,0.14)" stroke="rgba(255,255,255,0.28)" stroke-width="1" />
+          <image x="${flagX}" y="${flagY}" width="${flagWidth}" height="${flagHeight}" href="${flagDataUri}" preserveAspectRatio="none" />`
+              : ''
+          }
           <text x="${headerTextX}" y="${Math.round(
       headerBaselineY
     )}" fill="#ffffff" font-size="${headerFont}" font-weight="700" font-family="Segoe UI, Arial, sans-serif">GPS Verified Clocking</text>
@@ -430,9 +491,12 @@ async function processAttendanceClockings(clockings) {
     normalizedClockings.map(async (clocking) => {
       const lat = typeof clocking?.photoLat === 'number' ? clocking.photoLat : clocking?.lat;
       const lng = typeof clocking?.photoLng === 'number' ? clocking.photoLng : clocking?.lng;
-      const locationDetails = String(clocking?.photoLocationAddress || '').trim()
-        ? { displayName: String(clocking.photoLocationAddress).trim(), address: {} }
-        : await fetchReverseGeocodeDetails(lat, lng);
+      const locationDetails =
+        typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)
+          ? await fetchReverseGeocodeDetails(lat, lng)
+          : String(clocking?.photoLocationAddress || '').trim()
+            ? { displayName: String(clocking.photoLocationAddress).trim(), address: {} }
+            : { displayName: '', address: {} };
       const stampParts = buildLocationStampParts(locationDetails, lat, lng);
       return {
         ...clocking,
@@ -443,6 +507,7 @@ async function processAttendanceClockings(clockings) {
         photoDataUrl: await buildStampedPhotoDataUrl({
           photoDataUrl: clocking?.photoDataUrl,
           locationAddress: stampParts.displayLabel,
+          locationDetails,
           lat,
           lng,
           capturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),

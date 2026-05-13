@@ -393,6 +393,14 @@ function compactUnique(values) {
     .filter((value, index, list) => list.indexOf(value) === index);
 }
 
+function normalizeCountryCode(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, '');
+  return normalized.length === 2 ? normalized : '';
+}
+
 function buildLocationDisplayLabel(locationDetails, lat, lng) {
   const details = locationDetails || {};
   const address = details.address || {};
@@ -410,9 +418,10 @@ function buildLocationDisplayLabel(locationDetails, lat, lng) {
   const district = firstNonEmpty([address.city_district, address.state_district, address.county]);
   const street = firstNonEmpty([address.road, address.street, address.pedestrian, address.footway, address.path]);
   const block = firstNonEmpty([address.house_number, address.block, address.building, address.house_name, address.amenity]);
-  const title = compactUnique([city, suburb, region, country]).join(', ') || String(details.displayName || '').trim();
+  const locality = firstNonEmpty([suburb, city]);
+  const title = compactUnique([locality, locality === city ? '' : city, region]).join(', ') || String(details.displayName || '').trim();
   const detailPrimary = compactUnique([street, block]).join(', ');
-  const detailSecondary = compactUnique([district, city, region, country]).join(', ');
+  const detailSecondary = compactUnique([district, country]).join(', ');
   return compactUnique([title, detailPrimary, detailSecondary]).join(' • ') || buildCoordinateFallbackLabel(lat, lng);
 }
 
@@ -808,9 +817,10 @@ router.get('/reverse-geocode', async (req, res) => {
     return res.json({
       displayName,
       address: details.address || {},
+      countryCode: normalizeCountryCode(details?.address?.country_code),
     });
   } catch (error) {
-    return res.json({ displayName: buildCoordinateFallbackLabel(lat, lng), address: {} });
+    return res.json({ displayName: buildCoordinateFallbackLabel(lat, lng), address: {}, countryCode: '' });
   }
 });
 
