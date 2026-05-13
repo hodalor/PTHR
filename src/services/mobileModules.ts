@@ -75,10 +75,10 @@ const formatWorkedHours = (start?: string, end?: string) => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 };
 
-const captureClockInPhoto = async () => {
+const captureClockSelfie = async (mode: 'clock-in' | 'clock-out') => {
   const permission = await ImagePicker.requestCameraPermissionsAsync();
   if (!permission.granted) {
-    throw new Error('Camera permission is required before mobile clock-in can continue');
+    throw new Error(`Camera permission is required before mobile ${mode} can continue`);
   }
 
   const captureResult = await ImagePicker.launchCameraAsync({
@@ -90,12 +90,12 @@ const captureClockInPhoto = async () => {
   });
 
   if (captureResult.canceled) {
-    throw new Error('Clock-in photo capture was canceled');
+    throw new Error(`${mode === 'clock-in' ? 'Clock-in' : 'Clock-out'} selfie capture was canceled`);
   }
 
   const asset = captureResult.assets?.[0];
   if (!asset?.base64) {
-    throw new Error('Unable to read the captured clock-in photo');
+    throw new Error(`Unable to read the captured mobile ${mode} selfie`);
   }
 
   return `data:image/jpeg;base64,${asset.base64}`;
@@ -487,17 +487,13 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
   }
 
   const capturedAt = new Date().toISOString();
-  const photoDataUrl =
-    mode === 'clock-in' && settings.requireClockInPhoto ? await captureClockInPhoto() : '';
-  const reverseGeocodeLabel =
-    mode === 'clock-in'
-      ? await fetchReverseGeocodeLabel(
-          apiBaseUrl,
-          session.token,
-          position?.coords?.latitude,
-          position?.coords?.longitude
-        )
-      : '';
+  const photoDataUrl = settings.requireClockInPhoto ? await captureClockSelfie(mode) : '';
+  const reverseGeocodeLabel = await fetchReverseGeocodeLabel(
+    apiBaseUrl,
+    session.token,
+    position?.coords?.latitude,
+    position?.coords?.longitude
+  );
 
   const today = nowDate();
   const clockValue = nowClock();
