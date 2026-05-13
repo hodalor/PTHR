@@ -5,6 +5,7 @@ const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
+const https = require('https');
 const {
   normalizeTenantId,
   resolvePackageModules,
@@ -189,8 +190,6 @@ function compactUnique(values) {
     .filter((value, index, list) => list.indexOf(value) === index);
 }
 
-const flagImageCache = new Map();
-
 function normalizeCountryCode(value) {
   const normalized = String(value || '')
     .trim()
@@ -199,36 +198,50 @@ function normalizeCountryCode(value) {
   return normalized.length === 2 ? normalized : '';
 }
 
-async function fetchCountryFlagDataUri(countryCode) {
-  const normalizedCode = normalizeCountryCode(countryCode);
+function toFlagEmoji(countryCode) {
+  const normalizedCode = normalizeCountryCode(countryCode).toUpperCase();
   if (!normalizedCode) {
     return '';
   }
-  if (flagImageCache.has(normalizedCode)) {
-    return flagImageCache.get(normalizedCode);
-  }
-  const pendingFlag = (async () => {
-    try {
-      const response = await fetch(`https://flagcdn.com/w80/${normalizedCode}.png`, {
-        headers: {
-          'User-Agent': 'PTHR/1.0 support@pthr.app',
-          Accept: 'image/png,image/*;q=0.8,*/*;q=0.5',
-        },
-      });
-      if (!response.ok) {
-        return '';
+  return normalizedCode
+    .split('')
+    .map((char) => String.fromCodePoint(127397 + char.charCodeAt(0)))
+    .join('');
+}
+
+function fetchJsonWithRelaxedTls(url, headers) {
+  return new Promise((resolve) => {
+    const request = https.get(
+      url,
+      {
+        headers,
+        rejectUnauthorized: false,
+      },
+      (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            resolve(null);
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            resolve(null);
+          }
+        });
       }
-      const arrayBuffer = await response.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        return '';
-      }
-      return `data:image/png;base64,${Buffer.from(arrayBuffer).toString('base64')}`;
-    } catch (error) {
-      return '';
-    }
-  })();
-  flagImageCache.set(normalizedCode, pendingFlag);
-  return pendingFlag;
+    );
+    request.setTimeout(12000, () => {
+      request.destroy();
+      resolve(null);
+    });
+    request.on('error', () => resolve(null));
+  });
 }
 
 function formatPhotoStampTime(value) {
@@ -299,21 +312,22 @@ async function fetchReverseGeocodeDetails(lat, lng) {
   if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
     return { displayName: '', address: {} };
   }
+  const requestUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
+    lat
+  )}&lon=${encodeURIComponent(lng)}`;
+  const requestHeaders = {
+    'User-Agent': 'PTHR/1.0 support@pthr.app',
+    Accept: 'application/json',
+    'Accept-Language': 'en',
+  };
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
-        lat
-      )}&lon=${encodeURIComponent(lng)}`,
-      {
-        headers: {
-          'User-Agent': 'PTHR/1.0 support@pthr.app',
-          Accept: 'application/json',
-          'Accept-Language': 'en',
-        },
-      }
-    );
+    const response = await fetch(requestUrl, { headers: requestHeaders });
     if (!response.ok) {
-      return { displayName: '', address: {} };
+      const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
+      return {
+        displayName: String(relaxedData?.display_name || '').trim(),
+        address: relaxedData?.address || {},
+      };
     }
     const data = await response.json();
     return {
@@ -321,7 +335,11 @@ async function fetchReverseGeocodeDetails(lat, lng) {
       address: data?.address || {},
     };
   } catch (error) {
-    return { displayName: '', address: {} };
+    const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
+    return {
+      displayName: String(relaxedData?.display_name || '').trim(),
+      address: relaxedData?.address || {},
+    };
   }
 }
 
@@ -354,7 +372,7 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locatio
           ? { displayName: String(locationAddress || '').trim(), address: {} }
           : { displayName: '', address: {} });
     const stampParts = buildLocationStampParts(resolvedLocationDetails, lat, lng);
-    const flagDataUri = await fetchCountryFlagDataUri(stampParts.countryCode);
+    const flagEmoji = toFlagEmoji(stampParts.countryCode);
     const titleLines = splitStampLines(stampParts.title, isLandscape ? 30 : 22).slice(0, 2);
     const detailLines = stampParts.detailLines
       .flatMap((line) => splitStampLines(line, isLandscape ? 40 : 28))
@@ -368,8 +386,8 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locatio
     const detailFont = clamp(Math.round(shortestEdge * 0.027), 15, 23);
     const metaFont = clamp(Math.round(shortestEdge * 0.024), 13, 20);
     const iconRadius = clamp(Math.round(shortestEdge * 0.017), 12, 20);
-    const flagHeight = clamp(Math.round(shortestEdge * 0.052), 18, 28);
-    const flagWidth = Math.round(flagHeight * 1.45);
+    const flagFont = clamp(Math.round(shortestEdge * 0.045), 20, 30);
+    const flagWidth = flagEmoji ? Math.round(flagFont * 1.7) : 0;
     const headerLineHeight = Math.round(headerFont * 1.25);
     const titleLineHeight = Math.round(titleFont * 1.08);
     const detailLineHeight = Math.round(detailFont * 1.18);
@@ -392,7 +410,7 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locatio
     const coordinateText = formatCoordinateLabel(lat, lng);
     const timeText = formatPhotoStampTime(capturedAt) || 'Time unavailable';
     const flagX = panelX + panelWidth - padX - flagWidth;
-    const flagY = panelY + padY + Math.max(0, Math.round((Math.max(iconRadius * 2, headerLineHeight) - flagHeight) / 2));
+    const flagY = panelY + padY + Math.max(iconRadius * 2, headerLineHeight) * 0.78;
     let textCursorY = panelY + padY;
     const headerBaselineY = textCursorY + Math.max(iconRadius * 2, headerLineHeight) * 0.72;
     textCursorY += Math.max(iconRadius * 2, headerLineHeight) + sectionGap;
@@ -455,9 +473,10 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locatio
       Math.round(iconRadius * 0.42)
     )}" fill="#ffffff" />
           ${
-            flagDataUri
-              ? `<rect x="${flagX - 4}" y="${flagY - 4}" width="${flagWidth + 8}" height="${flagHeight + 8}" rx="8" fill="rgba(255,255,255,0.14)" stroke="rgba(255,255,255,0.28)" stroke-width="1" />
-          <image x="${flagX}" y="${flagY}" width="${flagWidth}" height="${flagHeight}" href="${flagDataUri}" preserveAspectRatio="none" />`
+            flagEmoji
+              ? `<text x="${flagX}" y="${Math.round(flagY)}" font-size="${flagFont}" font-family="Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif">${escapeSvgAttribute(
+                  flagEmoji
+                )}</text>`
               : ''
           }
           <text x="${headerTextX}" y="${Math.round(

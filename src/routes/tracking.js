@@ -1,4 +1,5 @@
 const express = require('express');
+const https = require('https');
 
 const router = express.Router();
 
@@ -401,6 +402,41 @@ function normalizeCountryCode(value) {
   return normalized.length === 2 ? normalized : '';
 }
 
+function fetchJsonWithRelaxedTls(url, headers) {
+  return new Promise((resolve) => {
+    const request = https.get(
+      url,
+      {
+        headers,
+        rejectUnauthorized: false,
+      },
+      (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            resolve(null);
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            resolve(null);
+          }
+        });
+      }
+    );
+    request.setTimeout(12000, () => {
+      request.destroy();
+      resolve(null);
+    });
+    request.on('error', () => resolve(null));
+  });
+}
+
 function buildLocationDisplayLabel(locationDetails, lat, lng) {
   const details = locationDetails || {};
   const address = details.address || {};
@@ -429,21 +465,22 @@ async function fetchReverseGeocodeDetails(lat, lng) {
   if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
     return { displayName: '', address: {} };
   }
+  const requestUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
+    lat
+  )}&lon=${encodeURIComponent(lng)}`;
+  const requestHeaders = {
+    'User-Agent': 'PTHR/1.0 support@pthr.app',
+    Accept: 'application/json',
+    'Accept-Language': 'en',
+  };
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
-        lat
-      )}&lon=${encodeURIComponent(lng)}`,
-      {
-        headers: {
-          'User-Agent': 'PTHR/1.0 support@pthr.app',
-          Accept: 'application/json',
-          'Accept-Language': 'en',
-        },
-      }
-    );
+    const response = await fetch(requestUrl, { headers: requestHeaders });
     if (!response.ok) {
-      return { displayName: '', address: {} };
+      const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
+      return {
+        displayName: String(relaxedData?.display_name || '').trim(),
+        address: relaxedData?.address || {},
+      };
     }
     const data = await response.json();
     return {
@@ -451,7 +488,11 @@ async function fetchReverseGeocodeDetails(lat, lng) {
       address: data?.address || {},
     };
   } catch (error) {
-    return { displayName: '', address: {} };
+    const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
+    return {
+      displayName: String(relaxedData?.display_name || '').trim(),
+      address: relaxedData?.address || {},
+    };
   }
 }
 
