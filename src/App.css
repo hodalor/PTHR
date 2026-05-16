@@ -475,6 +475,17 @@ body {
   font-size: 0.82rem;
 }
 
+.install-btn {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
+}
+
+.install-btn:hover {
+  filter: brightness(1.03);
+}
+
 .table-wrap {
   border: 1px solid #dde7f7;
   border-radius: 10px;

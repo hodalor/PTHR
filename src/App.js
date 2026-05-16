@@ -446,6 +446,10 @@ function App({ initialModuleId }) {
   const storedAuth = typeof window !== 'undefined' ? getStoredAuth() : null;
   const [currentUser, setCurrentUser] = useState(storedAuth?.user || null);
   const [authToken, setAuthToken] = useState(storedAuth?.token || '');
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+  const [isInstallPromptAvailable, setIsInstallPromptAvailable] = useState(false);
+  const [isInstallHelpOpen, setIsInstallHelpOpen] = useState(false);
   const canEditApplicationName =
     String(currentUser?.role || '').toLowerCase() === 'superadmin' &&
     String(currentUser?.tenantId || '').toLowerCase() === 'master';
@@ -701,6 +705,34 @@ function App({ initialModuleId }) {
     [allowedModulesByRole]
   );
 
+  const installHelpSteps = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return ['Open the site in a supported browser and use its install option.'];
+    }
+    const userAgent = String(window.navigator.userAgent || '').toLowerCase();
+    const isIos = /iphone|ipad|ipod/.test(userAgent);
+    const isSafari = /safari/.test(userAgent) && !/chrome|crios|android|edg/.test(userAgent);
+    const isFirefox = /firefox/.test(userAgent);
+
+    if (isIos) {
+      return ['Tap Share in Safari.', 'Choose Add to Home Screen.', 'Tap Add to install PTHR on the device.'];
+    }
+
+    if (isSafari) {
+      return ['Open the Share menu in Safari.', 'Choose Add to Dock.', 'Confirm to install PTHR as an app.'];
+    }
+
+    if (isFirefox) {
+      return ['Open the browser menu.', 'Look for Install or Add to Home Screen.', 'Confirm the install for PTHR.'];
+    }
+
+    return [
+      'Open the browser menu or address bar install icon.',
+      'Choose Install App or Add to Home Screen.',
+      'Confirm the install to add PTHR to the device.',
+    ];
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const checkHealth = async () => {
@@ -801,6 +833,55 @@ function App({ initialModuleId }) {
     setAuthToken('');
     clearAuth();
   };
+
+  const handleInstallApp = useCallback(async () => {
+    if (!deferredInstallPrompt) {
+      return;
+    }
+    try {
+      await deferredInstallPrompt.prompt();
+      const result = await deferredInstallPrompt.userChoice;
+      if (result?.outcome === 'accepted') {
+        setIsInstallPromptAvailable(false);
+      }
+    } catch (error) {
+    } finally {
+      setDeferredInstallPrompt(null);
+    }
+  }, [deferredInstallPrompt]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const installed =
+      window.matchMedia('(display-mode: standalone)').matches || Boolean(window.navigator.standalone);
+    if (installed) {
+      setIsAppInstalled(true);
+      setIsInstallPromptAvailable(false);
+    }
+
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setDeferredInstallPrompt(event);
+      setIsInstallPromptAvailable(true);
+    };
+
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setDeferredInstallPrompt(null);
+      setIsInstallPromptAvailable(false);
+      setIsInstallHelpOpen(false);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
 
   const authHeaders = useMemo(() => {
     if (!authToken) {
@@ -5692,6 +5773,21 @@ function App({ initialModuleId }) {
                   {currentUser.role || 'user'}
                 </div>
               </div>
+              {!isAppInstalled ? (
+                isInstallPromptAvailable ? (
+                  <button type="button" className="secondary-btn small install-btn" onClick={handleInstallApp}>
+                    Install App
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-btn small install-btn"
+                    onClick={() => setIsInstallHelpOpen(true)}
+                  >
+                    Install Help
+                  </button>
+                )
+              ) : null}
               <button type="button" className="secondary-btn small" onClick={handleLogout}>
                 Sign out
               </button>
@@ -7845,6 +7941,28 @@ function App({ initialModuleId }) {
           )}
         </main>
       </div>
+      {!isSettingsPage && isInstallHelpOpen ? (
+        <div className="modal-backdrop" onClick={() => setIsInstallHelpOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 520 }}>
+            <div className="modal-header">
+              <h3>Install PTHR</h3>
+              <button type="button" className="neutral-btn" onClick={() => setIsInstallHelpOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="attendance-ops-form">
+              <p>Use these steps when your browser does not show the install prompt automatically.</p>
+              <ol style={{ margin: 0, paddingLeft: 18, color: '#334155' }}>
+                {installHelpSteps.map((step) => (
+                  <li key={step} style={{ marginBottom: 8 }}>
+                    {step}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {!isSettingsPage && isModalOpen ? (
         <div className="modal-backdrop" onClick={closeModal}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
