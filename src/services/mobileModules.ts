@@ -101,22 +101,6 @@ const captureClockSelfie = async (mode: 'clock-in' | 'clock-out') => {
   return `data:image/jpeg;base64,${asset.base64}`;
 };
 
-const fetchReverseGeocodeLabel = async (apiBaseUrl: string, token: string, lat?: number, lng?: number) => {
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return '';
-  }
-  try {
-    const response = await apiRequest<{ displayName?: string }>(
-      apiBaseUrl,
-      `/api/tracking/reverse-geocode?lat=${encodeURIComponent(Number(lat))}&lng=${encodeURIComponent(Number(lng))}`,
-      { token }
-    );
-    return String(response?.displayName || '').trim();
-  } catch (error) {
-    return '';
-  }
-};
-
 const normalizeClockings = (row?: AttendanceRecord | null): AttendanceClocking[] => {
   if (Array.isArray(row?.clockings) && row.clockings.length > 0) {
     return row.clockings
@@ -488,12 +472,6 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
 
   const capturedAt = new Date().toISOString();
   const photoDataUrl = settings.requireClockInPhoto ? await captureClockSelfie(mode) : '';
-  const reverseGeocodeLabel = await fetchReverseGeocodeLabel(
-    apiBaseUrl,
-    session.token,
-    position?.coords?.latitude,
-    position?.coords?.longitude
-  );
 
   const today = nowDate();
   const clockValue = nowClock();
@@ -527,7 +505,7 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
     lng: position?.coords.longitude,
     accuracy: position?.coords.accuracy ?? null,
     photoDataUrl,
-    photoLocationAddress: reverseGeocodeLabel,
+    photoLocationAddress: '',
     photoLat: position?.coords?.latitude,
     photoLng: position?.coords?.longitude,
     photoCapturedAt: capturedAt,

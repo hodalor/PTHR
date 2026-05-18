@@ -12,6 +12,7 @@ import {
   stopBackgroundTracking,
   transmitLocation,
 } from '../services/tracking';
+import { loadTrackingRuntime } from '../services/storage';
 
 const runWithTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -61,7 +62,8 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
   }, [apiBaseUrl, session?.token]);
 
   const refreshTrackingStatus = useCallback(async () => {
-    const enabled = await isBackgroundTrackingActive();
+    const [enabledInBackground, runtime] = await Promise.all([isBackgroundTrackingActive(), loadTrackingRuntime()]);
+    const enabled = Boolean(enabledInBackground || runtime?.armed);
     setState((prev) => ({ ...prev, enabled }));
   }, []);
 
@@ -188,6 +190,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
     }
     setState((prev) => ({ ...prev, loading: true, error: '' }));
     try {
+      await persistTrackingRuntime({ apiBaseUrl, session, armed: true });
       await runWithTimeout(
         requestForegroundLocationPermission(),
         8000,
@@ -231,6 +234,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
   const disableTracking = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: '' }));
     try {
+      await persistTrackingRuntime({ apiBaseUrl, session, armed: false });
       await stopBackgroundTracking();
       setState((prev) => ({
         ...prev,
@@ -246,7 +250,7 @@ export const useTrackingController = (apiBaseUrl: string, session: AuthSession |
         error: errorMessage,
       }));
     }
-  }, []);
+  }, [apiBaseUrl, session]);
 
   useEffect(() => {
     if (!session || !state.enabled) {

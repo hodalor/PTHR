@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTrackingController } from '../hooks/useTrackingController';
 import { StatCard } from '../components/StatCard';
@@ -38,8 +37,6 @@ const initialLeaveForm = {
   endDate: todayIso(),
   reason: '',
 };
-const googleMapsApiKey = (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '').trim();
-const hasGoogleMapsKey = googleMapsApiKey.length > 0;
 const formatApprovalTrail = (row: { departmentApproval?: string; hrApproval?: string; managerApproval?: string }) =>
   `Dept ${row.departmentApproval || 'Pending'} • HR ${row.hrApproval || 'Pending'} • Mgr ${row.managerApproval || 'Pending'}`;
 
@@ -501,47 +498,52 @@ export const TrackingScreen = () => {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Live map</Text>
-        {typeof tracking.latestCoordinates?.latitude === 'number' && typeof tracking.latestCoordinates?.longitude === 'number' ? (
-          <MapView
-            style={styles.mapView}
-            provider={Platform.OS === 'android' && hasGoogleMapsKey ? PROVIDER_GOOGLE : undefined}
-            initialRegion={{
-              latitude: tracking.latestCoordinates.latitude,
-              longitude: tracking.latestCoordinates.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-            region={{
-              latitude: tracking.latestCoordinates.latitude,
-              longitude: tracking.latestCoordinates.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
+        <Text style={styles.sectionTitle}>Location tools</Text>
+        <Text style={styles.detailText}>
+          The mobile tracking screen now uses the safer device maps handoff so it does not crash when opening Tracking.
+        </Text>
+        <View style={styles.buttonRow}>
+          <Pressable
+            style={[styles.smallButton, !tracking.latestCoordinates ? styles.disabledButton : null]}
+            disabled={!tracking.latestCoordinates}
+            onPress={async () => {
+              if (!tracking.latestCoordinates) {
+                return;
+              }
+              const { latitude, longitude } = tracking.latestCoordinates;
+              const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latitude},${longitude}`)}`;
+              await Linking.openURL(url);
             }}
           >
-            <Marker
-              coordinate={{
-                latitude: tracking.latestCoordinates.latitude,
-                longitude: tracking.latestCoordinates.longitude,
-              }}
-              title={session?.user.fullName || 'Employee'}
-              description={`Accuracy ${Math.round(tracking.latestCoordinates?.accuracy || 0)}m`}
-            />
-            {typeof tracking.settings?.officeLat === 'number' && typeof tracking.settings?.officeLng === 'number' ? (
-              <Marker
-                coordinate={{
-                  latitude: tracking.settings.officeLat,
-                  longitude: tracking.settings.officeLng,
-                }}
-                title="Office"
-                description="Configured office geofence center"
-                pinColor="#1976d2"
-              />
-            ) : null}
-          </MapView>
-        ) : (
-          <View style={styles.mapView} />
-        )}
+            <Text style={styles.buttonText}>Open Current Map</Text>
+          </Pressable>
+          <Pressable
+            style={[
+              styles.smallButton,
+              styles.secondaryButton,
+              typeof tracking.settings?.officeLat !== 'number' || typeof tracking.settings?.officeLng !== 'number'
+                ? styles.disabledButton
+                : null,
+            ]}
+            disabled={typeof tracking.settings?.officeLat !== 'number' || typeof tracking.settings?.officeLng !== 'number'}
+            onPress={async () => {
+              if (typeof tracking.settings?.officeLat !== 'number' || typeof tracking.settings?.officeLng !== 'number') {
+                return;
+              }
+              const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                `${tracking.settings.officeLat},${tracking.settings.officeLng}`
+              )}`;
+              await Linking.openURL(url);
+            }}
+          >
+            <Text style={styles.buttonText}>Open Office Map</Text>
+          </Pressable>
+        </View>
+        <View style={styles.infoStrip}>
+          <Text style={styles.infoStripText}>
+            Current GPS {formatCoordinate(tracking.latestCoordinates?.latitude)} / {formatCoordinate(tracking.latestCoordinates?.longitude)}
+          </Text>
+        </View>
       </View>
     </>
   );

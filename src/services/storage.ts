@@ -29,7 +29,8 @@ export const saveApiBaseUrl = async (apiBaseUrl: string) => {
 };
 
 export const saveTrackingRuntime = async (config: TrackingRuntimeConfig) => {
-  await AsyncStorage.setItem(TRACKING_RUNTIME_KEY, JSON.stringify(config));
+  const current = await loadTrackingRuntime();
+  await AsyncStorage.setItem(TRACKING_RUNTIME_KEY, JSON.stringify({ ...(current || {}), ...config }));
 };
 
 export const loadTrackingRuntime = async () => {

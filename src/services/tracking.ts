@@ -203,7 +203,7 @@ export const requestForegroundLocationPermission = async () => {
 };
 
 export const startBackgroundTracking = async (runtime: TrackingRuntimeConfig) => {
-  await persistTrackingRuntime(runtime);
+  await persistTrackingRuntime({ ...runtime, armed: true });
   const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
   if (alreadyRunning) {
     return;
@@ -223,6 +223,7 @@ export const startBackgroundTracking = async (runtime: TrackingRuntimeConfig) =>
 };
 
 export const stopBackgroundTracking = async () => {
+  await persistTrackingRuntime({ apiBaseUrl: '', session: null, armed: false });
   const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
   if (!alreadyRunning) {
     return;

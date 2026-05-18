@@ -41,6 +41,7 @@ export type TrackingTransmissionResult = {
 export type TrackingRuntimeConfig = {
   apiBaseUrl: string;
   session: AuthSession | null;
+  armed?: boolean;
 };
 
 export type MobileSettings = {
