@@ -39,6 +39,21 @@ const getDepartmentPrefix = (department, availableDepartments) => {
   return fallback.padEnd(2, 'X');
 };
 
+const PHONE_FIELD_KEYS = new Set([
+  'phonePrimary',
+  'phoneSecondary',
+  'emergencyContact1Phone',
+  'emergencyContact2Phone',
+  'referee1Phone',
+  'referee2Phone',
+  'phone',
+  'contactNumber',
+  'mobileNumber',
+  'personalPhone',
+]);
+
+const keepDigitsOnly = (value) => String(value || '').replace(/\D+/g, '');
+
 const shouldDisplayField = (field, currentValues) => {
   if (!field.showWhen) {
     return true;
@@ -2319,6 +2334,7 @@ function App({ initialModuleId }) {
       activeModuleId === 'employee-management' && field.key === 'dob' && field.type === 'date'
         ? getLatestAllowedEmployeeDob()
         : undefined;
+    const isPhoneField = PHONE_FIELD_KEYS.has(String(field.key || ''));
     const isEmployeeSelfServiceLoan =
       activeModuleId === 'loan-records' && currentUser && currentUser.role === 'employee';
     if (
@@ -2497,10 +2513,12 @@ function App({ initialModuleId }) {
             type={field.type || 'text'}
             value={formValues[field.key] || ''}
             max={inputMax}
+            inputMode={isPhoneField ? 'numeric' : undefined}
+            pattern={isPhoneField ? '[0-9]*' : undefined}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
-                [field.key]: event.target.value,
+                [field.key]: isPhoneField ? keepDigitsOnly(event.target.value) : event.target.value,
               }))
             }
           />
@@ -3723,32 +3741,15 @@ function App({ initialModuleId }) {
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
         return null;
       }
-      let locationAddress = '';
-      try {
-        const response = await fetch(
-          toApiUrl(
-            `http://localhost:8000/api/tracking/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
-          ),
-          {
-            headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-          }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          locationAddress = String(data?.displayName || '').trim();
-        }
-      } catch (error) {
-      }
       return {
         lat,
         lng,
         accuracy: Number.isFinite(accuracy) ? accuracy : null,
-        locationAddress,
       };
     } catch (error) {
       return null;
     }
-  }, [authToken]);
+  }, []);
   const buildAttendanceFromClockings = (baseRow, clockings) => {
     const sortedClockings = [...clockings].sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
     const firstClockIn = sortedClockings.find((clocking) => clocking.mode === 'clock-in') || null;
@@ -5013,24 +5014,34 @@ function App({ initialModuleId }) {
       const moduleIdPrefix = activeModuleId.slice(0, 3).toUpperCase();
       const fallbackId = `${moduleIdPrefix}-${Math.floor(Math.random() * 900 + 100)}`;
       let employeeGeneratedId = '';
+      const normalizedPayload =
+        activeModuleId === 'employee-management'
+          ? Object.entries(payload).reduce(
+              (acc, [key, value]) => ({
+                ...acc,
+                [key]: PHONE_FIELD_KEYS.has(key) ? keepDigitsOnly(value) : value,
+              }),
+              {}
+            )
+          : payload;
 
       if (activeModuleId === 'employee-management' && editRowId === 'new') {
-        const prefix = getDepartmentPrefix(payload.department, appSettings.departments);
+        const prefix = getDepartmentPrefix(normalizedPayload.department, appSettings.departments);
         const currentEmployeeRows = moduleRowsState['employee-management'] || [];
         const highestSequenceForDepartment = currentEmployeeRows
-          .filter((row) => row.department === payload.department)
+          .filter((row) => row.department === normalizedPayload.department)
           .reduce((acc, row) => {
-            const match = String(row.id || '').match(/(\d{8})$/);
+            const match = String(row.id || '').match(/(\d{4,8})$/);
             if (!match) {
               return acc;
             }
             return Math.max(acc, Number(match[1]));
           }, 0);
-        employeeGeneratedId = `${prefix}${String(highestSequenceForDepartment + 1).padStart(8, '0')}`;
+        employeeGeneratedId = `${prefix}${String(highestSequenceForDepartment + 1).padStart(4, '0')}`;
       }
 
       const rowWithId = {
-        ...payload,
+        ...normalizedPayload,
         ...employeeImagePreviewsPayload,
         ...employeeFilesPayload,
         id:
