@@ -260,6 +260,9 @@ function formatPhotoStampTime(value) {
   });
 }
 
+const PHOTO_STAMP_VERSION = 1;
+const reverseGeocodeCache = new Map();
+
 function formatCoordinateLabel(lat, lng) {
   if (typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)) {
     return `Lat ${lat.toFixed(6)}  Long ${lng.toFixed(6)}`;
@@ -312,6 +315,10 @@ async function fetchReverseGeocodeDetails(lat, lng) {
   if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
     return { displayName: '', address: {} };
   }
+  const cacheKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+  if (reverseGeocodeCache.has(cacheKey)) {
+    return reverseGeocodeCache.get(cacheKey);
+  }
   const requestUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${encodeURIComponent(
     lat
   )}&lon=${encodeURIComponent(lng)}`;
@@ -324,22 +331,28 @@ async function fetchReverseGeocodeDetails(lat, lng) {
     const response = await fetch(requestUrl, { headers: requestHeaders });
     if (!response.ok) {
       const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
-      return {
+      const fallbackResult = {
         displayName: String(relaxedData?.display_name || '').trim(),
         address: relaxedData?.address || {},
       };
+      reverseGeocodeCache.set(cacheKey, fallbackResult);
+      return fallbackResult;
     }
     const data = await response.json();
-    return {
+    const result = {
       displayName: String(data?.display_name || '').trim(),
       address: data?.address || {},
     };
+    reverseGeocodeCache.set(cacheKey, result);
+    return result;
   } catch (error) {
     const relaxedData = await fetchJsonWithRelaxedTls(requestUrl, requestHeaders);
-    return {
+    const fallbackResult = {
       displayName: String(relaxedData?.display_name || '').trim(),
       address: relaxedData?.address || {},
     };
+    reverseGeocodeCache.set(cacheKey, fallbackResult);
+    return fallbackResult;
   }
 }
 
@@ -510,27 +523,50 @@ async function processAttendanceClockings(clockings) {
     normalizedClockings.map(async (clocking) => {
       const lat = typeof clocking?.photoLat === 'number' ? clocking.photoLat : clocking?.lat;
       const lng = typeof clocking?.photoLng === 'number' ? clocking.photoLng : clocking?.lng;
+      const photoDataUrl = String(clocking?.photoDataUrl || '').trim();
+      const photoCapturedAt = String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString());
+      const hasCoordinates = typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng);
+      const hasPhoto = Boolean(photoDataUrl);
+      const existingLocationAddress = String(clocking?.photoLocationAddress || '').trim();
+      const isAlreadyStamped =
+        hasPhoto &&
+        Number(clocking?.photoStampVersion || 0) >= PHOTO_STAMP_VERSION &&
+        !/^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(existingLocationAddress);
+
+      if (isAlreadyStamped) {
+        return {
+          ...clocking,
+          photoLat: hasCoordinates ? lat : undefined,
+          photoLng: hasCoordinates ? lng : undefined,
+          photoCapturedAt,
+          photoStampVersion: PHOTO_STAMP_VERSION,
+        };
+      }
+
       const locationDetails =
-        typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng)
+        hasCoordinates
           ? await fetchReverseGeocodeDetails(lat, lng)
-          : String(clocking?.photoLocationAddress || '').trim()
-            ? { displayName: String(clocking.photoLocationAddress).trim(), address: {} }
+          : existingLocationAddress
+            ? { displayName: existingLocationAddress, address: {} }
             : { displayName: '', address: {} };
       const stampParts = buildLocationStampParts(locationDetails, lat, lng);
       return {
         ...clocking,
         photoLocationAddress: stampParts.displayLabel || buildCoordinateFallbackLabel(lat, lng),
-        photoLat: typeof lat === 'number' && Number.isFinite(lat) ? lat : undefined,
-        photoLng: typeof lng === 'number' && Number.isFinite(lng) ? lng : undefined,
-        photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),
-        photoDataUrl: await buildStampedPhotoDataUrl({
-          photoDataUrl: clocking?.photoDataUrl,
-          locationAddress: stampParts.displayLabel,
-          locationDetails,
-          lat,
-          lng,
-          capturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString()),
-        }),
+        photoLat: hasCoordinates ? lat : undefined,
+        photoLng: hasCoordinates ? lng : undefined,
+        photoCapturedAt,
+        photoStampVersion: hasPhoto ? PHOTO_STAMP_VERSION : undefined,
+        photoDataUrl: hasPhoto
+          ? await buildStampedPhotoDataUrl({
+              photoDataUrl,
+              locationAddress: stampParts.displayLabel,
+              locationDetails,
+              lat,
+              lng,
+              capturedAt: photoCapturedAt,
+            })
+          : photoDataUrl,
       };
     })
   );
@@ -551,6 +587,7 @@ function normalizeAttendanceClockings(row) {
           photoLat: typeof clocking?.photoLat === 'number' ? clocking.photoLat : undefined,
           photoLng: typeof clocking?.photoLng === 'number' ? clocking.photoLng : undefined,
           photoCapturedAt: String(clocking?.photoCapturedAt || clocking?.createdAt || ''),
+          photoStampVersion: Number(clocking?.photoStampVersion || 0) || undefined,
           source: String(clocking?.source || row?.source || 'System'),
           createdAt: String(clocking?.createdAt || ''),
         }))
@@ -721,6 +758,34 @@ function resolveTenantIdFromRequest(req) {
     return normalizeTenantId(req.query.tenantId);
   }
   return 'master';
+}
+
+const EMPLOYEE_PHONE_FIELDS = [
+  'phonePrimary',
+  'phoneSecondary',
+  'phone',
+  'contactNumber',
+  'mobileNumber',
+  'personalPhone',
+  'emergencyContact1Phone',
+  'emergencyContact2Phone',
+  'referee1Phone',
+  'referee2Phone',
+];
+
+function keepDigitsOnly(value) {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function normalizeEmployeePhoneFields(record) {
+  const source = record || {};
+  return EMPLOYEE_PHONE_FIELDS.reduce(
+    (acc, field) => ({
+      ...acc,
+      [field]: field in source ? keepDigitsOnly(source[field]) : source[field],
+    }),
+    { ...source }
+  );
 }
 
 async function syncEmployeeUser(db, employee) {
@@ -1019,7 +1084,12 @@ app.post('/api/modules/:moduleId', async (req, res) => {
         return;
       }
     }
-    const incoming = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, req.body) : req.body;
+    const incoming =
+      moduleId === 'attendance-time'
+        ? await enrichAttendanceRecord(req.db, req.body)
+        : moduleId === 'employee-management'
+          ? normalizeEmployeePhoneFields(req.body)
+          : req.body;
     const payload = {
       ...incoming,
       moduleId,
@@ -1052,7 +1122,12 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     }
     const { _id, ...requestBody } = req.body || {};
     const mergedRequest = { ...existingRecord, ...requestBody };
-    const normalized = moduleId === 'attendance-time' ? await enrichAttendanceRecord(req.db, mergedRequest) : mergedRequest;
+    const normalized =
+      moduleId === 'attendance-time'
+        ? await enrichAttendanceRecord(req.db, mergedRequest)
+        : moduleId === 'employee-management'
+          ? normalizeEmployeePhoneFields(mergedRequest)
+          : mergedRequest;
     const normalizedWithoutId = { ...(normalized || {}) };
     delete normalizedWithoutId._id;
     const update = {
