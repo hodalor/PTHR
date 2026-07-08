@@ -54,6 +54,40 @@ const PHONE_FIELD_KEYS = new Set([
 
 const keepDigitsOnly = (value) => String(value || '').replace(/\D+/g, '');
 
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error(`Unable to read ${String(file?.name || 'file')}`));
+    reader.readAsDataURL(file);
+  });
+
+const readFileForStorage = async (file) => {
+  if (!file?.type?.startsWith('image/')) {
+    return readFileAsDataUrl(file);
+  }
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const maxEdge = 1400;
+      const scale = Math.min(1, maxEdge / Math.max(image.width || 1, image.height || 1));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round((image.width || 1) * scale));
+      canvas.height = Math.max(1, Math.round((image.height || 1) * scale));
+      const context = canvas.getContext('2d');
+      if (!context) {
+        resolve(sourceDataUrl);
+        return;
+      }
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+    image.onerror = () => resolve(sourceDataUrl);
+    image.src = sourceDataUrl;
+  });
+};
+
 const shouldDisplayField = (field, currentValues) => {
   if (!field.showWhen) {
     return true;
@@ -547,6 +581,7 @@ function App({ initialModuleId }) {
     username: '',
     password: '',
   });
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
@@ -821,6 +856,7 @@ function App({ initialModuleId }) {
       };
       storeAuth(payload);
       setLoginForm((prev) => ({ ...prev, username: '', password: '' }));
+      setShowLoginPassword(false);
       const nextAllowedModules = getAllowedModuleSetForUser(data.user);
       const firstAllowed = sidebarSections
         .flatMap((section) => section.items)
@@ -2403,14 +2439,19 @@ function App({ initialModuleId }) {
             <input
               type="file"
               multiple={field.multiple}
-              onChange={(event) => {
+              onChange={async (event) => {
                 const selectedFiles = Array.from(event.target.files || []);
-                const selectedFilesMeta = selectedFiles.map((file) => ({
-                  name: file.name,
-                  url: URL.createObjectURL(file),
-                  isImage: file.type.startsWith('image/'),
-                  note: '',
-                }));
+                if (selectedFiles.length === 0) {
+                  return;
+                }
+                const selectedFilesMeta = await Promise.all(
+                  selectedFiles.map(async (file) => ({
+                    name: file.name,
+                    url: await readFileForStorage(file),
+                    isImage: file.type.startsWith('image/'),
+                    note: '',
+                  }))
+                );
                 setFormValues((prev) => {
                   const previousFiles = Array.isArray(prev[`${field.key}Files`]) ? prev[`${field.key}Files`] : [];
                   const mergedFiles = field.multiple ? [...previousFiles, ...selectedFilesMeta] : selectedFilesMeta;
@@ -5720,14 +5761,30 @@ function App({ initialModuleId }) {
               </label>
               <label>
                 <span>Password</span>
-                <input
-                  type="password"
-                autoComplete="current-password"
-                  value={loginForm.password}
-                  onChange={(event) =>
-                    setLoginForm((prev) => ({ ...prev, password: event.target.value }))
-                  }
-                />
+                <div className="password-input-wrap">
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={loginForm.password}
+                    onChange={(event) =>
+                      setLoginForm((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle-btn"
+                    onClick={() => setShowLoginPassword((prev) => !prev)}
+                    aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
+                    title={showLoginPassword ? 'Hide password' : 'Show password'}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12 5C6.6 5 2.4 8.2 1 12c1.4 3.8 5.6 7 11 7s9.6-3.2 11-7c-1.4-3.8-5.6-7-11-7Zm0 11.2A4.2 4.2 0 1 1 12 7.8a4.2 4.2 0 0 1 0 8.4Zm0-6.6A2.4 2.4 0 1 0 12 14.4a2.4 2.4 0 0 0 0-4.8Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </label>
               {loginError ? <div className="form-error">{loginError}</div> : null}
             <button type="submit" className="primary-btn" disabled={loginLoading}>

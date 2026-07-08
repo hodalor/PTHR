@@ -769,6 +769,42 @@ tbody tr:hover {
   box-shadow: 0 0 0 2px rgba(51, 99, 218, 0.16);
 }
 
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrap input {
+  padding-right: 42px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: #58709a;
+  padding: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.password-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.password-toggle-btn:hover,
+.password-toggle-btn:focus-visible {
+  color: #2d5cd6;
+  outline: none;
+}
+
 .login-hint {
   margin-top: 8px;
   font-size: 0.76rem;
