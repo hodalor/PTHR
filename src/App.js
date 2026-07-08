@@ -345,6 +345,17 @@ const defaultIdentifierPresets = [
   },
 ];
 
+const GENERAL_SETTINGS_TABS = new Set([
+  'general',
+  'payroll',
+  'fingerprint',
+  'labels',
+  'currency',
+  'departments',
+  'employment',
+  'id-card',
+]);
+
 const loadImageFromUrl = (url) =>
   new Promise((resolve, reject) => {
     const image = new Image();
@@ -608,6 +619,10 @@ function App({ initialModuleId }) {
   const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
   const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
   const [attendanceSettingsSavedMessage, setAttendanceSettingsSavedMessage] = useState('');
+  const [generalSettingsLoading, setGeneralSettingsLoading] = useState(false);
+  const [generalSettingsError, setGeneralSettingsError] = useState('');
+  const [generalSettingsSaving, setGeneralSettingsSaving] = useState(false);
+  const [generalSettingsSavedMessage, setGeneralSettingsSavedMessage] = useState('');
   const [appSettings, setAppSettings] = useState({
     appName: 'PTHR',
     sidebarColor: '#0a73d9',
@@ -720,6 +735,9 @@ function App({ initialModuleId }) {
     ],
   });
   const employeeModuleLoadingRef = useRef(false);
+  const generalSettingsLoadedRef = useRef(false);
+  const generalSettingsAutosaveSkipRef = useRef(true);
+  const generalSettingsAutosaveTimeoutRef = useRef(null);
   const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
@@ -732,6 +750,7 @@ function App({ initialModuleId }) {
   const isSettingsPage = activeModuleId === 'settings';
   const isManualPage = activeModuleId === 'manual';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
+  const isGeneralSettingsTab = GENERAL_SETTINGS_TABS.has(settingsTab);
 
   const allowedModulesByRole = useMemo(() => getAllowedModuleSetForUser(currentUser), [currentUser]);
   const downloadAttendancePreviewPhoto = useCallback(() => {
@@ -940,6 +959,160 @@ function App({ initialModuleId }) {
     }
     return { Authorization: `Bearer ${authToken}` };
   }, [authToken]);
+
+  const buildGeneralSettingsPayload = useCallback((source) => {
+    const next = source || {};
+    return {
+      appName: String(next.appName || '').trim() || 'PTHR',
+      sidebarColor: normalizeHexColor(next.sidebarColor, '#0a73d9'),
+      defaultCurrency: String(next.defaultCurrency || '').trim().toUpperCase() || 'USD',
+      penaltyActorUsername: String(next.penaltyActorUsername || '').trim() || 'admin',
+      currencies: Array.isArray(next.currencies) ? next.currencies : [],
+      identifierPresets: Array.isArray(next.identifierPresets) ? next.identifierPresets : defaultIdentifierPresets,
+      identifierCountry: String(next.identifierCountry || '').trim().toLowerCase(),
+      pensionFieldLabel: String(next.pensionFieldLabel || '').trim(),
+      taxFieldLabel: String(next.taxFieldLabel || '').trim(),
+      employmentStages: Array.isArray(next.employmentStages) ? next.employmentStages : [],
+      statutoryRules: {
+        ...(next.statutoryRules || {}),
+      },
+      loanRules: {
+        ...(next.loanRules || {}),
+      },
+      idCardDesign: {
+        ...(next.idCardDesign || {}),
+      },
+      fingerprintIntegration: {
+        ...(next.fingerprintIntegration || {}),
+      },
+      departments: Array.isArray(next.departments) ? next.departments : [],
+    };
+  }, []);
+
+  const mergeGeneralSettingsIntoAppSettings = useCallback((prev, incoming) => {
+    const next = incoming || {};
+    return {
+      ...prev,
+      ...next,
+      statutoryRules: {
+        ...prev.statutoryRules,
+        ...(next.statutoryRules || {}),
+      },
+      loanRules: {
+        ...prev.loanRules,
+        ...(next.loanRules || {}),
+      },
+      idCardDesign: {
+        ...prev.idCardDesign,
+        ...(next.idCardDesign || {}),
+      },
+      fingerprintIntegration: {
+        ...prev.fingerprintIntegration,
+        ...(next.fingerprintIntegration || {}),
+      },
+    };
+  }, []);
+
+  const saveGeneralSettings = useCallback(
+    async (nextSettings, options = {}) => {
+      const { silent = false, successMessage = 'General settings saved to backend' } = options;
+      try {
+        setGeneralSettingsSaving(true);
+        setGeneralSettingsError('');
+        if (!silent) {
+          setGeneralSettingsSavedMessage('');
+        }
+        const payload = buildGeneralSettingsPayload(nextSettings || appSettings);
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error('Failed to save general settings');
+        }
+        const data = await response.json();
+        if (data?.settings) {
+          setAppSettings((prev) => mergeGeneralSettingsIntoAppSettings(prev, data.settings));
+        }
+        setGeneralSettingsSavedMessage(successMessage);
+        return true;
+      } catch (error) {
+        setGeneralSettingsError('Unable to save general settings to backend');
+        return false;
+      } finally {
+        setGeneralSettingsSaving(false);
+      }
+    },
+    [appSettings, buildGeneralSettingsPayload, mergeGeneralSettingsIntoAppSettings]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchGeneralSettings = async () => {
+      try {
+        setGeneralSettingsLoading(true);
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'));
+        if (!response.ok) {
+          throw new Error('Failed to load general settings');
+        }
+        const data = await response.json();
+        if (!cancelled && data) {
+          setAppSettings((prev) => mergeGeneralSettingsIntoAppSettings(prev, data));
+          setGeneralSettingsError('');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setGeneralSettingsError('Unable to load general settings from backend');
+        }
+      } finally {
+        if (!cancelled) {
+          setGeneralSettingsLoading(false);
+          generalSettingsLoadedRef.current = true;
+        }
+      }
+    };
+
+    fetchGeneralSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [mergeGeneralSettingsIntoAppSettings]);
+
+  const generalSettingsPayload = useMemo(
+    () => buildGeneralSettingsPayload(appSettings),
+    [appSettings, buildGeneralSettingsPayload]
+  );
+  const generalSettingsSignature = useMemo(
+    () => JSON.stringify(generalSettingsPayload),
+    [generalSettingsPayload]
+  );
+
+  useEffect(() => {
+    if (!generalSettingsLoadedRef.current) {
+      return undefined;
+    }
+    if (generalSettingsAutosaveSkipRef.current) {
+      generalSettingsAutosaveSkipRef.current = false;
+      return undefined;
+    }
+    if (generalSettingsAutosaveTimeoutRef.current) {
+      window.clearTimeout(generalSettingsAutosaveTimeoutRef.current);
+    }
+    generalSettingsAutosaveTimeoutRef.current = window.setTimeout(() => {
+      void saveGeneralSettings(appSettings, {
+        silent: true,
+        successMessage: 'General settings auto-saved',
+      });
+    }, 700);
+    return () => {
+      if (generalSettingsAutosaveTimeoutRef.current) {
+        window.clearTimeout(generalSettingsAutosaveTimeoutRef.current);
+      }
+    };
+  }, [appSettings, generalSettingsSignature, saveGeneralSettings]);
 
   useEffect(() => {
     if (!authToken) {
@@ -2344,8 +2517,14 @@ function App({ initialModuleId }) {
         ) : (
           field.key === 'password' && activeModuleId === 'employee-management' ? (
             <div className="row-actions">
-              <strong>{detailValue ? (showEmployeePortalPassword ? detailValue : '••••••••') : '—'}</strong>
-              {detailValue ? (
+              <strong>
+                {detailValue !== null && detailValue !== undefined && detailValue !== ''
+                  ? showEmployeePortalPassword
+                    ? detailValue
+                    : '••••••••'
+                  : '—'}
+              </strong>
+              {detailValue !== null && detailValue !== undefined && detailValue !== '' ? (
                 <button
                   type="button"
                   className="mini-btn"
@@ -2356,7 +2535,7 @@ function App({ initialModuleId }) {
               ) : null}
             </div>
           ) : (
-            <strong>{detailValue || '—'}</strong>
+            <strong>{detailValue !== null && detailValue !== undefined && detailValue !== '' ? detailValue : '—'}</strong>
           )
         )}
       </div>
@@ -2385,7 +2564,7 @@ function App({ initialModuleId }) {
       return (
         <label key={field.key}>
           <span>{getFieldLabel(field)}</span>
-          <input value={formValues[field.key] || ''} readOnly />
+          <input value={formValues[field.key] ?? ''} readOnly />
         </label>
       );
     }
@@ -2398,7 +2577,7 @@ function App({ initialModuleId }) {
         {field.type === 'select' ? (
           <select
             className="filter-select"
-            value={formValues[field.key] || ''}
+            value={formValues[field.key] ?? ''}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
@@ -2426,7 +2605,7 @@ function App({ initialModuleId }) {
         ) : field.type === 'textarea' ? (
           <textarea
             className="form-textarea"
-            value={formValues[field.key] || ''}
+            value={formValues[field.key] ?? ''}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
@@ -2541,7 +2720,7 @@ function App({ initialModuleId }) {
         ) : field.type === 'month' ? (
           <input
             type="month"
-            value={formValues[field.key] || ''}
+            value={formValues[field.key] ?? ''}
             onChange={(event) =>
               setFormValues((prev) => ({
                 ...prev,
@@ -2552,7 +2731,7 @@ function App({ initialModuleId }) {
         ) : (
           <input
             type={field.type || 'text'}
-            value={formValues[field.key] || ''}
+            value={formValues[field.key] ?? ''}
             max={inputMax}
             inputMode={isPhoneField ? 'numeric' : undefined}
             pattern={isPhoneField ? '[0-9]*' : undefined}
@@ -5012,7 +5191,14 @@ function App({ initialModuleId }) {
         return;
       }
 
+      const existingEditRow =
+        editRowId && editRowId !== 'new'
+          ? (moduleRowsState[activeModuleId] || []).find((row) => row.id === editRowId) || null
+          : null;
       const payload = activeModuleConfig.formFields.reduce((acc, field) => {
+        const fieldValue = Object.prototype.hasOwnProperty.call(formValues, field.key)
+          ? formValues[field.key]
+          : existingEditRow?.[field.key];
         if (computedPayrollValues[field.key] !== undefined) {
           return {
             ...acc,
@@ -5027,7 +5213,7 @@ function App({ initialModuleId }) {
         }
         return {
           ...acc,
-          [field.key]: formValues[field.key] || '',
+          [field.key]: fieldValue ?? '',
         };
       }, {});
       const employeeImagePreviewsPayload =
@@ -5035,7 +5221,10 @@ function App({ initialModuleId }) {
           ? employeeImageFields.reduce(
               (acc, key) => ({
                 ...acc,
-                [`${key}Preview`]: formValues[`${key}Preview`] || '',
+                [`${key}Preview`]:
+                  (Object.prototype.hasOwnProperty.call(formValues, `${key}Preview`)
+                    ? formValues[`${key}Preview`]
+                    : existingEditRow?.[`${key}Preview`]) ?? '',
               }),
               {}
             )
@@ -5047,7 +5236,9 @@ function App({ initialModuleId }) {
                 ...acc,
                 [`${key}Files`]: Array.isArray(formValues[`${key}Files`])
                   ? formValues[`${key}Files`]
-                  : [],
+                  : Array.isArray(existingEditRow?.[`${key}Files`])
+                    ? existingEditRow[`${key}Files`]
+                    : [],
               }),
               {}
             )
@@ -5979,6 +6170,21 @@ function App({ initialModuleId }) {
                 ))}
               </div>
               <div className="settings-grid">
+                {isGeneralSettingsTab ? (
+                  <div className="attendance-ops-actions" style={{ gridColumn: '1 / -1' }}>
+                    {generalSettingsLoading ? <span>Loading general settings from backend...</span> : null}
+                    {generalSettingsError ? <span className="form-error">{generalSettingsError}</span> : null}
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={() => saveGeneralSettings(appSettings)}
+                      disabled={generalSettingsLoading || generalSettingsSaving}
+                    >
+                      {generalSettingsSaving ? 'Saving General Settings...' : 'Save General Settings'}
+                    </button>
+                    {generalSettingsSavedMessage ? <span>{generalSettingsSavedMessage}</span> : null}
+                  </div>
+                ) : null}
                 {settingsTab === 'general' ? (
                   <>
                     <label>
