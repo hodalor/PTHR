@@ -788,6 +788,28 @@ function normalizeEmployeePhoneFields(record) {
   );
 }
 
+async function resolveNextEmployeeId(db, requestedId) {
+  const normalizedId = String(requestedId || '').trim().toUpperCase();
+  const match = normalizedId.match(/^([A-Z]{2})(\d{4,8})$/);
+  if (!match) {
+    return normalizedId;
+  }
+  const prefix = match[1];
+  const employees = await db
+    .collection('employees')
+    .find({ id: { $regex: `^${prefix}\\d{4,8}$`, $options: 'i' } }, { projection: { id: 1 } })
+    .toArray();
+  const nextSequence =
+    employees.reduce((acc, employee) => {
+      const employeeMatch = String(employee?.id || '').trim().toUpperCase().match(/^([A-Z]{2})(\d{4,8})$/);
+      if (!employeeMatch || employeeMatch[1] !== prefix) {
+        return acc;
+      }
+      return Math.max(acc, Number(employeeMatch[2]));
+    }, 0) + 1;
+  return `${prefix}${String(nextSequence).padStart(match[2].length, '0')}`;
+}
+
 async function syncEmployeeUser(db, employee) {
   try {
     const employeeId = String(employee.id || '').trim();
@@ -1072,31 +1094,47 @@ app.post('/api/modules/:moduleId', async (req, res) => {
         }
       }
     }
+    let incoming =
+      moduleId === 'attendance-time'
+        ? await enrichAttendanceRecord(req.db, req.body)
+        : moduleId === 'employee-management'
+          ? normalizeEmployeePhoneFields(req.body)
+          : req.body;
     if (moduleId === 'employee-management') {
-      const incomingId = String(req.body?.id || '').trim();
+      const incomingId = String(incoming?.id || '').trim().toUpperCase();
       if (!incomingId) {
         res.status(400).json({ error: 'Employee ID is required.' });
         return;
       }
       const existingEmployee = await req.db.collection('employees').findOne({ id: incomingId });
       if (existingEmployee) {
-        res.status(409).json({ error: `Employee ID ${incomingId} already exists.` });
-        return;
+        incoming = {
+          ...incoming,
+          id: await resolveNextEmployeeId(req.db, incomingId),
+        };
       }
     }
-    const incoming =
-      moduleId === 'attendance-time'
-        ? await enrichAttendanceRecord(req.db, req.body)
-        : moduleId === 'employee-management'
-          ? normalizeEmployeePhoneFields(req.body)
-          : req.body;
     const payload = {
       ...incoming,
       moduleId,
       createdAt: incoming.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    const result = await collection.insertOne(payload);
+    let result;
+    try {
+      result = await collection.insertOne(payload);
+    } catch (error) {
+      if (moduleId === 'employee-management' && error?.code === 11000 && payload.id) {
+        const retryPayload = {
+          ...payload,
+          id: await resolveNextEmployeeId(req.db, payload.id),
+          updatedAt: new Date().toISOString(),
+        };
+        result = await collection.insertOne(retryPayload);
+      } else {
+        throw error;
+      }
+    }
     const inserted = await collection.findOne({ _id: result.insertedId });
     if (moduleId === 'employee-management' && inserted) {
       await syncEmployeeUser(req.db, inserted);
