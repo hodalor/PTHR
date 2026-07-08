@@ -71,6 +71,260 @@ const defaultAttendanceSettings = {
   ],
 };
 
+const defaultIdentifierPresets = [
+  {
+    id: 'ghana',
+    name: 'Ghana (SSNIT/TIN)',
+    pensionLabel: 'SSNIT Number',
+    taxLabel: 'TIN',
+  },
+  {
+    id: 'zambia',
+    name: 'Zambia (NAPSA/TPIN)',
+    pensionLabel: 'NAPSA Number',
+    taxLabel: 'TPIN',
+  },
+];
+
+const defaultGeneralSettings = {
+  appName: 'PTHR',
+  sidebarColor: '#0a73d9',
+  defaultCurrency: 'USD',
+  penaltyActorUsername: 'admin',
+  currencies: ['USD', 'GHS', 'ZMW'],
+  identifierPresets: defaultIdentifierPresets,
+  identifierCountry: defaultIdentifierPresets[0].id,
+  pensionFieldLabel: defaultIdentifierPresets[0].pensionLabel,
+  taxFieldLabel: defaultIdentifierPresets[0].taxLabel,
+  employmentStages: ['Probation', 'Confirmed', 'Suspended', 'On Leave', 'Fired', 'Expired'],
+  statutoryRules: {
+    napsaMode: 'percent-basic',
+    napsaValue: 5,
+    nhimaMode: 'percent-basic',
+    nhimaValue: 1,
+    taxMode: 'percent-basic',
+    taxValue: 10,
+    taxMinAmount: 0,
+  },
+  loanRules: {
+    minTakeHomePercent: 45,
+    maxLoanDeductionPercentOfGross: 35,
+    defaultInterestPercentPerMonth: 5,
+    overduePenaltyPercentPerDay: 2,
+  },
+  idCardDesign: {
+    companyName: 'PTHR',
+    orientation: 'landscape',
+    borderRadius: 18,
+    logoUrl: '',
+    primaryColor: '#0f4ca3',
+    secondaryColor: '#21aa9c',
+  },
+  fingerprintIntegration: {
+    mode: 'simulation',
+    gatewayUrl: '',
+    apiVersion: 'v1',
+    heartbeatSeconds: 30,
+  },
+  departments: [
+    { name: 'Human Resources', code: 'HR' },
+    { name: 'Engineering', code: 'EN' },
+    { name: 'Finance', code: 'FN' },
+    { name: 'Operations', code: 'OP' },
+  ],
+};
+
+function normalizeHexColor(value, fallback = '#0a73d9') {
+  const hex = String(value || '').trim().toLowerCase();
+  const shortMatch = /^#([0-9a-f]{3})$/i.exec(hex);
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1].split('');
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  if (/^#[0-9a-f]{6}$/i.test(hex)) {
+    return hex;
+  }
+  return fallback;
+}
+
+function normalizeIdentifierPresets(presets) {
+  const seenIds = new Set();
+  const normalized = Array.isArray(presets)
+    ? presets
+        .map((preset, index) => {
+          const baseId =
+            String(preset?.id || '')
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9-]+/g, '-') ||
+            `preset-${index + 1}`;
+          if (seenIds.has(baseId)) {
+            return null;
+          }
+          seenIds.add(baseId);
+          const name = String(preset?.name || '').trim();
+          const pensionLabel = String(preset?.pensionLabel || '').trim();
+          const taxLabel = String(preset?.taxLabel || '').trim();
+          if (!name || !pensionLabel || !taxLabel) {
+            return null;
+          }
+          return {
+            id: baseId,
+            name,
+            pensionLabel,
+            taxLabel,
+          };
+        })
+        .filter(Boolean)
+    : [];
+  return normalized.length > 0 ? normalized : defaultIdentifierPresets;
+}
+
+function normalizeDepartments(departments) {
+  const seenNames = new Set();
+  const seenCodes = new Set();
+  const normalized = Array.isArray(departments)
+    ? departments
+        .map((department) => {
+          const name = String(department?.name || '').trim();
+          const code = String(department?.code || '')
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z]/g, '')
+            .slice(0, 2);
+          if (!name || code.length < 2) {
+            return null;
+          }
+          const nameKey = name.toLowerCase();
+          if (seenNames.has(nameKey) || seenCodes.has(code)) {
+            return null;
+          }
+          seenNames.add(nameKey);
+          seenCodes.add(code);
+          return { name, code };
+        })
+        .filter(Boolean)
+    : [];
+  return normalized.length > 0 ? normalized : defaultGeneralSettings.departments;
+}
+
+function normalizeGeneralSettings(payload) {
+  const source = payload || {};
+  const currencies = Array.isArray(source.currencies)
+    ? Array.from(
+        new Set(
+          source.currencies
+            .map((currency) => String(currency || '').trim().toUpperCase())
+            .filter(Boolean)
+        )
+      )
+    : [];
+  const normalizedCurrencies = currencies.length > 0 ? currencies : defaultGeneralSettings.currencies;
+  const identifierPresets = normalizeIdentifierPresets(source.identifierPresets);
+  const selectedPreset =
+    identifierPresets.find((preset) => preset.id === String(source.identifierCountry || '').trim().toLowerCase()) ||
+    identifierPresets[0];
+  const employmentStages = Array.isArray(source.employmentStages)
+    ? Array.from(
+        new Set(
+          source.employmentStages
+            .map((stage) => String(stage || '').trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+
+  return {
+    appName: String(source.appName || defaultGeneralSettings.appName).trim() || defaultGeneralSettings.appName,
+    sidebarColor: normalizeHexColor(source.sidebarColor, defaultGeneralSettings.sidebarColor),
+    defaultCurrency: normalizedCurrencies.includes(String(source.defaultCurrency || '').trim().toUpperCase())
+      ? String(source.defaultCurrency || '').trim().toUpperCase()
+      : normalizedCurrencies[0],
+    penaltyActorUsername:
+      String(source.penaltyActorUsername || defaultGeneralSettings.penaltyActorUsername).trim() ||
+      defaultGeneralSettings.penaltyActorUsername,
+    currencies: normalizedCurrencies,
+    identifierPresets,
+    identifierCountry: selectedPreset.id,
+    pensionFieldLabel:
+      String(source.pensionFieldLabel || selectedPreset.pensionLabel).trim() || selectedPreset.pensionLabel,
+    taxFieldLabel: String(source.taxFieldLabel || selectedPreset.taxLabel).trim() || selectedPreset.taxLabel,
+    employmentStages: employmentStages.length > 0 ? employmentStages : defaultGeneralSettings.employmentStages,
+    statutoryRules: {
+      napsaMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.napsaMode || ''))
+        ? String(source.statutoryRules.napsaMode)
+        : defaultGeneralSettings.statutoryRules.napsaMode,
+      napsaValue: Math.max(0, Number(source?.statutoryRules?.napsaValue) || defaultGeneralSettings.statutoryRules.napsaValue),
+      nhimaMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.nhimaMode || ''))
+        ? String(source.statutoryRules.nhimaMode)
+        : defaultGeneralSettings.statutoryRules.nhimaMode,
+      nhimaValue: Math.max(0, Number(source?.statutoryRules?.nhimaValue) || defaultGeneralSettings.statutoryRules.nhimaValue),
+      taxMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.taxMode || ''))
+        ? String(source.statutoryRules.taxMode)
+        : defaultGeneralSettings.statutoryRules.taxMode,
+      taxValue: Math.max(0, Number(source?.statutoryRules?.taxValue) || defaultGeneralSettings.statutoryRules.taxValue),
+      taxMinAmount: Math.max(
+        0,
+        Number(source?.statutoryRules?.taxMinAmount) || defaultGeneralSettings.statutoryRules.taxMinAmount
+      ),
+    },
+    loanRules: {
+      minTakeHomePercent: Math.max(
+        1,
+        Math.min(100, Number(source?.loanRules?.minTakeHomePercent) || defaultGeneralSettings.loanRules.minTakeHomePercent)
+      ),
+      maxLoanDeductionPercentOfGross: Math.max(
+        0,
+        Math.min(
+          100,
+          Number(source?.loanRules?.maxLoanDeductionPercentOfGross) ||
+            defaultGeneralSettings.loanRules.maxLoanDeductionPercentOfGross
+        )
+      ),
+      defaultInterestPercentPerMonth: Math.max(
+        0,
+        Number(source?.loanRules?.defaultInterestPercentPerMonth) ||
+          defaultGeneralSettings.loanRules.defaultInterestPercentPerMonth
+      ),
+      overduePenaltyPercentPerDay: Math.max(
+        0,
+        Number(source?.loanRules?.overduePenaltyPercentPerDay) ||
+          defaultGeneralSettings.loanRules.overduePenaltyPercentPerDay
+      ),
+    },
+    idCardDesign: {
+      companyName:
+        String(source?.idCardDesign?.companyName || source.appName || defaultGeneralSettings.idCardDesign.companyName).trim() ||
+        defaultGeneralSettings.idCardDesign.companyName,
+      orientation: String(source?.idCardDesign?.orientation || '') === 'portrait' ? 'portrait' : 'landscape',
+      borderRadius: Math.max(
+        0,
+        Math.min(40, Number(source?.idCardDesign?.borderRadius) || defaultGeneralSettings.idCardDesign.borderRadius)
+      ),
+      logoUrl: String(source?.idCardDesign?.logoUrl || '').trim(),
+      primaryColor: normalizeHexColor(source?.idCardDesign?.primaryColor, defaultGeneralSettings.idCardDesign.primaryColor),
+      secondaryColor: normalizeHexColor(
+        source?.idCardDesign?.secondaryColor,
+        defaultGeneralSettings.idCardDesign.secondaryColor
+      ),
+    },
+    fingerprintIntegration: {
+      mode: String(source?.fingerprintIntegration?.mode || '') === 'live' ? 'live' : 'simulation',
+      gatewayUrl: String(source?.fingerprintIntegration?.gatewayUrl || '').trim(),
+      apiVersion: String(source?.fingerprintIntegration?.apiVersion || '') === 'v2' ? 'v2' : 'v1',
+      heartbeatSeconds: Math.max(
+        5,
+        Math.min(
+          600,
+          Number(source?.fingerprintIntegration?.heartbeatSeconds) ||
+            defaultGeneralSettings.fingerprintIntegration.heartbeatSeconds
+        )
+      ),
+    },
+    departments: normalizeDepartments(source.departments),
+  };
+}
+
 function normalizeAttendanceSettings(payload) {
   const source = payload || {};
   const shifts = Array.isArray(source.shifts)
@@ -1001,6 +1255,38 @@ app.post('/api/settings/attendance', async (req, res) => {
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save attendance settings' });
+  }
+});
+
+app.get('/api/settings/general', async (req, res) => {
+  try {
+    const record = await req.db.collection('appSettings').findOne({ _id: 'general-settings' });
+    const settings = normalizeGeneralSettings(record?.value);
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load general settings' });
+  }
+});
+
+app.post('/api/settings/general', async (req, res) => {
+  try {
+    const settings = normalizeGeneralSettings(req.body);
+    await req.db.collection('appSettings').updateOne(
+      { _id: 'general-settings' },
+      {
+        $set: {
+          value: settings,
+          updatedAt: new Date().toISOString(),
+        },
+        $setOnInsert: {
+          createdAt: new Date().toISOString(),
+        },
+      },
+      { upsert: true }
+    );
+    res.json({ ok: true, settings });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save general settings' });
   }
 });
 
