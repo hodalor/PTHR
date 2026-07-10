@@ -214,6 +214,27 @@ function buildPublicStorageUrl(bucketName, objectPath) {
   return `https://storage.googleapis.com/${encodeURIComponent(bucketName)}/${encodedPath}`;
 }
 
+function extractStorageObjectPath(value) {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) {
+    return '';
+  }
+  const gsMatch = rawValue.match(/^gs:\/\/([^/]+)\/(.+)$/i);
+  if (gsMatch) {
+    return gsMatch[1] === GCS_BUCKET_NAME ? gsMatch[2] : '';
+  }
+  try {
+    const parsed = new URL(rawValue);
+    if (parsed.hostname === 'storage.googleapis.com') {
+      const trimmedPath = parsed.pathname.replace(/^\/+/, '');
+      const [bucketName, ...rest] = trimmedPath.split('/');
+      return bucketName === GCS_BUCKET_NAME ? rest.join('/') : '';
+    }
+  } catch (error) {
+  }
+  return '';
+}
+
 function getStorageBucket() {
   if (!GCS_BUCKET_NAME || !GCS_PROJECT_ID || !GCS_CLIENT_EMAIL || !GCS_PRIVATE_KEY) {
     return null;
@@ -249,6 +270,24 @@ async function uploadBufferToStorage({ buffer, mimeType, objectPath, metadata })
     },
   });
   return buildPublicStorageUrl(GCS_BUCKET_NAME, objectPath);
+}
+
+async function createSignedStorageUrl(value) {
+  const objectPath = extractStorageObjectPath(value);
+  const bucket = getStorageBucket();
+  if (!bucket || !objectPath) {
+    return String(value || '').trim();
+  }
+  try {
+    const [signedUrl] = await bucket.file(objectPath).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + 1000 * 60 * 60 * 24 * 7,
+    });
+    return String(signedUrl || '').trim() || String(value || '').trim();
+  } catch (error) {
+    return String(value || '').trim();
+  }
 }
 
 async function uploadDataUrlToStorage(value, options = {}) {
@@ -390,6 +429,56 @@ async function normalizeEmployeeStorageFields(record, context = {}) {
   }
 
   return next;
+}
+
+async function signEmployeeStorageFields(record) {
+  const source = record || {};
+  const next = { ...source };
+  const fileKeys = Object.keys(source).filter((key) => key.endsWith('Files') && Array.isArray(source[key]));
+  for (const fileKey of fileKeys) {
+    next[fileKey] = await Promise.all(
+      (source[fileKey] || []).map(async (fileItem) => ({
+        ...(fileItem || {}),
+        url: await createSignedStorageUrl(fileItem?.url),
+      }))
+    );
+  }
+  const previewKeys = Object.keys(source).filter((key) => key.endsWith('Preview'));
+  for (const previewKey of previewKeys) {
+    if (Array.isArray(source[previewKey])) {
+      next[previewKey] = await Promise.all((source[previewKey] || []).map((value) => createSignedStorageUrl(value)));
+    } else {
+      next[previewKey] = await createSignedStorageUrl(source[previewKey]);
+    }
+  }
+  return next;
+}
+
+async function signAttendanceRecordMedia(record) {
+  const source = record || {};
+  const next = { ...source };
+  if (Array.isArray(source.clockings)) {
+    next.clockings = await Promise.all(
+      source.clockings.map(async (clocking) => ({
+        ...(clocking || {}),
+        photoDataUrl: await createSignedStorageUrl(clocking?.photoDataUrl),
+      }))
+    );
+  }
+  return next;
+}
+
+async function hydrateModuleRecordMedia(moduleId, record) {
+  if (!record) {
+    return record;
+  }
+  if (moduleId === 'employee-management') {
+    return signEmployeeStorageFields(record);
+  }
+  if (moduleId === 'attendance-time') {
+    return signAttendanceRecordMedia(record);
+  }
+  return record;
 }
 
 function normalizeHexColor(value, fallback = '#0a73d9') {
@@ -1609,7 +1698,9 @@ app.get('/api/modules/:moduleId', async (req, res) => {
     }
     const records = await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
-      res.json({ records });
+      res.json({
+        records: await Promise.all(records.map((record) => hydrateModuleRecordMedia(moduleId, record))),
+      });
       return;
     }
     const [settingsRecord, employees] = await Promise.all([
@@ -1631,13 +1722,18 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       }
     }
     const settings = normalizeAttendanceSettings(settingsRecord?.value);
-    const normalizedRecords = records.map((row) =>
-      enrichAttendanceRecordWithContext(row, {
-        settings,
-        employeeById,
-        employeeByEmployeeId,
-        employeeByName,
-      })
+    const normalizedRecords = await Promise.all(
+      records.map((row) =>
+        hydrateModuleRecordMedia(
+          moduleId,
+          enrichAttendanceRecordWithContext(row, {
+            settings,
+            employeeById,
+            employeeByEmployeeId,
+            employeeByName,
+          })
+        )
+      )
     );
     res.json({ records: normalizedRecords });
   } catch (error) {
@@ -1713,7 +1809,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     if (moduleId === 'employee-management' && inserted) {
       await syncEmployeeUser(req.db, inserted);
     }
-    res.status(201).json({ record: inserted });
+    res.status(201).json({ record: await hydrateModuleRecordMedia(moduleId, inserted) });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create record' });
   }
@@ -1755,7 +1851,7 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     if (moduleId === 'employee-management') {
       await syncEmployeeUser(req.db, updated);
     }
-    res.json({ record: updated });
+    res.json({ record: await hydrateModuleRecordMedia(moduleId, updated) });
   } catch (error) {
     console.error('Failed to update record', error);
     res.status(500).json({ error: 'Failed to update record' });
