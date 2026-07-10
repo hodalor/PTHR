@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { Storage } = require('@google-cloud/storage');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -18,7 +19,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: '30mb' }));
 
 const trackingRoutes = require('./routes/tracking');
 const mobileRoutes = require('./routes/mobile');
@@ -28,6 +29,11 @@ const PORT = process.env.PORT || 8000;
 const MONGO_URI = process.env.MONGO_URI;
 const MONGO_MASTER_DB_NAME = process.env.MONGO_DB_NAME || 'hr-master';
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const GCS_BUCKET_NAME = String(process.env.GCS_BUCKET_NAME || '').trim();
+const GCS_PROJECT_ID = String(process.env.GCS_PROJECT_ID || '').trim();
+const GCS_CLIENT_EMAIL = String(process.env.GCS_CLIENT_EMAIL || '').trim();
+const GCS_PRIVATE_KEY_ID = String(process.env.GCS_PRIVATE_KEY_ID || '').trim();
+const GCS_PRIVATE_KEY = String(process.env.GCS_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
 
 const moduleCollections = {
@@ -133,6 +139,258 @@ const defaultGeneralSettings = {
     { name: 'Operations', code: 'OP' },
   ],
 };
+
+let gcsBucket = null;
+
+function sanitizePathSegment(value, fallback = 'file') {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/[\\/]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function sanitizeFileName(value, fallback = 'file') {
+  const baseName = String(value || fallback).split(/[\\/]/).pop() || fallback;
+  return sanitizePathSegment(baseName, fallback);
+}
+
+function isDataUrl(value) {
+  return /^data:[^;]+;base64,/i.test(String(value || '').trim());
+}
+
+function decodeDataUrl(value) {
+  const rawValue = String(value || '').trim();
+  const match = rawValue.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    mimeType: String(match[1] || 'application/octet-stream').toLowerCase(),
+    buffer: Buffer.from(match[2], 'base64'),
+  };
+}
+
+function extensionFromMimeType(mimeType) {
+  const normalized = String(mimeType || '').trim().toLowerCase();
+  const mimeMap = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'image/heic': 'heic',
+    'image/heif': 'heif',
+    'application/pdf': 'pdf',
+  };
+  if (mimeMap[normalized]) {
+    return mimeMap[normalized];
+  }
+  const generic = normalized.split('/')[1] || '';
+  return generic.replace(/[^a-z0-9.+-]/g, '') || 'bin';
+}
+
+function ensureFileNameExtension(fileName, mimeType) {
+  const normalized = sanitizeFileName(fileName, 'file');
+  if (/\.[a-z0-9]{2,8}$/i.test(normalized)) {
+    return normalized;
+  }
+  return `${normalized}.${extensionFromMimeType(mimeType)}`;
+}
+
+function buildStorageObjectPath(segments, fileName) {
+  return [...(Array.isArray(segments) ? segments : []).map((segment) => sanitizePathSegment(segment)).filter(Boolean), sanitizeFileName(fileName, 'file')]
+    .join('/');
+}
+
+function buildPublicStorageUrl(bucketName, objectPath) {
+  const encodedPath = String(objectPath || '')
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `https://storage.googleapis.com/${encodeURIComponent(bucketName)}/${encodedPath}`;
+}
+
+function getStorageBucket() {
+  if (!GCS_BUCKET_NAME || !GCS_PROJECT_ID || !GCS_CLIENT_EMAIL || !GCS_PRIVATE_KEY) {
+    return null;
+  }
+  if (gcsBucket) {
+    return gcsBucket;
+  }
+  const storage = new Storage({
+    projectId: GCS_PROJECT_ID,
+    credentials: {
+      project_id: GCS_PROJECT_ID,
+      private_key_id: GCS_PRIVATE_KEY_ID || undefined,
+      private_key: GCS_PRIVATE_KEY,
+      client_email: GCS_CLIENT_EMAIL,
+    },
+  });
+  gcsBucket = storage.bucket(GCS_BUCKET_NAME);
+  return gcsBucket;
+}
+
+async function uploadBufferToStorage({ buffer, mimeType, objectPath, metadata }) {
+  const bucket = getStorageBucket();
+  if (!bucket || !buffer || !objectPath) {
+    return '';
+  }
+  const file = bucket.file(String(objectPath));
+  await file.save(buffer, {
+    resumable: false,
+    metadata: {
+      contentType: mimeType || 'application/octet-stream',
+      cacheControl: 'public, max-age=31536000, immutable',
+      metadata: metadata || {},
+    },
+  });
+  return buildPublicStorageUrl(GCS_BUCKET_NAME, objectPath);
+}
+
+async function uploadDataUrlToStorage(value, options = {}) {
+  const decoded = decodeDataUrl(value);
+  if (!decoded) {
+    return String(value || '').trim();
+  }
+  const fileName = ensureFileNameExtension(options.fileName || `upload-${Date.now()}`, decoded.mimeType);
+  const objectPath = buildStorageObjectPath(options.pathSegments || [], fileName);
+  try {
+    const uploadedUrl = await uploadBufferToStorage({
+      buffer: decoded.buffer,
+      mimeType: decoded.mimeType,
+      objectPath,
+      metadata: options.metadata,
+    });
+    return uploadedUrl || String(value || '').trim();
+  } catch (error) {
+    return String(value || '').trim();
+  }
+}
+
+async function normalizeEmployeeStoredFileItem(fileItem, context = {}) {
+  const source = fileItem || {};
+  const rawUrl = String(source.url || '').trim();
+  const decoded = decodeDataUrl(rawUrl);
+  const mimeType = decoded?.mimeType || (source.isImage ? 'image/jpeg' : 'application/octet-stream');
+  const normalizedName = ensureFileNameExtension(
+    String(source.name || `${context.baseKey || 'file'}-${Number(context.index || 0) + 1}`),
+    mimeType
+  );
+  if (!decoded) {
+    return {
+      ...source,
+      name: normalizedName,
+      url: rawUrl,
+      isImage: String(mimeType).startsWith('image/') || Boolean(source.isImage),
+    };
+  }
+  const uploadedUrl = await uploadDataUrlToStorage(rawUrl, {
+    fileName: `${Date.now()}-${Number(context.index || 0) + 1}-${normalizedName}`,
+    pathSegments: [
+      'tenants',
+      context.tenantId || 'master',
+      'employees',
+      context.employeeId || 'unassigned',
+      context.baseKey || 'files',
+    ],
+    metadata: {
+      tenantId: context.tenantId || 'master',
+      employeeId: context.employeeId || '',
+      field: context.baseKey || 'files',
+    },
+  });
+  return {
+    ...source,
+    name: normalizedName,
+    url: uploadedUrl,
+    isImage: String(mimeType).startsWith('image/') || Boolean(source.isImage),
+  };
+}
+
+async function normalizePreviewValueForStorage(value, context = {}) {
+  if (Array.isArray(value)) {
+    return Promise.all(
+      value.map((item, index) =>
+        uploadDataUrlToStorage(item, {
+          fileName: `${Date.now()}-${index + 1}-${context.baseKey || 'preview'}.jpg`,
+          pathSegments: [
+            'tenants',
+            context.tenantId || 'master',
+            'employees',
+            context.employeeId || 'unassigned',
+            context.baseKey || 'preview',
+            'preview',
+          ],
+          metadata: {
+            tenantId: context.tenantId || 'master',
+            employeeId: context.employeeId || '',
+            field: context.baseKey || 'preview',
+          },
+        })
+      )
+    );
+  }
+  return uploadDataUrlToStorage(value, {
+    fileName: `${Date.now()}-${context.baseKey || 'preview'}.jpg`,
+    pathSegments: [
+      'tenants',
+      context.tenantId || 'master',
+      'employees',
+      context.employeeId || 'unassigned',
+      context.baseKey || 'preview',
+    ],
+    metadata: {
+      tenantId: context.tenantId || 'master',
+      employeeId: context.employeeId || '',
+      field: context.baseKey || 'preview',
+    },
+  });
+}
+
+async function normalizeEmployeeStorageFields(record, context = {}) {
+  const source = record || {};
+  const next = { ...source };
+  const processedPreviewKeys = new Set();
+  const fileKeys = Object.keys(source).filter((key) => key.endsWith('Files') && Array.isArray(source[key]));
+
+  for (const fileKey of fileKeys) {
+    const baseKey = fileKey.slice(0, -5);
+    const files = Array.isArray(source[fileKey]) ? source[fileKey] : [];
+    const uploadedFiles = await Promise.all(
+      files.map((fileItem, index) =>
+        normalizeEmployeeStoredFileItem(fileItem, {
+          ...context,
+          baseKey,
+          index,
+        })
+      )
+    );
+    next[fileKey] = uploadedFiles;
+    const previewKey = `${baseKey}Preview`;
+    processedPreviewKeys.add(previewKey);
+    const imageFiles = uploadedFiles.filter((file) => file?.isImage && String(file?.url || '').trim());
+    if (imageFiles.length > 0) {
+      next[previewKey] = fileKey === 'otherDocumentsFiles' ? imageFiles.map((file) => file.url) : imageFiles[0].url;
+    } else if (previewKey in source) {
+      next[previewKey] = await normalizePreviewValueForStorage(source[previewKey], { ...context, baseKey });
+    }
+  }
+
+  const previewKeys = Object.keys(source).filter((key) => key.endsWith('Preview') && !processedPreviewKeys.has(key));
+  for (const previewKey of previewKeys) {
+    const baseKey = previewKey.slice(0, -7);
+    next[previewKey] = await normalizePreviewValueForStorage(source[previewKey], {
+      ...context,
+      baseKey,
+    });
+  }
+
+  return next;
+}
 
 function normalizeHexColor(value, fallback = '#0a73d9') {
   const hex = String(value || '').trim().toLowerCase();
@@ -771,19 +1029,21 @@ async function buildStampedPhotoDataUrl({ photoDataUrl, locationAddress, locatio
   }
 }
 
-async function processAttendanceClockings(clockings) {
+async function processAttendanceClockings(clockings, context = {}) {
   const normalizedClockings = Array.isArray(clockings) ? clockings : [];
   return Promise.all(
-    normalizedClockings.map(async (clocking) => {
+    normalizedClockings.map(async (clocking, index) => {
       const lat = typeof clocking?.photoLat === 'number' ? clocking.photoLat : clocking?.lat;
       const lng = typeof clocking?.photoLng === 'number' ? clocking.photoLng : clocking?.lng;
       const photoDataUrl = String(clocking?.photoDataUrl || '').trim();
       const photoCapturedAt = String(clocking?.photoCapturedAt || clocking?.createdAt || new Date().toISOString());
       const hasCoordinates = typeof lat === 'number' && Number.isFinite(lat) && typeof lng === 'number' && Number.isFinite(lng);
       const hasPhoto = Boolean(photoDataUrl);
+      const photoStoredAsDataUrl = isDataUrl(photoDataUrl);
       const existingLocationAddress = String(clocking?.photoLocationAddress || '').trim();
       const isAlreadyStamped =
         hasPhoto &&
+        !photoStoredAsDataUrl &&
         Number(clocking?.photoStampVersion || 0) >= PHOTO_STAMP_VERSION &&
         !/^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(existingLocationAddress);
 
@@ -812,14 +1072,33 @@ async function processAttendanceClockings(clockings) {
         photoCapturedAt,
         photoStampVersion: hasPhoto ? PHOTO_STAMP_VERSION : undefined,
         photoDataUrl: hasPhoto
-          ? await buildStampedPhotoDataUrl({
-              photoDataUrl,
-              locationAddress: stampParts.displayLabel,
-              locationDetails,
-              lat,
-              lng,
-              capturedAt: photoCapturedAt,
-            })
+          ? await uploadDataUrlToStorage(
+              await buildStampedPhotoDataUrl({
+                photoDataUrl,
+                locationAddress: stampParts.displayLabel,
+                locationDetails,
+                lat,
+                lng,
+                capturedAt: photoCapturedAt,
+              }),
+              {
+                fileName: `${String(clocking?.mode || 'clock')}-${String(clocking?.id || index + 1)}.jpg`,
+                pathSegments: [
+                  'tenants',
+                  context.tenantId || 'master',
+                  'attendance',
+                  context.employeeId || 'unknown-employee',
+                  context.date || 'unknown-date',
+                ],
+                metadata: {
+                  tenantId: context.tenantId || 'master',
+                  employeeId: context.employeeId || '',
+                  date: context.date || '',
+                  recordId: context.recordId || '',
+                  clockingId: String(clocking?.id || ''),
+                },
+              }
+            )
           : photoDataUrl,
       };
     })
@@ -928,9 +1207,14 @@ function enrichAttendanceRecordWithContext(payload, context) {
   };
 }
 
-async function enrichAttendanceRecord(db, payload) {
+async function enrichAttendanceRecord(db, payload, options = {}) {
   const payloadSource = payload || {};
-  const processedClockings = await processAttendanceClockings(payloadSource.clockings);
+  const processedClockings = await processAttendanceClockings(payloadSource.clockings, {
+    tenantId: options.tenantId || 'master',
+    employeeId: String(payloadSource.employeeId || '').trim(),
+    date: String(payloadSource.date || '').trim(),
+    recordId: String(payloadSource.id || '').trim(),
+  });
   const source =
     Array.isArray(payloadSource.clockings) && payloadSource.clockings.length > 0
       ? { ...payloadSource, clockings: processedClockings }
@@ -1382,7 +1666,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     }
     let incoming =
       moduleId === 'attendance-time'
-        ? await enrichAttendanceRecord(req.db, req.body)
+        ? await enrichAttendanceRecord(req.db, req.body, { tenantId: req.tenantId })
         : moduleId === 'employee-management'
           ? normalizeEmployeePhoneFields(req.body)
           : req.body;
@@ -1399,6 +1683,10 @@ app.post('/api/modules/:moduleId', async (req, res) => {
           id: await resolveNextEmployeeId(req.db, incomingId),
         };
       }
+      incoming = await normalizeEmployeeStorageFields(incoming, {
+        tenantId: req.tenantId,
+        employeeId: String(incoming.id || '').trim(),
+      });
     }
     const payload = {
       ...incoming,
@@ -1448,9 +1736,12 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     const mergedRequest = { ...existingRecord, ...requestBody };
     const normalized =
       moduleId === 'attendance-time'
-        ? await enrichAttendanceRecord(req.db, mergedRequest)
+        ? await enrichAttendanceRecord(req.db, mergedRequest, { tenantId: req.tenantId })
         : moduleId === 'employee-management'
-          ? normalizeEmployeePhoneFields(mergedRequest)
+          ? await normalizeEmployeeStorageFields(normalizeEmployeePhoneFields(mergedRequest), {
+              tenantId: req.tenantId,
+              employeeId: String(recordId || mergedRequest?.id || '').trim(),
+            })
           : mergedRequest;
     const normalizedWithoutId = { ...(normalized || {}) };
     delete normalizedWithoutId._id;
