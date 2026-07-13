@@ -109,15 +109,16 @@ async function persistWhatsappAlert(db, alert) {
   if (!db || !alert?.id) {
     return;
   }
+  const { createdAt, ...alertWithoutCreatedAt } = alert;
   await db.collection(TRACKING_ALERTS_COLLECTION).updateOne(
     { _id: String(alert.id) },
     {
       $set: {
-        ...alert,
+        ...alertWithoutCreatedAt,
         id: String(alert.id),
       },
       $setOnInsert: {
-        createdAt: String(alert.createdAt || new Date().toISOString()),
+        createdAt: String(createdAt || new Date().toISOString()),
       },
     },
     { upsert: true }
@@ -128,15 +129,16 @@ async function persistRiskEvent(db, event) {
   if (!db || !event?.id) {
     return;
   }
+  const { createdAt, ...eventWithoutCreatedAt } = event;
   await db.collection(TRACKING_EVENTS_COLLECTION).updateOne(
     { _id: String(event.id) },
     {
       $set: {
-        ...event,
+        ...eventWithoutCreatedAt,
         id: String(event.id),
       },
       $setOnInsert: {
-        createdAt: String(event.createdAt || new Date().toISOString()),
+        createdAt: String(createdAt || new Date().toISOString()),
       },
     },
     { upsert: true }
