@@ -19,7 +19,21 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const SUPERADMIN_USERNAME = String(process.env.SUPERADMIN_USERNAME || 'superadmin').trim();
 const SUPERADMIN_PASSWORD = String(process.env.SUPERADMIN_PASSWORD || 'SuperAdmin@2026').trim();
 const SUPERADMIN_FULL_NAME = String(process.env.SUPERADMIN_FULL_NAME || 'Platform Super Admin').trim();
+const PAYSTACK_SECRET_KEY = String(process.env.PAYSTACK_SECRET_KEY || '').trim();
+const PAYSTACK_PUBLIC_KEY = String(process.env.PAYSTACK_PUBLIC_KEY || '').trim();
+const PAYSTACK_CALLBACK_BASE_URL = String(process.env.PAYSTACK_CALLBACK_BASE_URL || '').trim();
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const SUBSCRIPTION_SETTINGS_COLLECTION = 'subscriptionSettings';
+const TENANT_PAYMENTS_COLLECTION = 'tenantPayments';
+const SUBSCRIPTION_DEFAULT_CURRENCY = 'GHS';
+const SUBSCRIPTION_DAY_MS = 24 * 60 * 60 * 1000;
+const ACTIVATION_CODE_LENGTH = 12;
+const DEFAULT_MANUAL_EXTENSION_DAYS = 30;
+const defaultSubscriptionPlanCatalog = {
+  basic: { label: 'Basic', monthlyAmount: 800 },
+  pro: { label: 'Pro', monthlyAmount: 1000 },
+  enterprise: { label: 'Enterprise', monthlyAmount: 1500 },
+};
 const roleRank = {
   employee: 1,
   manager: 2,
@@ -52,6 +66,282 @@ function isTenantSubscriptionExpired(tenant) {
   return daysRemaining !== null && daysRemaining < 0;
 }
 
+function roundCurrencyAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) {
+    return 0;
+  }
+  return Math.round(amount * 100) / 100;
+}
+
+function normalizeActivationCode(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, ACTIVATION_CODE_LENGTH);
+}
+
+function buildDefaultRenewalPeriods(monthlyAmount) {
+  const baseAmount = roundCurrencyAmount(monthlyAmount);
+  return Array.from({ length: 12 }, (_, index) => {
+    const months = index + 1;
+    return {
+      months,
+      days: months * 30,
+      discountPercent: 0,
+      amount: roundCurrencyAmount(baseAmount * months),
+    };
+  });
+}
+
+function buildDefaultSubscriptionSettings() {
+  return {
+    currency: SUBSCRIPTION_DEFAULT_CURRENCY,
+    manualExtensionDays: DEFAULT_MANUAL_EXTENSION_DAYS,
+    paymentGateways: {
+      paystackEnabled: true,
+    },
+    plans: Object.entries(defaultSubscriptionPlanCatalog).map(([planKey, plan]) => ({
+      planKey,
+      label: plan.label,
+      monthlyAmount: roundCurrencyAmount(plan.monthlyAmount),
+      periods: buildDefaultRenewalPeriods(plan.monthlyAmount),
+    })),
+    updatedAt: null,
+    createdAt: null,
+  };
+}
+
+function normalizeRenewalPeriods(value, monthlyAmount) {
+  const defaultPeriods = buildDefaultRenewalPeriods(monthlyAmount);
+  const requested = Array.isArray(value) ? value : [];
+  const seenMonths = new Set();
+  const normalized = requested
+    .map((item) => {
+      const months = Math.max(1, Math.min(12, Math.round(Number(item?.months) || 0)));
+      if (!months || seenMonths.has(months)) {
+        return null;
+      }
+      seenMonths.add(months);
+      const discountPercent = Math.max(0, Math.min(100, Number(item?.discountPercent) || 0));
+      const calculatedAmount = roundCurrencyAmount(Number(monthlyAmount) * months * (1 - discountPercent / 100));
+      const amount = roundCurrencyAmount(Number(item?.amount));
+      return {
+        months,
+        days: months * 30,
+        discountPercent,
+        amount: amount > 0 ? amount : calculatedAmount,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.months - b.months);
+  return normalized.length > 0 ? normalized : defaultPeriods;
+}
+
+function normalizeSubscriptionSettings(value) {
+  const defaults = buildDefaultSubscriptionSettings();
+  const source = value?.value ? value.value : value || {};
+  const plans = Object.keys(defaultSubscriptionPlanCatalog).map((planKey) => {
+    const defaultPlan = defaults.plans.find((plan) => plan.planKey === planKey);
+    const requestedPlan =
+      (Array.isArray(source.plans) ? source.plans : []).find((plan) => String(plan?.planKey || '') === planKey) || {};
+    const monthlyAmount = roundCurrencyAmount(
+      Number(requestedPlan.monthlyAmount) > 0 ? requestedPlan.monthlyAmount : defaultPlan.monthlyAmount
+    );
+    return {
+      planKey,
+      label: String(requestedPlan.label || defaultPlan.label || planKey).trim() || defaultPlan.label,
+      monthlyAmount,
+      periods: normalizeRenewalPeriods(requestedPlan.periods, monthlyAmount),
+    };
+  });
+  return {
+    currency: String(source.currency || defaults.currency).trim().toUpperCase() || defaults.currency,
+    manualExtensionDays:
+      Number.isFinite(Number(source.manualExtensionDays)) && Number(source.manualExtensionDays) > 0
+        ? Math.max(1, Math.round(Number(source.manualExtensionDays)))
+        : defaults.manualExtensionDays,
+    paymentGateways: {
+      paystackEnabled:
+        source?.paymentGateways?.paystackEnabled === undefined
+          ? defaults.paymentGateways.paystackEnabled
+          : Boolean(source.paymentGateways.paystackEnabled),
+    },
+    plans,
+    updatedAt: source.updatedAt || value?.updatedAt || null,
+    createdAt: source.createdAt || value?.createdAt || null,
+  };
+}
+
+async function loadSubscriptionSettings(masterDb) {
+  const record = await masterDb.collection(SUBSCRIPTION_SETTINGS_COLLECTION).findOne({ _id: 'config' });
+  return normalizeSubscriptionSettings(record?.value || record || {});
+}
+
+async function saveSubscriptionSettings(masterDb, settings) {
+  const normalized = normalizeSubscriptionSettings(settings);
+  const now = new Date().toISOString();
+  await masterDb.collection(SUBSCRIPTION_SETTINGS_COLLECTION).updateOne(
+    { _id: 'config' },
+    {
+      $set: {
+        value: {
+          currency: normalized.currency,
+          manualExtensionDays: normalized.manualExtensionDays,
+          paymentGateways: normalized.paymentGateways,
+          plans: normalized.plans,
+          updatedAt: now,
+        },
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        createdAt: now,
+      },
+    },
+    { upsert: true }
+  );
+  return {
+    ...normalized,
+    updatedAt: now,
+    createdAt: normalized.createdAt || now,
+  };
+}
+
+async function generateUniqueActivationCode(masterDb) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const code = crypto
+      .randomBytes(8)
+      .toString('base64')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .toUpperCase()
+      .slice(0, ACTIVATION_CODE_LENGTH);
+    if (code.length !== ACTIVATION_CODE_LENGTH) {
+      continue;
+    }
+    const existing = await masterDb.collection('tenants').findOne({ activationCode: code }, { projection: { _id: 1 } });
+    if (!existing) {
+      return code;
+    }
+  }
+  return crypto.randomUUID().replace(/-/g, '').toUpperCase().slice(0, ACTIVATION_CODE_LENGTH);
+}
+
+function getPlanSubscriptionSettings(subscriptionSettings, packageType) {
+  const normalizedPlanKey = String(packageType || 'basic').trim().toLowerCase();
+  return (
+    subscriptionSettings.plans.find((plan) => String(plan.planKey || '').trim().toLowerCase() === normalizedPlanKey) ||
+    subscriptionSettings.plans[0]
+  );
+}
+
+function getTenantExpiryDate(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(`${String(value).slice(0, 10)}T23:59:59`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function shiftTenantExpiry(subscriptionExpiresAt, deltaDays) {
+  const currentExpiry = getTenantExpiryDate(subscriptionExpiresAt);
+  const today = new Date();
+  const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 0);
+  let baseDate = currentExpiry || todayEnd;
+  if (deltaDays >= 0 && (!currentExpiry || currentExpiry.getTime() < todayEnd.getTime())) {
+    baseDate = todayEnd;
+  }
+  const nextExpiry = new Date(baseDate.getTime() + Number(deltaDays || 0) * SUBSCRIPTION_DAY_MS);
+  return nextExpiry.toISOString().slice(0, 10);
+}
+
+function buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings) {
+  const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant?.packageType || 'basic');
+  return {
+    tenantId: String(tenant?.tenantId || ''),
+    tenantName: String(tenant?.name || tenant?.tenantId || ''),
+    packageType: String(tenant?.packageType || 'basic'),
+    planLabel: String(plan?.label || tenant?.packageType || 'Plan'),
+    currency: subscriptionSettings.currency,
+    subscriptionExpiresAt: tenant?.subscriptionExpiresAt || null,
+    subscriptionDaysRemaining: getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt),
+    manualExtensionDays: subscriptionSettings.manualExtensionDays,
+    paymentGateways: subscriptionSettings.paymentGateways,
+    periods: Array.isArray(plan?.periods) ? plan.periods : [],
+  };
+}
+
+function buildTenantSubscriptionAdminSummary(tenant, subscriptionSettings) {
+  return {
+    ...buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings),
+    activationCode: String(tenant?.activationCode || ''),
+    lastPaymentAt: tenant?.lastPaymentAt || null,
+    totalPaidAmount: roundCurrencyAmount(tenant?.totalPaidAmount || 0),
+  };
+}
+
+async function extendTenantSubscription(masterDb, tenantId, deltaDays, metadata = {}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const tenant = await masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId });
+  if (!tenant) {
+    throw new Error('Tenant not found');
+  }
+  const nextExpiry = shiftTenantExpiry(tenant.subscriptionExpiresAt, deltaDays);
+  const now = new Date().toISOString();
+  const update = {
+    subscriptionExpiresAt: nextExpiry,
+    updatedAt: now,
+  };
+  if (metadata.markPaid) {
+    update.lastPaymentAt = now;
+    update.totalPaidAmount = roundCurrencyAmount(Number(tenant.totalPaidAmount || 0) + Number(metadata.amount || 0));
+  }
+  await masterDb.collection('tenants').updateOne({ tenantId: normalizedTenantId }, { $set: update });
+  const updatedTenant = await masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId });
+  return updatedTenant;
+}
+
+async function recordTenantPayment(masterDb, payload) {
+  const now = new Date().toISOString();
+  const record = {
+    tenantId: String(payload?.tenantId || '').trim().toLowerCase(),
+    tenantName: String(payload?.tenantName || '').trim(),
+    packageType: String(payload?.packageType || '').trim().toLowerCase(),
+    reference: String(payload?.reference || crypto.randomUUID()),
+    provider: String(payload?.provider || 'manual'),
+    channel: String(payload?.channel || ''),
+    status: String(payload?.status || 'pending'),
+    currency: String(payload?.currency || SUBSCRIPTION_DEFAULT_CURRENCY).trim().toUpperCase(),
+    amount: roundCurrencyAmount(payload?.amount || 0),
+    months: Math.max(0, Math.round(Number(payload?.months) || 0)),
+    daysAdded: Math.round(Number(payload?.daysAdded) || 0),
+    customerEmail: String(payload?.customerEmail || '').trim(),
+    reason: String(payload?.reason || '').trim(),
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {},
+    createdAt: payload?.createdAt || now,
+    updatedAt: now,
+    appliedAt: payload?.appliedAt || null,
+  };
+  await masterDb.collection(TENANT_PAYMENTS_COLLECTION).updateOne(
+    { reference: record.reference },
+    {
+      $set: record,
+      $setOnInsert: {
+        createdAt: record.createdAt,
+      },
+    },
+    { upsert: true }
+  );
+  return record;
+}
+
+function getRequestOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || req.protocol || 'http';
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  return host ? `${protocol}://${host}` : '';
+}
+
 function sanitizeUser(user, tenantId, tenant) {
   return {
     id: String(user?._id || ''),
@@ -61,7 +351,10 @@ function sanitizeUser(user, tenantId, tenant) {
     employeeId: String(user?.employeeId || ''),
     isActive: Boolean(user?.isActive),
     tenantId: String(tenantId || 'master'),
+    tenantName: String(tenant?.name || tenantId || ''),
     packageType: tenant?.packageType || (tenantId === 'master' ? 'enterprise' : undefined),
+    subscriptionExpiresAt: tenant?.subscriptionExpiresAt || null,
+    subscriptionDaysRemaining: tenantId === 'master' ? null : getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt),
     allowedModules: resolveUserAllowedModulesForTenant(user, tenant, tenantId),
   };
 }
@@ -250,6 +543,264 @@ async function ensureSuperAdmin(masterDb) {
   });
 }
 
+router.get('/subscription/public-status', async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.query?.tenantId);
+    if (!tenantId || tenantId === 'master') {
+      res.status(400).json({ error: 'A tenant ID is required' });
+      return;
+    }
+    const [tenant, subscriptionSettings] = await Promise.all([
+      req.masterDb.collection('tenants').findOne({ tenantId }),
+      loadSubscriptionSettings(req.masterDb),
+    ]);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    res.json({
+      tenant: buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load subscription status' });
+  }
+});
+
+router.post('/subscription/manual-extend', async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.body?.tenantId);
+    const activationCode = normalizeActivationCode(req.body?.activationCode);
+    if (!tenantId || !activationCode) {
+      res.status(400).json({ error: 'Tenant ID and activation code are required' });
+      return;
+    }
+    const [tenant, subscriptionSettings] = await Promise.all([
+      req.masterDb.collection('tenants').findOne({ tenantId }),
+      loadSubscriptionSettings(req.masterDb),
+    ]);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    if (activationCode.length !== ACTIVATION_CODE_LENGTH || activationCode !== normalizeActivationCode(tenant.activationCode)) {
+      res.status(403).json({ error: 'Invalid activation code' });
+      return;
+    }
+    const updatedTenant = await extendTenantSubscription(req.masterDb, tenantId, subscriptionSettings.manualExtensionDays);
+    const summary = buildTenantSubscriptionPublicSummary(updatedTenant, subscriptionSettings);
+    await recordTenantPayment(req.masterDb, {
+      tenantId,
+      tenantName: updatedTenant.name || updatedTenant.tenantId,
+      packageType: updatedTenant.packageType,
+      reference: `manual-${tenantId}-${Date.now()}`,
+      provider: 'manual-code',
+      status: 'success',
+      currency: subscriptionSettings.currency,
+      amount: 0,
+      months: 1,
+      daysAdded: subscriptionSettings.manualExtensionDays,
+      reason: 'Manual activation code extension',
+      appliedAt: new Date().toISOString(),
+      metadata: {
+        mode: 'manual-code',
+      },
+    });
+    res.json({
+      ok: true,
+      tenant: summary,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to extend subscription manually' });
+  }
+});
+
+router.post('/subscription/paystack/initialize', async (req, res) => {
+  try {
+    if (!PAYSTACK_SECRET_KEY) {
+      res.status(400).json({ error: 'Paystack is not configured yet' });
+      return;
+    }
+    const tenantId = normalizeTenantId(req.body?.tenantId);
+    const customerEmail = String(req.body?.email || '').trim().toLowerCase();
+    const selectedMonths = Math.max(1, Math.min(12, Math.round(Number(req.body?.months) || 0)));
+    const returnUrl = String(req.body?.returnUrl || '').trim();
+    if (!tenantId || !customerEmail || !selectedMonths) {
+      res.status(400).json({ error: 'Tenant ID, email, and renewal period are required' });
+      return;
+    }
+    const [tenant, subscriptionSettings] = await Promise.all([
+      req.masterDb.collection('tenants').findOne({ tenantId }),
+      loadSubscriptionSettings(req.masterDb),
+    ]);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    if (!subscriptionSettings.paymentGateways.paystackEnabled) {
+      res.status(403).json({ error: 'Paystack payments are disabled' });
+      return;
+    }
+    const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant.packageType);
+    const period = (plan?.periods || []).find((item) => Number(item.months) === selectedMonths);
+    if (!period) {
+      res.status(400).json({ error: 'Selected renewal period is not available for this tenant plan' });
+      return;
+    }
+    const reference = `pthr-${tenantId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    const redirectBase = returnUrl || PAYSTACK_CALLBACK_BASE_URL || getRequestOrigin(req);
+    const callbackUrl = redirectBase
+      ? `${redirectBase}${redirectBase.includes('?') ? '&' : '?'}paystackReference=${encodeURIComponent(reference)}&tenantId=${encodeURIComponent(tenantId)}`
+      : undefined;
+    const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: customerEmail,
+        amount: Math.round(Number(period.amount) * 100),
+        currency: subscriptionSettings.currency,
+        reference,
+        callback_url: callbackUrl,
+        metadata: {
+          tenantId,
+          packageType: tenant.packageType,
+          months: period.months,
+          daysAdded: period.days,
+        },
+      }),
+    });
+    const paystackData = await paystackResponse.json().catch(() => null);
+    if (!paystackResponse.ok || !paystackData?.status || !paystackData?.data?.authorization_url) {
+      res.status(502).json({ error: paystackData?.message || 'Failed to initialize Paystack payment' });
+      return;
+    }
+    await recordTenantPayment(req.masterDb, {
+      tenantId,
+      tenantName: tenant.name || tenant.tenantId,
+      packageType: tenant.packageType,
+      reference,
+      provider: 'paystack',
+      channel: 'hosted-checkout',
+      status: 'pending',
+      currency: subscriptionSettings.currency,
+      amount: period.amount,
+      months: period.months,
+      daysAdded: period.days,
+      customerEmail,
+      reason: 'Tenant subscription renewal',
+      metadata: {
+        accessCode: paystackData?.data?.access_code || '',
+      },
+    });
+    res.json({
+      ok: true,
+      authorizationUrl: paystackData.data.authorization_url,
+      reference,
+      publicKeyAvailable: Boolean(PAYSTACK_PUBLIC_KEY),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to initialize payment' });
+  }
+});
+
+router.get('/subscription/paystack/verify', async (req, res) => {
+  try {
+    if (!PAYSTACK_SECRET_KEY) {
+      res.status(400).json({ error: 'Paystack is not configured yet' });
+      return;
+    }
+    const reference = String(req.query?.reference || '').trim();
+    if (!reference) {
+      res.status(400).json({ error: 'Payment reference is required' });
+      return;
+    }
+    const paymentRecord = await req.masterDb.collection(TENANT_PAYMENTS_COLLECTION).findOne({ reference });
+    if (!paymentRecord) {
+      res.status(404).json({ error: 'Payment record not found' });
+      return;
+    }
+    const verifyResponse = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+      },
+    });
+    const verifyData = await verifyResponse.json().catch(() => null);
+    if (!verifyResponse.ok || !verifyData?.status || !verifyData?.data) {
+      res.status(502).json({ error: verifyData?.message || 'Failed to verify payment' });
+      return;
+    }
+    const transaction = verifyData.data;
+    const paidSuccessfully = String(transaction.status || '').toLowerCase() === 'success';
+    if (!paidSuccessfully) {
+      await recordTenantPayment(req.masterDb, {
+        ...paymentRecord,
+        status: String(transaction.status || 'failed'),
+        channel: String(transaction.channel || paymentRecord.channel || ''),
+        metadata: {
+          ...(paymentRecord.metadata || {}),
+          paystackResponse: transaction,
+        },
+      });
+      res.status(400).json({ error: 'Payment was not successful' });
+      return;
+    }
+    let updatedTenant = await req.masterDb.collection('tenants').findOne({ tenantId: paymentRecord.tenantId });
+    if (!paymentRecord.appliedAt) {
+      updatedTenant = await extendTenantSubscription(req.masterDb, paymentRecord.tenantId, paymentRecord.daysAdded, {
+        markPaid: true,
+        amount: paymentRecord.amount,
+      });
+      await recordTenantPayment(req.masterDb, {
+        ...paymentRecord,
+        status: 'success',
+        channel: String(transaction.channel || paymentRecord.channel || ''),
+        customerEmail: String(transaction.customer?.email || paymentRecord.customerEmail || ''),
+        appliedAt: new Date().toISOString(),
+        metadata: {
+          ...(paymentRecord.metadata || {}),
+          paystackResponse: transaction,
+        },
+      });
+    }
+    const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+    res.json({
+      ok: true,
+      tenant: buildTenantSubscriptionPublicSummary(updatedTenant, subscriptionSettings),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to verify payment' });
+  }
+});
+
+router.get('/subscription/settings', requireSuperAdmin, async (req, res) => {
+  try {
+    const settings = await loadSubscriptionSettings(req.masterDb);
+    res.json({ settings });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load subscription settings' });
+  }
+});
+
+router.put('/subscription/settings', requireSuperAdmin, async (req, res) => {
+  try {
+    const settings = await saveSubscriptionSettings(req.masterDb, req.body || {});
+    res.json({ ok: true, settings });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save subscription settings' });
+  }
+});
+
+router.get('/subscription/payments', requireSuperAdmin, async (req, res) => {
+  try {
+    const payments = await req.masterDb.collection(TENANT_PAYMENTS_COLLECTION).find({}).sort({ createdAt: -1 }).limit(300).toArray();
+    res.json({ payments });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load payment records' });
+  }
+});
+
 router.post('/login', async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.body?.tenantId);
@@ -265,7 +816,12 @@ router.post('/login', async (req, res) => {
       return;
     }
     if (req.tenantId !== 'master' && isTenantSubscriptionExpired(req.tenant)) {
-      res.status(403).json({ error: 'Tenant subscription has expired' });
+      const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+      res.status(403).json({
+        error: 'Tenant subscription has expired',
+        subscriptionExpired: true,
+        tenant: buildTenantSubscriptionPublicSummary(req.tenant, subscriptionSettings),
+      });
       return;
     }
     const users = req.db.collection('users');
@@ -335,6 +891,15 @@ router.get('/me', async (req, res) => {
     const auth = await loadAuthUserFromToken(req);
     if (!auth) {
       res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (req.tenantId !== 'master' && isTenantSubscriptionExpired(req.tenant)) {
+      const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+      res.status(403).json({
+        error: 'Tenant subscription has expired',
+        subscriptionExpired: true,
+        tenant: buildTenantSubscriptionPublicSummary(req.tenant, subscriptionSettings),
+      });
       return;
     }
     res.json({ user: sanitizeUser(auth.user, req.tenantId, req.tenant) });
@@ -444,27 +1009,37 @@ router.post('/users', requireUserManagementAccess, async (req, res) => {
 });
 
 router.get('/tenant-packages', requireSuperAdmin, async (req, res) => {
-  res.json({
-    modules: [...allModules],
-    packages: Object.entries(packageDefaults).map(([id, value]) => ({
-      id,
-      modules: value.modules,
-      employeeLimit: value.employeeLimit,
-      concurrentLoginLimit: value.concurrentLoginLimit,
-    })),
-  });
+  try {
+    const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+    res.json({
+      modules: [...allModules],
+      packages: Object.entries(packageDefaults).map(([id, value]) => ({
+        id,
+        modules: value.modules,
+        employeeLimit: value.employeeLimit,
+        concurrentLoginLimit: value.concurrentLoginLimit,
+        subscription:
+          subscriptionSettings.plans.find((plan) => String(plan.planKey || '').trim().toLowerCase() === id) || null,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load tenant packages' });
+  }
 });
 
 router.get('/tenants', requireSuperAdmin, async (req, res) => {
   try {
+    const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
     const rows = await req.masterDb.collection('tenants').find({}).sort({ createdAt: -1 }).toArray();
     const tenants = rows.map((tenant) => {
       const limits = resolveTenantEffectiveLimits(tenant);
+      const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant.packageType || 'basic');
       return {
         id: String(tenant._id || tenant.tenantId),
         tenantId: tenant.tenantId,
         name: tenant.name || tenant.tenantId,
         packageType: tenant.packageType || 'basic',
+        planLabel: plan?.label || tenant.packageType || 'basic',
         grantedModules: resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules),
         employeeLimitOverride: tenant.employeeLimitOverride || null,
         concurrentLoginLimitOverride: tenant.concurrentLoginLimitOverride || null,
@@ -473,6 +1048,9 @@ router.get('/tenants', requireSuperAdmin, async (req, res) => {
         dbName: tenant.dbName,
         subscriptionExpiresAt: tenant.subscriptionExpiresAt || null,
         subscriptionDaysRemaining: getSubscriptionDaysRemaining(tenant.subscriptionExpiresAt),
+        activationCode: tenant.activationCode || '',
+        lastPaymentAt: tenant.lastPaymentAt || null,
+        totalPaidAmount: roundCurrencyAmount(tenant.totalPaidAmount || 0),
         status: tenant.status || 'active',
         createdAt: tenant.createdAt,
         updatedAt: tenant.updatedAt,
@@ -481,6 +1059,85 @@ router.get('/tenants', requireSuperAdmin, async (req, res) => {
     res.json({ tenants });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load tenants' });
+  }
+});
+
+router.get('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.params.tenantId);
+    const [tenant, settings] = await Promise.all([
+      req.masterDb.collection('tenants').findOne({ tenantId }),
+      loadSubscriptionSettings(req.masterDb),
+    ]);
+    if (!tenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    const payments = await req.masterDb
+      .collection(TENANT_PAYMENTS_COLLECTION)
+      .find({ tenantId })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .toArray();
+    res.json({
+      tenant: buildTenantSubscriptionAdminSummary(tenant, settings),
+      payments,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load tenant subscription' });
+  }
+});
+
+router.put('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.params.tenantId);
+    const existingTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
+    if (!existingTenant) {
+      res.status(404).json({ error: 'Tenant not found' });
+      return;
+    }
+    const requestedDaysDelta = Math.round(Number(req.body?.daysDelta) || 0);
+    const regenerateActivationCode = Boolean(req.body?.regenerateActivationCode);
+    const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
+    const update = {
+      updatedAt: new Date().toISOString(),
+    };
+    if (requestedDaysDelta !== 0) {
+      update.subscriptionExpiresAt = shiftTenantExpiry(existingTenant.subscriptionExpiresAt, requestedDaysDelta);
+    }
+    if (regenerateActivationCode) {
+      update.activationCode = await generateUniqueActivationCode(req.masterDb);
+    } else if (requestedActivationCode.length === ACTIVATION_CODE_LENGTH) {
+      update.activationCode = requestedActivationCode;
+    }
+    await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
+    const updatedTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
+    const settings = await loadSubscriptionSettings(req.masterDb);
+    if (requestedDaysDelta !== 0) {
+      await recordTenantPayment(req.masterDb, {
+        tenantId,
+        tenantName: updatedTenant.name || updatedTenant.tenantId,
+        packageType: updatedTenant.packageType,
+        reference: `admin-adjust-${tenantId}-${Date.now()}`,
+        provider: 'admin-adjustment',
+        status: 'success',
+        currency: settings.currency,
+        amount: 0,
+        months: 0,
+        daysAdded: requestedDaysDelta,
+        reason: String(req.body?.reason || 'Admin subscription day adjustment'),
+        appliedAt: new Date().toISOString(),
+        metadata: {
+          actor: String(req.authUser?.username || 'superadmin'),
+        },
+      });
+    }
+    res.json({
+      ok: true,
+      tenant: buildTenantSubscriptionAdminSummary(updatedTenant, settings),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update tenant subscription' });
   }
 });
 
@@ -503,11 +1160,13 @@ router.post('/tenants', requireSuperAdmin, async (req, res) => {
     const dbName = `tenant-${tenantId}`;
     const now = new Date().toISOString();
     const grantedModules = resolveTenantGrantedModules(packageType, req.body?.grantedModules);
+    const activationCode = await generateUniqueActivationCode(req.masterDb);
     const tenantPayload = {
       tenantId,
       name,
       packageType,
       dbName,
+      activationCode,
       grantedModules,
       employeeLimitOverride:
         Number.isFinite(Number(req.body?.employeeLimitOverride)) && Number(req.body?.employeeLimitOverride) > 0
@@ -518,6 +1177,8 @@ router.post('/tenants', requireSuperAdmin, async (req, res) => {
           ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
           : null,
       subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
+      totalPaidAmount: 0,
+      lastPaymentAt: null,
       status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
       createdAt: now,
       updatedAt: now,
@@ -545,6 +1206,7 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
       return;
     }
     const packageType = String(req.body?.packageType || existingTenant.packageType || 'basic').trim().toLowerCase();
+    const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
     const update = {
       name: String(req.body?.name || existingTenant.name || tenantId).trim(),
       packageType,
@@ -558,6 +1220,8 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
           ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
           : null,
       subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
+      activationCode:
+        requestedActivationCode.length === ACTIVATION_CODE_LENGTH ? requestedActivationCode : existingTenant.activationCode || '',
       status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
       updatedAt: new Date().toISOString(),
     };

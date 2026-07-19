@@ -1347,18 +1347,26 @@ async function getTenantDatabase(masterDb, tenantIdRaw) {
   if (normalizedTenantId === 'master') {
     return { tenantId: 'master', dbName: MONGO_MASTER_DB_NAME, db: masterDb };
   }
-  if (tenantDbCache.has(normalizedTenantId)) {
-    return tenantDbCache.get(normalizedTenantId);
-  }
   const tenant = await masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId, status: 'active' });
   if (!tenant) {
     throw new Error('Unknown or inactive tenant');
   }
+  const cached = tenantDbCache.get(normalizedTenantId);
+  const dbName = String(tenant.dbName || '');
+  if (cached && cached.dbName === dbName) {
+    const refreshedContext = {
+      ...cached,
+      tenant,
+      dbName,
+    };
+    tenantDbCache.set(normalizedTenantId, refreshedContext);
+    return refreshedContext;
+  }
   const tenantContext = {
     tenantId: normalizedTenantId,
-    dbName: String(tenant.dbName || ''),
+    dbName,
     tenant,
-    db: mongoClient.db(String(tenant.dbName || '')),
+    db: mongoClient.db(dbName),
   };
   tenantDbCache.set(normalizedTenantId, tenantContext);
   return tenantContext;
@@ -1385,6 +1393,17 @@ function resolveTenantIdFromRequest(req) {
     return normalizeTenantId(req.query.tenantId);
   }
   return 'master';
+}
+
+function getTenantSubscriptionDaysRemaining(value) {
+  if (!value) {
+    return null;
+  }
+  const expiryDate = new Date(`${String(value).slice(0, 10)}T23:59:59`);
+  if (Number.isNaN(expiryDate.getTime())) {
+    return null;
+  }
+  return Math.ceil((expiryDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
 const EMPLOYEE_PHONE_FIELDS = [
@@ -1665,6 +1684,13 @@ app.post('/api/settings/general', async (req, res) => {
 
 app.use('/api/modules/:moduleId', async (req, res, next) => {
   try {
+    if (req.tenantId !== 'master') {
+      const daysRemaining = getTenantSubscriptionDaysRemaining(req.tenant?.subscriptionExpiresAt);
+      if (daysRemaining !== null && daysRemaining < 0) {
+        res.status(403).json({ error: 'Tenant subscription has expired', subscriptionExpired: true });
+        return;
+      }
+    }
     const user = await loadAuthUserFromRequest(req);
     if (!user) {
       res.status(401).json({ error: 'Unauthorized' });
