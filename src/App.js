@@ -14,6 +14,7 @@ import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
 import TenantManagementPage from './pages/TenantManagementPage';
 import ManualPage from './pages/ManualPage';
+import SubscriptionExtendModal from './components/SubscriptionExtendModal';
 import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
 import SidebarNav from './app/SidebarNav';
 import LeaveApprovalPanel from './modules/leave/LeaveApprovalPanel';
@@ -594,7 +595,13 @@ function App({ initialModuleId }) {
   });
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginNotice, setLoginNotice] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
+  const [subscriptionExtendModal, setSubscriptionExtendModal] = useState({
+    open: false,
+    tenantId: '',
+    tenant: null,
+  });
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
     mode: 'partial',
     amount: '',
@@ -736,8 +743,6 @@ function App({ initialModuleId }) {
   });
   const employeeModuleLoadingRef = useRef(false);
   const generalSettingsLoadedRef = useRef(false);
-  const generalSettingsAutosaveSkipRef = useRef(true);
-  const generalSettingsAutosaveTimeoutRef = useRef(null);
   const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
@@ -835,9 +840,59 @@ function App({ initialModuleId }) {
     };
   }, []);
 
+  const openSubscriptionExtendModal = useCallback((tenantId, tenant = null) => {
+    const normalizedTenantId = String(tenantId || tenant?.tenantId || '').trim().toLowerCase();
+    if (!normalizedTenantId) {
+      return;
+    }
+    setSubscriptionExtendModal({
+      open: true,
+      tenantId: normalizedTenantId,
+      tenant,
+    });
+  }, []);
+
+  const closeSubscriptionExtendModal = useCallback(() => {
+    setSubscriptionExtendModal((prev) => ({
+      ...prev,
+      open: false,
+    }));
+  }, []);
+
+  const handleSubscriptionUpdated = useCallback(
+    (tenantSummary) => {
+      const normalizedTenantId = String(tenantSummary?.tenantId || '').trim().toLowerCase();
+      if (normalizedTenantId) {
+        setLoginForm((prev) => ({
+          ...prev,
+          tenantId: normalizedTenantId,
+        }));
+      }
+      if (tenantSummary?.subscriptionDaysRemaining !== undefined) {
+        setLoginNotice(
+          `Subscription updated for ${tenantSummary?.tenantName || normalizedTenantId}. ${tenantSummary?.subscriptionDaysRemaining ?? 0} day(s) remaining.`
+        );
+      }
+      setLoginError('');
+      if (currentUser && normalizedTenantId && normalizedTenantId === String(currentUser.tenantId || '').trim().toLowerCase()) {
+        setCurrentUser((prev) =>
+          prev
+            ? {
+                ...prev,
+                subscriptionDaysRemaining: tenantSummary?.subscriptionDaysRemaining ?? prev.subscriptionDaysRemaining,
+                subscriptionExpiresAt: tenantSummary?.subscriptionExpiresAt || prev.subscriptionExpiresAt,
+              }
+            : prev
+        );
+      }
+    },
+    [currentUser]
+  );
+
   const handleLoginSubmit = async (event) => {
     event.preventDefault();
     setLoginError('');
+    setLoginNotice('');
     setLoginLoading(true);
     try {
       const response = await fetch(toApiUrl('http://localhost:8000/api/auth/login'), {
@@ -858,6 +913,17 @@ function App({ initialModuleId }) {
         } else {
           setLoginError(data?.error || 'Login failed');
         }
+        if (data?.subscriptionExpired && data?.tenant) {
+          setSubscriptionExtendModal({
+            open: false,
+            tenantId: String(data.tenant.tenantId || loginForm.tenantId || '').trim().toLowerCase(),
+            tenant: data.tenant,
+          });
+          setLoginForm((prev) => ({
+            ...prev,
+            tenantId: String(data.tenant.tenantId || prev.tenantId || '').trim().toLowerCase(),
+          }));
+        }
         return;
       }
       const data = await response.json();
@@ -876,6 +942,8 @@ function App({ initialModuleId }) {
       storeAuth(payload);
       setLoginForm((prev) => ({ ...prev, username: '', password: '' }));
       setShowLoginPassword(false);
+      setLoginNotice('');
+      setSubscriptionExtendModal({ open: false, tenantId: '', tenant: null });
       const nextAllowedModules = getAllowedModuleSetForUser(data.user);
       const firstAllowed = sidebarSections
         .flatMap((section) => section.items)
@@ -960,6 +1028,16 @@ function App({ initialModuleId }) {
     return { Authorization: `Bearer ${authToken}` };
   }, [authToken]);
 
+  const jsonAuthHeaders = useMemo(() => {
+    if (!authToken) {
+      return { 'Content-Type': 'application/json' };
+    }
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    };
+  }, [authToken]);
+
   const buildGeneralSettingsPayload = useCallback((source) => {
     const next = source || {};
     return {
@@ -1025,9 +1103,7 @@ function App({ initialModuleId }) {
         const payload = buildGeneralSettingsPayload(nextSettings || appSettings);
         const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: jsonAuthHeaders,
           body: JSON.stringify(payload),
         });
         if (!response.ok) {
@@ -1046,15 +1122,20 @@ function App({ initialModuleId }) {
         setGeneralSettingsSaving(false);
       }
     },
-    [appSettings, buildGeneralSettingsPayload, mergeGeneralSettingsIntoAppSettings]
+    [appSettings, buildGeneralSettingsPayload, jsonAuthHeaders, mergeGeneralSettingsIntoAppSettings]
   );
 
   useEffect(() => {
+    if (!authToken) {
+      return undefined;
+    }
     let cancelled = false;
     const fetchGeneralSettings = async () => {
       try {
         setGeneralSettingsLoading(true);
-        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'));
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'), {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           throw new Error('Failed to load general settings');
         }
@@ -1079,40 +1160,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [mergeGeneralSettingsIntoAppSettings]);
-
-  const generalSettingsPayload = useMemo(
-    () => buildGeneralSettingsPayload(appSettings),
-    [appSettings, buildGeneralSettingsPayload]
-  );
-  const generalSettingsSignature = useMemo(
-    () => JSON.stringify(generalSettingsPayload),
-    [generalSettingsPayload]
-  );
-
-  useEffect(() => {
-    if (!generalSettingsLoadedRef.current) {
-      return undefined;
-    }
-    if (generalSettingsAutosaveSkipRef.current) {
-      generalSettingsAutosaveSkipRef.current = false;
-      return undefined;
-    }
-    if (generalSettingsAutosaveTimeoutRef.current) {
-      window.clearTimeout(generalSettingsAutosaveTimeoutRef.current);
-    }
-    generalSettingsAutosaveTimeoutRef.current = window.setTimeout(() => {
-      void saveGeneralSettings(appSettings, {
-        silent: true,
-        successMessage: 'General settings auto-saved',
-      });
-    }, 700);
-    return () => {
-      if (generalSettingsAutosaveTimeoutRef.current) {
-        window.clearTimeout(generalSettingsAutosaveTimeoutRef.current);
-      }
-    };
-  }, [appSettings, generalSettingsSignature, saveGeneralSettings]);
+  }, [authHeaders, authToken, mergeGeneralSettingsIntoAppSettings]);
 
   useEffect(() => {
     if (!authToken) {
@@ -1127,7 +1175,22 @@ function App({ initialModuleId }) {
           },
         });
         if (!response.ok) {
+          const data = await response.json().catch(() => null);
           if ((response.status === 401 || response.status === 403) && !cancelled) {
+            if (data?.subscriptionExpired && data?.tenant) {
+              setLoginNotice(
+                `Subscription expired for ${data.tenant.tenantName || data.tenant.tenantId}. Extend to continue.`
+              );
+              setSubscriptionExtendModal({
+                open: false,
+                tenantId: String(data.tenant.tenantId || '').trim().toLowerCase(),
+                tenant: data.tenant,
+              });
+              setLoginForm((prev) => ({
+                ...prev,
+                tenantId: String(data.tenant.tenantId || prev.tenantId || '').trim().toLowerCase(),
+              }));
+            }
             setCurrentUser(null);
             setAuthToken('');
             clearAuth();
@@ -1148,10 +1211,102 @@ function App({ initialModuleId }) {
       }
     };
     validateSession();
+    const intervalId = window.setInterval(validateSession, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeModuleId, authToken]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const searchParams = new URLSearchParams(window.location.search);
+    const paystackReference = String(searchParams.get('paystackReference') || '').trim();
+    const tenantIdFromUrl = String(searchParams.get('tenantId') || '').trim().toLowerCase();
+    if (!paystackReference || !tenantIdFromUrl) {
+      return;
+    }
+    let cancelled = false;
+    const verifyPayment = async () => {
+      try {
+        const response = await fetch(
+          toApiUrl(
+            `http://localhost:8000/api/auth/subscription/paystack/verify?reference=${encodeURIComponent(
+              paystackReference
+            )}`
+          )
+        );
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(data?.error || 'Unable to verify subscription payment');
+        }
+        if (!cancelled && data?.tenant) {
+          handleSubscriptionUpdated(data.tenant);
+          setSubscriptionExtendModal({
+            open: false,
+            tenantId: tenantIdFromUrl,
+            tenant: data.tenant,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLoginError(error instanceof Error ? error.message : 'Unable to verify subscription payment');
+        }
+      } finally {
+        if (!cancelled) {
+          searchParams.delete('paystackReference');
+          searchParams.delete('tenantId');
+          const nextSearch = searchParams.toString();
+          window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}`);
+        }
+      }
+    };
+    verifyPayment();
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, authToken]);
+  }, [handleSubscriptionUpdated]);
+
+  useEffect(() => {
+    const tenantId = String(currentUser?.tenantId || '').trim().toLowerCase();
+    if (!tenantId || tenantId === 'master') {
+      return undefined;
+    }
+    let cancelled = false;
+    const refreshSubscriptionStatus = async () => {
+      try {
+        const response = await fetch(
+          toApiUrl(`http://localhost:8000/api/auth/subscription/public-status?tenantId=${encodeURIComponent(tenantId)}`)
+        );
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (!cancelled && data?.tenant) {
+          setCurrentUser((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  subscriptionDaysRemaining: data.tenant.subscriptionDaysRemaining,
+                  subscriptionExpiresAt: data.tenant.subscriptionExpiresAt,
+                  packageType: data.tenant.packageType || prev.packageType,
+                  tenantName: data.tenant.tenantName || prev.tenantName,
+                }
+              : prev
+          );
+        }
+      } catch (error) {
+      }
+    };
+    refreshSubscriptionStatus();
+    const intervalId = window.setInterval(refreshSubscriptionStatus, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (
@@ -1233,10 +1388,15 @@ function App({ initialModuleId }) {
   }, [authHeaders, currentUser, employeeRowsCount]);
 
   useEffect(() => {
+    if (!authToken) {
+      return undefined;
+    }
     const fetchTrackingSettings = async () => {
       try {
         setTrackingSettingsLoading(true);
-        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'));
+        const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'), {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           throw new Error('Failed to load tracking settings');
         }
@@ -1309,13 +1469,18 @@ function App({ initialModuleId }) {
     };
 
     fetchTrackingSettings();
-  }, []);
+  }, [authHeaders, authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      return undefined;
+    }
     const fetchAttendanceSettings = async () => {
       try {
         setAttendanceSettingsLoading(true);
-        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'));
+        const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'), {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           throw new Error('Failed to load attendance settings');
         }
@@ -1351,7 +1516,7 @@ function App({ initialModuleId }) {
     };
 
     fetchAttendanceSettings();
-  }, []);
+  }, [authHeaders, authToken]);
 
   const buildAttendanceSettingsPayload = useCallback((source) => {
     return {
@@ -1378,9 +1543,7 @@ function App({ initialModuleId }) {
         const payload = buildAttendanceSettingsPayload(nextSettings || appSettings);
         const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: jsonAuthHeaders,
           body: JSON.stringify(payload),
         });
         if (!response.ok) {
@@ -1403,14 +1566,19 @@ function App({ initialModuleId }) {
         setAttendanceSettingsSaving(false);
       }
     },
-    [appSettings, buildAttendanceSettingsPayload]
+    [appSettings, buildAttendanceSettingsPayload, jsonAuthHeaders]
   );
 
   useEffect(() => {
+    if (!authToken) {
+      return undefined;
+    }
     const fetchMobileSettings = async () => {
       try {
         setMobileSettingsLoading(true);
-        const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'));
+        const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'), {
+          headers: authHeaders,
+        });
         if (!response.ok) {
           throw new Error('Failed to load mobile settings');
         }
@@ -1434,7 +1602,7 @@ function App({ initialModuleId }) {
     };
 
     fetchMobileSettings();
-  }, []);
+  }, [authHeaders, authToken]);
 
   const handleSaveTrackingSettings = async () => {
     try {
@@ -1443,9 +1611,7 @@ function App({ initialModuleId }) {
       setTrackingSettingsError('');
       const response = await fetch(toApiUrl('http://localhost:8000/api/tracking/settings'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: jsonAuthHeaders,
         body: JSON.stringify(appSettings.trackingRules),
       });
       if (!response.ok) {
@@ -1530,9 +1696,7 @@ function App({ initialModuleId }) {
       setMobileSettingsError('');
       const response = await fetch(toApiUrl('http://localhost:8000/api/mobile/settings'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: jsonAuthHeaders,
         body: JSON.stringify(appSettings.mobileApp),
       });
       if (!response.ok) {
@@ -5978,9 +6142,38 @@ function App({ initialModuleId }) {
                 </div>
               </label>
               {loginError ? <div className="form-error">{loginError}</div> : null}
+              {loginNotice ? (
+                <div
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: 12,
+                    background: '#eaf8ef',
+                    color: '#17603a',
+                    fontSize: 14,
+                  }}
+                >
+                  {loginNotice}
+                </div>
+              ) : null}
             <button type="submit" className="primary-btn" disabled={loginLoading}>
               {loginLoading ? 'Signing In...' : 'Sign In'}
               </button>
+              {String(loginForm.tenantId || '').trim() ? (
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={() =>
+                    openSubscriptionExtendModal(
+                      loginForm.tenantId,
+                      subscriptionExtendModal.tenantId === String(loginForm.tenantId || '').trim().toLowerCase()
+                        ? subscriptionExtendModal.tenant
+                        : null
+                    )
+                  }
+                >
+                  Extend Days
+                </button>
+              ) : null}
               {backendHealth.status === 'error' ? (
                 <div className="login-hint">
                   Backend or database is not connected. Check the server before logging in.
@@ -5989,6 +6182,13 @@ function App({ initialModuleId }) {
             </form>
           </div>
         </div>
+        <SubscriptionExtendModal
+          open={subscriptionExtendModal.open}
+          tenantId={subscriptionExtendModal.tenantId}
+          initialTenant={subscriptionExtendModal.tenant}
+          onClose={closeSubscriptionExtendModal}
+          onSubscriptionUpdated={handleSubscriptionUpdated}
+        />
       </div>
     );
   }
@@ -6051,15 +6251,10 @@ function App({ initialModuleId }) {
                 Sign out
               </button>
             </div>
-            <div
-              style={{
-                marginTop: 8,
-                textAlign: 'right',
-              }}
-            >
+            <div className="hero-status-row">
               <span
+                className="hero-status-chip"
                 style={{
-                  display: 'inline-flex',
                   alignItems: 'center',
                   gap: 6,
                   padding: '3px 10px',
@@ -6083,22 +6278,49 @@ function App({ initialModuleId }) {
                   ? 'Connected'
                   : 'Not connected'}
               </span>
-              {typeof currentUser.subscriptionDaysRemaining === 'number' ? (
-                <span
-                  style={{
-                    marginLeft: 8,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '3px 10px',
-                    borderRadius: 999,
-                    fontSize: 12,
-                    backgroundColor: currentUser.subscriptionDaysRemaining <= 7 ? '#fff2df' : '#eaf2ff',
-                    color: currentUser.subscriptionDaysRemaining <= 7 ? '#8a4c0f' : '#1b3f8d',
-                  }}
-                >
-                  Subscription: {currentUser.subscriptionDaysRemaining >= 0 ? `${currentUser.subscriptionDaysRemaining} day(s)` : 'Expired'}
-                </span>
+              {currentUser.tenantId && currentUser.tenantId !== 'master' ? (
+                <>
+                  <span
+                    className="hero-status-chip"
+                    style={{
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '3px 10px',
+                      borderRadius: 999,
+                      fontSize: 12,
+                      backgroundColor:
+                        typeof currentUser.subscriptionDaysRemaining === 'number' && currentUser.subscriptionDaysRemaining <= 7
+                          ? '#fff2df'
+                          : '#eaf2ff',
+                      color:
+                        typeof currentUser.subscriptionDaysRemaining === 'number' && currentUser.subscriptionDaysRemaining <= 7
+                          ? '#8a4c0f'
+                          : '#1b3f8d',
+                    }}
+                  >
+                    {String(currentUser.packageType || 'plan').toLowerCase()} •{' '}
+                    {typeof currentUser.subscriptionDaysRemaining === 'number'
+                      ? currentUser.subscriptionDaysRemaining >= 0
+                        ? `${currentUser.subscriptionDaysRemaining} day(s) left`
+                        : 'Expired'
+                      : 'Checking subscription...'}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-btn small hero-status-action"
+                    onClick={() =>
+                      openSubscriptionExtendModal(currentUser.tenantId, {
+                        tenantId: currentUser.tenantId,
+                        tenantName: currentUser.tenantName,
+                        packageType: currentUser.packageType,
+                        subscriptionExpiresAt: currentUser.subscriptionExpiresAt,
+                        subscriptionDaysRemaining: currentUser.subscriptionDaysRemaining,
+                      })
+                    }
+                  >
+                    Extend Days
+                  </button>
+                </>
               ) : null}
             </div>
           </div>
@@ -6171,8 +6393,8 @@ function App({ initialModuleId }) {
               </div>
               <div className="settings-grid">
                 {isGeneralSettingsTab ? (
-                  <div className="attendance-ops-actions" style={{ gridColumn: '1 / -1' }}>
-                    {generalSettingsLoading ? <span>Loading general settings from backend...</span> : null}
+                  <div className="settings-action-row" style={{ gridColumn: '1 / -1' }}>
+                    {generalSettingsLoading ? <span className="settings-action-status">Loading general settings from backend...</span> : null}
                     {generalSettingsError ? <span className="form-error">{generalSettingsError}</span> : null}
                     <button
                       type="button"
@@ -6182,7 +6404,7 @@ function App({ initialModuleId }) {
                     >
                       {generalSettingsSaving ? 'Saving General Settings...' : 'Save General Settings'}
                     </button>
-                    {generalSettingsSavedMessage ? <span>{generalSettingsSavedMessage}</span> : null}
+                    {generalSettingsSavedMessage ? <span className="settings-action-status">{generalSettingsSavedMessage}</span> : null}
                   </div>
                 ) : null}
                 {settingsTab === 'general' ? (
@@ -8237,6 +8459,13 @@ function App({ initialModuleId }) {
           </div>
         </div>
       ) : null}
+      <SubscriptionExtendModal
+        open={subscriptionExtendModal.open}
+        tenantId={subscriptionExtendModal.tenantId}
+        initialTenant={subscriptionExtendModal.tenant}
+        onClose={closeSubscriptionExtendModal}
+        onSubscriptionUpdated={handleSubscriptionUpdated}
+      />
       {!isSettingsPage && isModalOpen ? (
         <div className="modal-backdrop" onClick={closeModal}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
