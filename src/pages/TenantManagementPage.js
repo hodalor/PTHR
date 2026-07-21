@@ -9,6 +9,7 @@ const buildInitialForm = (packages) => ({
   employeeLimitOverride: '',
   concurrentLoginLimitOverride: '',
   subscriptionExpiresAt: '',
+  activationCode: '',
   status: 'active',
   adminUsername: '',
   adminPassword: '',
@@ -50,6 +51,7 @@ export default function TenantManagementPage({ authToken }) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [subscriptionSaving, setSubscriptionSaving] = useState(false);
+  const [activationCodeRefreshing, setActivationCodeRefreshing] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTenantId, setEditingTenantId] = useState('');
   const [selectedPlanKey, setSelectedPlanKey] = useState('basic');
@@ -154,6 +156,7 @@ export default function TenantManagementPage({ authToken }) {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingTenantId('');
+    setActivationCodeRefreshing(false);
     setForm(buildInitialForm(packages));
     setError('');
     setSaving(false);
@@ -176,6 +179,7 @@ export default function TenantManagementPage({ authToken }) {
 
   const openCreateModal = () => {
     setEditingTenantId('');
+    setActivationCodeRefreshing(false);
     setForm(buildInitialForm(packages));
     setIsModalOpen(true);
   };
@@ -190,6 +194,7 @@ export default function TenantManagementPage({ authToken }) {
       employeeLimitOverride: tenant.employeeLimitOverride ? String(tenant.employeeLimitOverride) : '',
       concurrentLoginLimitOverride: tenant.concurrentLoginLimitOverride ? String(tenant.concurrentLoginLimitOverride) : '',
       subscriptionExpiresAt: tenant.subscriptionExpiresAt ? String(tenant.subscriptionExpiresAt).slice(0, 10) : '',
+      activationCode: String(tenant.activationCode || '').toUpperCase(),
       status: tenant.status === 'inactive' ? 'inactive' : 'active',
       adminUsername: '',
       adminPassword: '',
@@ -272,6 +277,10 @@ export default function TenantManagementPage({ authToken }) {
       employeeLimitOverride: form.employeeLimitOverride ? Number(form.employeeLimitOverride) : null,
       concurrentLoginLimitOverride: form.concurrentLoginLimitOverride ? Number(form.concurrentLoginLimitOverride) : null,
       subscriptionExpiresAt: form.subscriptionExpiresAt || null,
+      activationCode: String(form.activationCode || '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '')
+        .slice(0, 12),
     };
     if (isEditing) {
       delete payload.adminUsername;
@@ -297,6 +306,43 @@ export default function TenantManagementPage({ authToken }) {
       setError(saveError instanceof Error ? saveError.message : `Failed to ${isEditing ? 'update' : 'create'} tenant`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRefreshEditActivationCode = async () => {
+    if (!authToken || !editingTenantId) {
+      return;
+    }
+    setActivationCodeRefreshing(true);
+    setError('');
+    try {
+      const response = await fetch(
+        toApiUrl(`http://localhost:8000/api/auth/tenants/${encodeURIComponent(editingTenantId)}/subscription`),
+        {
+          method: 'PUT',
+          headers: authHeaders,
+          body: JSON.stringify({
+            daysDelta: 0,
+            activationCode: form.activationCode,
+            regenerateActivationCode: true,
+            reason: 'Regenerated from tenant detail page',
+          }),
+        }
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to regenerate activation code');
+      }
+      const nextCode = String(data?.tenant?.activationCode || '').toUpperCase();
+      setForm((prev) => ({
+        ...prev,
+        activationCode: nextCode || prev.activationCode,
+      }));
+      await loadData();
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Failed to regenerate activation code');
+    } finally {
+      setActivationCodeRefreshing(false);
     }
   };
 
@@ -905,6 +951,52 @@ export default function TenantManagementPage({ authToken }) {
                   onChange={(event) => setForm((prev) => ({ ...prev, subscriptionExpiresAt: event.target.value }))}
                 />
               </label>
+              {isEditing ? (
+                <label>
+                  <span>Activation Code</span>
+                  <div className="tenant-code-field">
+                    <input
+                      className="tenant-code-input"
+                      value={form.activationCode}
+                      maxLength={12}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          activationCode: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12),
+                        }))
+                      }
+                      placeholder="12-character code"
+                    />
+                    <button
+                      type="button"
+                      className="neutral-btn tenant-code-refresh-btn"
+                      onClick={handleRefreshEditActivationCode}
+                      disabled={activationCodeRefreshing || saving}
+                      title="Generate a new unique activation code"
+                      aria-label="Generate a new unique activation code"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M20 12a8 8 0 1 1-2.34-5.66"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M20 4v6h-6"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </label>
+              ) : null}
               {!isEditing ? (
                 <>
                   <label>
@@ -1001,16 +1093,46 @@ export default function TenantManagementPage({ authToken }) {
                 <div className="settings-grid">
                   <label>
                     <span>Activation Code</span>
-                    <input
-                      value={tenantSubscriptionModal.activationCode}
-                      maxLength={12}
-                      onChange={(event) =>
-                        setTenantSubscriptionModal((prev) => ({
-                          ...prev,
-                          activationCode: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12),
-                        }))
-                      }
-                    />
+                    <div className="tenant-code-field">
+                      <input
+                        className="tenant-code-input"
+                        value={tenantSubscriptionModal.activationCode}
+                        maxLength={12}
+                        onChange={(event) =>
+                          setTenantSubscriptionModal((prev) => ({
+                            ...prev,
+                            activationCode: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12),
+                          }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="neutral-btn tenant-code-refresh-btn"
+                        onClick={() => handleSaveTenantSubscription({ regenerateActivationCode: true })}
+                        disabled={tenantSubscriptionModal.saving}
+                        title="Generate a new unique activation code"
+                        aria-label="Generate a new unique activation code"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M20 12a8 8 0 1 1-2.34-5.66"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M20 4v6h-6"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </label>
                   <label>
                     <span>Add or Remove Days</span>
@@ -1049,14 +1171,6 @@ export default function TenantManagementPage({ authToken }) {
                     disabled={tenantSubscriptionModal.saving}
                   >
                     {tenantSubscriptionModal.saving ? 'Saving...' : 'Apply Changes'}
-                  </button>
-                  <button
-                    type="button"
-                    className="neutral-btn"
-                    onClick={() => handleSaveTenantSubscription({ regenerateActivationCode: true })}
-                    disabled={tenantSubscriptionModal.saving}
-                  >
-                    Regenerate Code
                   </button>
                 </div>
 

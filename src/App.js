@@ -146,6 +146,17 @@ const getContractDaysLeft = (contractEndDate) => {
   return Math.ceil((endDate.getTime() - todayStart.getTime()) / DAY_IN_MS);
 };
 
+const formatSubscriptionStatusLabel = (subscriptionDaysRemaining, subscriptionExpiresAt) => {
+  const expiryLabel = subscriptionExpiresAt ? String(subscriptionExpiresAt).slice(0, 10) : '';
+  if (typeof subscriptionDaysRemaining !== 'number') {
+    return 'Checking subscription...';
+  }
+  if (subscriptionDaysRemaining <= 0) {
+    return expiryLabel ? `Expired on ${expiryLabel}` : 'Expired';
+  }
+  return expiryLabel ? `${subscriptionDaysRemaining} day(s) left • ${expiryLabel}` : `${subscriptionDaysRemaining} day(s) left`;
+};
+
 const toMinutesFromClock = (value) => {
   const [hourPart = '', minutePart = ''] = String(value || '').split(':');
   const hours = Number(hourPart);
@@ -870,7 +881,10 @@ function App({ initialModuleId }) {
       }
       if (tenantSummary?.subscriptionDaysRemaining !== undefined) {
         setLoginNotice(
-          `Subscription updated for ${tenantSummary?.tenantName || normalizedTenantId}. ${tenantSummary?.subscriptionDaysRemaining ?? 0} day(s) remaining.`
+          `Subscription updated for ${tenantSummary?.tenantName || normalizedTenantId}. ${formatSubscriptionStatusLabel(
+            tenantSummary?.subscriptionDaysRemaining,
+            tenantSummary?.subscriptionExpiresAt
+          )}.`
         );
       }
       setLoginError('');
@@ -908,7 +922,12 @@ function App({ initialModuleId }) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        if (response.status === 401 || response.status === 400) {
+        if (data?.subscriptionExpired && data?.tenant) {
+          setLoginError(
+            `Subscription expired for ${data.tenant.tenantName || data.tenant.tenantId}. This tenant cannot sign in until payment is completed or a valid 12-character activation code is entered.`
+          );
+          setLoginNotice('');
+        } else if (response.status === 401 || response.status === 400) {
           setLoginError(data?.error || 'Invalid tenant ID, username, or password');
         } else {
           setLoginError(data?.error || 'Login failed');
@@ -1021,12 +1040,17 @@ function App({ initialModuleId }) {
     };
   }, []);
 
+  const requestTenantId = String(currentUser?.tenantId || storedAuth?.tenantId || '').trim().toLowerCase();
+
   const authHeaders = useMemo(() => {
     if (!authToken) {
       return {};
     }
-    return { Authorization: `Bearer ${authToken}` };
-  }, [authToken]);
+    return {
+      Authorization: `Bearer ${authToken}`,
+      ...(requestTenantId ? { 'X-Tenant-Id': requestTenantId } : {}),
+    };
+  }, [authToken, requestTenantId]);
 
   const jsonAuthHeaders = useMemo(() => {
     if (!authToken) {
@@ -1035,8 +1059,9 @@ function App({ initialModuleId }) {
     return {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authToken}`,
+      ...(requestTenantId ? { 'X-Tenant-Id': requestTenantId } : {}),
     };
-  }, [authToken]);
+  }, [authToken, requestTenantId]);
 
   const buildGeneralSettingsPayload = useCallback((source) => {
     const next = source || {};
@@ -1178,9 +1203,10 @@ function App({ initialModuleId }) {
           const data = await response.json().catch(() => null);
           if ((response.status === 401 || response.status === 403) && !cancelled) {
             if (data?.subscriptionExpired && data?.tenant) {
-              setLoginNotice(
-                `Subscription expired for ${data.tenant.tenantName || data.tenant.tenantId}. Extend to continue.`
+              setLoginError(
+                `Subscription expired for ${data.tenant.tenantName || data.tenant.tenantId}. This tenant cannot sign in until payment is completed or a valid 12-character activation code is entered.`
               );
+              setLoginNotice('');
               setSubscriptionExtendModal({
                 open: false,
                 tenantId: String(data.tenant.tenantId || '').trim().toLowerCase(),
@@ -6299,11 +6325,10 @@ function App({ initialModuleId }) {
                     }}
                   >
                     {String(currentUser.packageType || 'plan').toLowerCase()} •{' '}
-                    {typeof currentUser.subscriptionDaysRemaining === 'number'
-                      ? currentUser.subscriptionDaysRemaining >= 0
-                        ? `${currentUser.subscriptionDaysRemaining} day(s) left`
-                        : 'Expired'
-                      : 'Checking subscription...'}
+                    {formatSubscriptionStatusLabel(
+                      currentUser.subscriptionDaysRemaining,
+                      currentUser.subscriptionExpiresAt
+                    )}
                   </span>
                   <button
                     type="button"

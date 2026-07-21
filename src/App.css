@@ -1832,6 +1832,33 @@ tbody tr:hover {
   max-width: 980px;
 }
 
+.tenant-code-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tenant-code-input {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.tenant-code-refresh-btn {
+  min-height: 42px;
+  min-width: 42px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tenant-code-refresh-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .settings-action-row {
   display: flex;
   align-items: center;
@@ -2395,6 +2422,14 @@ tbody tr:hover {
   .settings-action-row {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .tenant-code-field {
+    width: 100%;
+  }
+
+  .tenant-code-input {
+    width: 100%;
   }
 
   .employee-ops-actions {
