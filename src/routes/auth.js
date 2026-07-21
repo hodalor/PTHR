@@ -50,20 +50,30 @@ function getSessionExpiryIso(days = 7) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function getDateOnlyStart(value) {
+  const normalized = String(value || '').slice(0, 10);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function getSubscriptionDaysRemaining(value) {
-  if (!value) {
+  const expiryDate = getDateOnlyStart(value);
+  if (!expiryDate) {
     return null;
   }
-  const expiryDate = new Date(`${String(value).slice(0, 10)}T23:59:59`);
-  if (Number.isNaN(expiryDate.getTime())) {
-    return null;
-  }
-  return Math.ceil((expiryDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  return Math.round((expiryDate.getTime() - todayStart.getTime()) / SUBSCRIPTION_DAY_MS);
 }
 
 function isTenantSubscriptionExpired(tenant) {
   const daysRemaining = getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt);
-  return daysRemaining !== null && daysRemaining < 0;
+  return daysRemaining !== null && daysRemaining <= 0;
 }
 
 function roundCurrencyAmount(value) {
@@ -227,6 +237,26 @@ async function generateUniqueActivationCode(masterDb) {
   return crypto.randomUUID().replace(/-/g, '').toUpperCase().slice(0, ACTIVATION_CODE_LENGTH);
 }
 
+async function ensureActivationCodeIsUnique(masterDb, activationCode, tenantIdToExclude = '') {
+  const normalizedCode = normalizeActivationCode(activationCode);
+  if (normalizedCode.length !== ACTIVATION_CODE_LENGTH) {
+    return normalizedCode;
+  }
+  const existing = await masterDb.collection('tenants').findOne(
+    {
+      activationCode: normalizedCode,
+      tenantId: {
+        $ne: normalizeTenantId(tenantIdToExclude) || '',
+      },
+    },
+    { projection: { _id: 1, tenantId: 1 } }
+  );
+  if (existing) {
+    throw new Error('Activation code already exists for another tenant');
+  }
+  return normalizedCode;
+}
+
 function getPlanSubscriptionSettings(subscriptionSettings, packageType) {
   const normalizedPlanKey = String(packageType || 'basic').trim().toLowerCase();
   return (
@@ -265,6 +295,7 @@ function buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings) {
     currency: subscriptionSettings.currency,
     subscriptionExpiresAt: tenant?.subscriptionExpiresAt || null,
     subscriptionDaysRemaining: getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt),
+    subscriptionExpired: isTenantSubscriptionExpired(tenant),
     manualExtensionDays: subscriptionSettings.manualExtensionDays,
     paymentGateways: subscriptionSettings.paymentGateways,
     periods: Array.isArray(plan?.periods) ? plan.periods : [],
@@ -818,7 +849,8 @@ router.post('/login', async (req, res) => {
     if (req.tenantId !== 'master' && isTenantSubscriptionExpired(req.tenant)) {
       const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
       res.status(403).json({
-        error: 'Tenant subscription has expired',
+        error:
+          'Tenant subscription has expired. This tenant cannot sign in until payment is completed or a valid 12-character activation code is entered.',
         subscriptionExpired: true,
         tenant: buildTenantSubscriptionPublicSummary(req.tenant, subscriptionSettings),
       });
@@ -896,7 +928,8 @@ router.get('/me', async (req, res) => {
     if (req.tenantId !== 'master' && isTenantSubscriptionExpired(req.tenant)) {
       const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
       res.status(403).json({
-        error: 'Tenant subscription has expired',
+        error:
+          'Tenant subscription has expired. This tenant cannot sign in until payment is completed or a valid 12-character activation code is entered.',
         subscriptionExpired: true,
         tenant: buildTenantSubscriptionPublicSummary(req.tenant, subscriptionSettings),
       });
@@ -1108,7 +1141,7 @@ router.put('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res
     if (regenerateActivationCode) {
       update.activationCode = await generateUniqueActivationCode(req.masterDb);
     } else if (requestedActivationCode.length === ACTIVATION_CODE_LENGTH) {
-      update.activationCode = requestedActivationCode;
+      update.activationCode = await ensureActivationCodeIsUnique(req.masterDb, requestedActivationCode, tenantId);
     }
     await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
     const updatedTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
@@ -1160,7 +1193,11 @@ router.post('/tenants', requireSuperAdmin, async (req, res) => {
     const dbName = `tenant-${tenantId}`;
     const now = new Date().toISOString();
     const grantedModules = resolveTenantGrantedModules(packageType, req.body?.grantedModules);
-    const activationCode = await generateUniqueActivationCode(req.masterDb);
+    const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
+    const activationCode =
+      requestedActivationCode.length === ACTIVATION_CODE_LENGTH
+        ? await ensureActivationCodeIsUnique(req.masterDb, requestedActivationCode)
+        : await generateUniqueActivationCode(req.masterDb);
     const tenantPayload = {
       tenantId,
       name,
@@ -1207,6 +1244,7 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
     }
     const packageType = String(req.body?.packageType || existingTenant.packageType || 'basic').trim().toLowerCase();
     const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
+    const regenerateActivationCode = Boolean(req.body?.regenerateActivationCode);
     const update = {
       name: String(req.body?.name || existingTenant.name || tenantId).trim(),
       packageType,
@@ -1220,11 +1258,16 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
           ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
           : null,
       subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
-      activationCode:
-        requestedActivationCode.length === ACTIVATION_CODE_LENGTH ? requestedActivationCode : existingTenant.activationCode || '',
       status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
       updatedAt: new Date().toISOString(),
     };
+    if (regenerateActivationCode) {
+      update.activationCode = await generateUniqueActivationCode(req.masterDb);
+    } else if (requestedActivationCode.length === ACTIVATION_CODE_LENGTH) {
+      update.activationCode = await ensureActivationCodeIsUnique(req.masterDb, requestedActivationCode, tenantId);
+    } else {
+      update.activationCode = existingTenant.activationCode || '';
+    }
     await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
     const tenantDb = req.getDbByName(existingTenant.dbName);
     await ensureTenantIndexes(tenantDb);

@@ -1396,14 +1396,19 @@ function resolveTenantIdFromRequest(req) {
 }
 
 function getTenantSubscriptionDaysRemaining(value) {
-  if (!value) {
+  const normalized = String(value || '').slice(0, 10);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
     return null;
   }
-  const expiryDate = new Date(`${String(value).slice(0, 10)}T23:59:59`);
+  const [, year, month, day] = match;
+  const expiryDate = new Date(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
   if (Number.isNaN(expiryDate.getTime())) {
     return null;
   }
-  return Math.ceil((expiryDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  return Math.round((expiryDate.getTime() - todayStart.getTime()) / (24 * 60 * 60 * 1000));
 }
 
 const EMPLOYEE_PHONE_FIELDS = [
@@ -1559,6 +1564,25 @@ async function loadAuthUserFromRequest(req) {
   return { ...user, tokenPayload: payload };
 }
 
+async function requireAuthenticatedTenantContext(req, res, next) {
+  try {
+    const authUser = await loadAuthUserFromRequest(req);
+    if (!authUser) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const tokenTenantId = normalizeTenantId(authUser?.tokenPayload?.tenantId || '') || 'master';
+    if (tokenTenantId !== req.tenantId) {
+      res.status(403).json({ error: 'Tenant context mismatch' });
+      return;
+    }
+    req.authUser = authUser;
+    next();
+  } catch (error) {
+    res.status(500).json({ error: 'Authorization check failed' });
+  }
+}
+
 function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
   const role = String(user?.role || '').toLowerCase();
   if (role === 'superadmin' && tenantId === 'master') {
@@ -1614,6 +1638,10 @@ app.use(async (req, res, next) => {
     res.status(500).json({ error: error.message || 'Database connection failed' });
   }
 });
+
+app.use('/api/settings', requireAuthenticatedTenantContext);
+app.use('/api/mobile/settings', requireAuthenticatedTenantContext);
+app.use('/api/tracking/settings', requireAuthenticatedTenantContext);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/mobile', mobileRoutes);
@@ -1686,8 +1714,12 @@ app.use('/api/modules/:moduleId', async (req, res, next) => {
   try {
     if (req.tenantId !== 'master') {
       const daysRemaining = getTenantSubscriptionDaysRemaining(req.tenant?.subscriptionExpiresAt);
-      if (daysRemaining !== null && daysRemaining < 0) {
-        res.status(403).json({ error: 'Tenant subscription has expired', subscriptionExpired: true });
+      if (daysRemaining !== null && daysRemaining <= 0) {
+        res.status(403).json({
+          error:
+            'Tenant subscription has expired. This tenant cannot sign in until payment is completed or a valid 12-character activation code is entered.',
+          subscriptionExpired: true,
+        });
         return;
       }
     }
