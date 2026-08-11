@@ -1,20 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toApiUrl } from '../config/api';
 
-const buildInitialForm = (packages) => ({
-  tenantId: '',
-  name: '',
-  packageType: packages[0]?.id || 'basic',
-  grantedModules: Array.isArray(packages[0]?.modules) ? packages[0].modules : [],
-  employeeLimitOverride: '',
-  concurrentLoginLimitOverride: '',
-  subscriptionExpiresAt: '',
-  activationCode: '',
-  status: 'active',
-  adminUsername: '',
-  adminPassword: '',
-  adminFullName: '',
-});
+const buildInitialForm = (packages, subscriptionPlans = []) => {
+  const packageType = packages[0]?.id || 'basic';
+  const plan = subscriptionPlans.find((row) => String(row.planKey) === String(packageType)) || subscriptionPlans[0] || null;
+  const periods = Array.isArray(plan?.periods) ? plan.periods : [];
+  return {
+    tenantId: '',
+    name: '',
+    packageType,
+    grantedModules: Array.isArray(packages[0]?.modules) ? packages[0].modules : [],
+    employeeLimitOverride: '',
+    concurrentLoginLimitOverride: '',
+    subscriptionExpiresAt: '',
+    activationCode: '',
+    status: 'active',
+    adminUsername: '',
+    adminPassword: '',
+    adminFullName: '',
+    pricingOverrides: {},
+    periods,
+  };
+};
 
 const buildDefaultSubscriptionForm = () => ({
   currency: 'GHS',
@@ -142,7 +149,7 @@ export default function TenantManagementPage({ authToken }) {
       setSubscriptionForm(subscriptionData.settings || buildDefaultSubscriptionForm());
       setPayments(Array.isArray(paymentData.payments) ? paymentData.payments : []);
       setSelectedPlanKey((prev) => prev || subscriptionData?.settings?.plans?.[0]?.planKey || 'basic');
-      setForm((prev) => (prev.tenantId || isEditing ? prev : buildInitialForm(packageRows)));
+      setForm((prev) => (prev.tenantId || isEditing ? prev : buildInitialForm(packageRows, subscriptionData?.settings?.plans || [])));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load tenant data');
     } finally {
@@ -154,11 +161,49 @@ export default function TenantManagementPage({ authToken }) {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    if (!isModalOpen) {
+      return;
+    }
+    const currentPlan = subscriptionForm.plans.find((row) => String(row.planKey) === String(form.packageType)) || null;
+    const expectedPeriods = Array.isArray(currentPlan?.periods) ? currentPlan.periods : [];
+    const currentMonths = new Set((Array.isArray(form.periods) ? form.periods : []).map((period) => Number(period.months)));
+    const periodsDiffer =
+      expectedPeriods.length !== currentMonths.size ||
+      expectedPeriods.some((period) => !currentMonths.has(Number(period.months))) ||
+      Array.isArray(form.periods) === false ||
+      (Array.isArray(form.periods) && form.periods.length === 0 && expectedPeriods.length > 0);
+
+    if (!periodsDiffer) {
+      return;
+    }
+    setForm((prev) => {
+      const preservedOverrides = Object.entries({ ...(prev.pricingOverrides || {}) }).reduce((acc, [key, value]) => {
+        const match = /^month_(\d+)$/.exec(String(key || ''));
+        const months = match ? Number(match[1]) : 0;
+        if (!months || months < 1 || months > 12) {
+          return acc;
+        }
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue) || numericValue <= 0) {
+          return acc;
+        }
+        acc[`month_${months}`] = Math.round(numericValue * 100) / 100;
+        return acc;
+      }, {});
+      return {
+        ...prev,
+        periods: expectedPeriods,
+        pricingOverrides: preservedOverrides,
+      };
+    });
+  }, [form.packageType, isModalOpen, subscriptionForm.plans, form.periods]);
+
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingTenantId('');
     setActivationCodeRefreshing(false);
-    setForm(buildInitialForm(packages));
+    setForm(buildInitialForm(packages, subscriptionForm.plans));
     setError('');
     setSaving(false);
   };
@@ -182,11 +227,18 @@ export default function TenantManagementPage({ authToken }) {
   const openCreateModal = () => {
     setEditingTenantId('');
     setActivationCodeRefreshing(false);
-    setForm(buildInitialForm(packages));
+    setForm(buildInitialForm(packages, subscriptionForm.plans));
     setIsModalOpen(true);
   };
 
   const openEditModal = (tenant) => {
+    const plan = subscriptionForm.plans.find((row) => String(row.planKey) === String(tenant.packageType || 'basic')) || subscriptionForm.plans[0] || null;
+    const fallbackPeriods = Array.isArray(plan?.periods) ? plan.periods : [];
+    const periods = Array.isArray(tenant.periods) && tenant.periods.length > 0 ? tenant.periods : fallbackPeriods;
+    const pricingOverrides =
+      tenant.subscriptionPricingOverrides && typeof tenant.subscriptionPricingOverrides === 'object'
+        ? { ...tenant.subscriptionPricingOverrides }
+        : {};
     setEditingTenantId(tenant.tenantId);
     setForm({
       tenantId: tenant.tenantId,
@@ -201,6 +253,8 @@ export default function TenantManagementPage({ authToken }) {
       adminUsername: '',
       adminPassword: '',
       adminFullName: '',
+      pricingOverrides,
+      periods,
     });
     setIsModalOpen(true);
   };
@@ -286,6 +340,7 @@ export default function TenantManagementPage({ authToken }) {
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, '')
         .slice(0, 12),
+      pricingOverrides: form.pricingOverrides && typeof form.pricingOverrides === 'object' ? { ...form.pricingOverrides } : {},
     };
     if (isEditing) {
       delete payload.adminUsername;
@@ -1058,6 +1113,77 @@ export default function TenantManagementPage({ authToken }) {
                   })}
                 </div>
               </div>
+              {Array.isArray(form.periods) && form.periods.length > 0 ? (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div className="panel-title-actions" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                    <div>
+                      <div className="panel-title" style={{ marginBottom: 2 }}>Custom Tenant Pricing</div>
+                      <div className="form-hint" style={{ marginTop: 0 }}>
+                        Set what this tenant should be charged. Leave an amount empty to use the default plan price.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-btn small"
+                      onClick={() => setForm((prev) => ({ ...prev, pricingOverrides: {} }))}
+                      disabled={saving}
+                    >
+                      Reset to Defaults
+                    </button>
+                  </div>
+                  <div
+                    className="custom-pricing-grid"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                      gap: 10,
+                    }}
+                  >
+                    {form.periods.map((period) => {
+                      const monthKey = `month_${Number(period.months)}`;
+                      const overrideValue = Number(form.pricingOverrides?.[monthKey]);
+                      const displayValue = Number.isFinite(overrideValue) && overrideValue > 0 ? overrideValue : '';
+                      const defaultAmount = Number(period.amount) || 0;
+                      const isCustom = displayValue !== '';
+                      return (
+                        <label key={monthKey} className="panel" style={{ padding: 12, margin: 0 }}>
+                          <div style={{ fontWeight: 700 }}>{period.days} days</div>
+                          <div style={{ fontSize: 12, color: '#627493', marginBottom: 6 }}>
+                            {period.months} month{period.months === 1 ? '' : 's'}
+                            {isCustom ? (
+                              <span style={{ marginLeft: 6, color: '#1b3f8d', fontWeight: 600 }}>custom</span>
+                            ) : null}
+                          </div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder={`Default: ${formatMoney(defaultAmount, tenantSubscriptionModal.tenant?.currency || subscriptionForm.currency)}`}
+                            value={displayValue}
+                            onChange={(event) => {
+                              const rawValue = event.target.value;
+                              const numericValue = rawValue === '' ? null : Number(rawValue);
+                              setForm((prev) => {
+                                const nextOverrides = { ...(prev.pricingOverrides || {}) };
+                                if (numericValue === null || !Number.isFinite(numericValue) || numericValue <= 0) {
+                                  delete nextOverrides[monthKey];
+                                } else {
+                                  nextOverrides[monthKey] = Math.round(numericValue * 100) / 100;
+                                }
+                                return { ...prev, pricingOverrides: nextOverrides };
+                              });
+                            }}
+                            disabled={saving}
+                          />
+                          <div style={{ fontSize: 12, color: '#627493', marginTop: 6 }}>
+                            Currency: {tenantSubscriptionModal.tenant?.currency || subscriptionForm.currency}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               <div className="panel-title-actions" style={{ gridColumn: '1 / -1' }}>
                 <button type="submit" className="primary-btn" disabled={saving}>
                   {saving ? 'Saving...' : isEditing ? 'Update Tenant' : 'Create Tenant'}
