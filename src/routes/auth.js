@@ -92,6 +92,58 @@ function normalizeActivationCode(value) {
     .slice(0, ACTIVATION_CODE_LENGTH);
 }
 
+function isValidEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  if (!email) {
+    return false;
+  }
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function normalizeTenantPricingOverrides(value, basePeriods = []) {
+  const requested = value && typeof value === 'object' && !Array.isArray(value) ? value : Array.isArray(value) ? {} : {};
+  const defaults = Array.isArray(basePeriods) ? basePeriods : [];
+  const normalized = {};
+  defaults.forEach((period) => {
+    const months = Math.max(1, Math.min(12, Math.round(Number(period?.months) || 0)));
+    if (!months) {
+      return;
+    }
+    const overrideValue = Number(requested[`month_${months}`]);
+    const fallbackAmount = roundCurrencyAmount(Number(period?.amount) || 0);
+    const amount = Number.isFinite(overrideValue) && overrideValue > 0 ? roundCurrencyAmount(overrideValue) : fallbackAmount;
+    normalized[`month_${months}`] = amount;
+  });
+  return normalized;
+}
+
+function applyTenantPricingOverrides(periods, pricingOverrides) {
+  const overrides = pricingOverrides && typeof pricingOverrides === 'object' ? pricingOverrides : {};
+  if (!Array.isArray(periods)) {
+    return [];
+  }
+  return periods.map((period) => {
+    const months = Math.max(1, Math.min(12, Math.round(Number(period?.months) || 0)));
+    const overrideValue = Number(overrides[`month_${months}`]);
+    const nextAmount = Number.isFinite(overrideValue) && overrideValue > 0 ? roundCurrencyAmount(overrideValue) : roundCurrencyAmount(period?.amount);
+    return {
+      ...period,
+      months,
+      amount: nextAmount,
+    };
+  });
+}
+
+function extractResponseError(error, fallbackMessage = 'Failed to initialize payment') {
+  const errorMessage =
+    error instanceof Error
+      ? String(error.message || '')
+      : typeof error === 'string'
+        ? error
+        : '';
+  return errorMessage || fallbackMessage;
+}
+
 function buildDefaultRenewalPeriods(monthlyAmount) {
   const baseAmount = roundCurrencyAmount(monthlyAmount);
   return Array.from({ length: 12 }, (_, index) => {
@@ -287,6 +339,8 @@ function shiftTenantExpiry(subscriptionExpiresAt, deltaDays) {
 
 function buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings) {
   const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant?.packageType || 'basic');
+  const basePeriods = Array.isArray(plan?.periods) ? plan.periods : [];
+  const periods = applyTenantPricingOverrides(basePeriods, tenant?.subscriptionPricingOverrides);
   return {
     tenantId: String(tenant?.tenantId || ''),
     tenantName: String(tenant?.name || tenant?.tenantId || ''),
@@ -298,16 +352,19 @@ function buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings) {
     subscriptionExpired: isTenantSubscriptionExpired(tenant),
     manualExtensionDays: subscriptionSettings.manualExtensionDays,
     paymentGateways: subscriptionSettings.paymentGateways,
-    periods: Array.isArray(plan?.periods) ? plan.periods : [],
+    periods,
   };
 }
 
 function buildTenantSubscriptionAdminSummary(tenant, subscriptionSettings) {
+  const basePublic = buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings);
+  const pricingOverrides = normalizeTenantPricingOverrides(tenant?.subscriptionPricingOverrides, basePublic.periods);
   return {
-    ...buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings),
+    ...basePublic,
     activationCode: String(tenant?.activationCode || ''),
     lastPaymentAt: tenant?.lastPaymentAt || null,
     totalPaidAmount: roundCurrencyAmount(tenant?.totalPaidAmount || 0),
+    subscriptionPricingOverrides: pricingOverrides,
   };
 }
 
@@ -648,15 +705,23 @@ router.post('/subscription/manual-extend', async (req, res) => {
 router.post('/subscription/paystack/initialize', async (req, res) => {
   try {
     if (!PAYSTACK_SECRET_KEY) {
-      res.status(400).json({ error: 'Paystack is not configured yet' });
+      res.status(400).json({ error: 'Paystack secret key is not configured' });
       return;
     }
     const tenantId = normalizeTenantId(req.body?.tenantId);
     const customerEmail = String(req.body?.email || '').trim().toLowerCase();
     const selectedMonths = Math.max(1, Math.min(12, Math.round(Number(req.body?.months) || 0)));
     const returnUrl = String(req.body?.returnUrl || '').trim();
-    if (!tenantId || !customerEmail || !selectedMonths) {
-      res.status(400).json({ error: 'Tenant ID, email, and renewal period are required' });
+    if (!tenantId) {
+      res.status(400).json({ error: 'Tenant ID is required' });
+      return;
+    }
+    if (!isValidEmail(customerEmail)) {
+      res.status(400).json({ error: 'A valid payment email is required' });
+      return;
+    }
+    if (!selectedMonths) {
+      res.status(400).json({ error: 'Renewal period is required' });
       return;
     }
     const [tenant, subscriptionSettings] = await Promise.all([
@@ -672,15 +737,29 @@ router.post('/subscription/paystack/initialize', async (req, res) => {
       return;
     }
     const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant.packageType);
-    const period = (plan?.periods || []).find((item) => Number(item.months) === selectedMonths);
+    const effectivePeriods = applyTenantPricingOverrides(plan?.periods || [], tenant?.subscriptionPricingOverrides);
+    const period = effectivePeriods.find((item) => Number(item.months) === selectedMonths);
     if (!period) {
       res.status(400).json({ error: 'Selected renewal period is not available for this tenant plan' });
       return;
     }
+    const roundedAmount = roundCurrencyAmount(period.amount);
+    if (roundedAmount <= 0) {
+      res.status(400).json({ error: 'Subscription amount must be greater than zero' });
+      return;
+    }
     const reference = `pthr-${tenantId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-    const redirectBase = returnUrl || PAYSTACK_CALLBACK_BASE_URL || getRequestOrigin(req);
+    let redirectBase = (returnUrl || PAYSTACK_CALLBACK_BASE_URL || getRequestOrigin(req)).trim();
+    if (redirectBase) {
+      const lowerRedirect = redirectBase.toLowerCase();
+      if (lowerRedirect.includes('paystack.co') || lowerRedirect.includes('paystack.com')) {
+        redirectBase = '';
+      } else if (!/^https?:\/\//i.test(redirectBase)) {
+        redirectBase = `https://${redirectBase.replace(/^\/+/, '')}`;
+      }
+    }
     const callbackUrl = redirectBase
-      ? `${redirectBase}${redirectBase.includes('?') ? '&' : '?'}paystackReference=${encodeURIComponent(reference)}&tenantId=${encodeURIComponent(tenantId)}`
+      ? `${redirectBase.replace(/\/+$/, '')}${redirectBase.includes('?') ? '&' : '?'}paystackReference=${encodeURIComponent(reference)}&tenantId=${encodeURIComponent(tenantId)}`
       : undefined;
     const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -690,10 +769,10 @@ router.post('/subscription/paystack/initialize', async (req, res) => {
       },
       body: JSON.stringify({
         email: customerEmail,
-        amount: Math.round(Number(period.amount) * 100),
-        currency: subscriptionSettings.currency,
+        amount: Math.round(roundedAmount * 100),
+        currency: String(subscriptionSettings.currency || SUBSCRIPTION_DEFAULT_CURRENCY).trim().toUpperCase(),
         reference,
-        callback_url: callbackUrl,
+        ...(callbackUrl ? { callback_url: callbackUrl } : {}),
         metadata: {
           tenantId,
           packageType: tenant.packageType,
@@ -702,9 +781,28 @@ router.post('/subscription/paystack/initialize', async (req, res) => {
         },
       }),
     });
-    const paystackData = await paystackResponse.json().catch(() => null);
-    if (!paystackResponse.ok || !paystackData?.status || !paystackData?.data?.authorization_url) {
-      res.status(502).json({ error: paystackData?.message || 'Failed to initialize Paystack payment' });
+    const paystackData = await paystackResponse.json().catch((jsonError) => {
+      throw new Error(`Paystack returned an invalid response. ${extractResponseError(jsonError, 'Unable to parse Paystack response')}`);
+    });
+    if (!paystackResponse.ok) {
+      const paystackMessage =
+        paystackData && typeof paystackData === 'object' ? String(paystackData.message || '') : '';
+      const statusHint =
+        paystackResponse.status >= 400 && paystackResponse.status < 500
+          ? 'Check your Paystack key, callback URL, and payment details.'
+          : 'Paystack service issue. Please try again.';
+      const errorMessage =
+        paystackMessage ||
+        `Unable to initialize Paystack payment (status ${paystackResponse.status}). ${statusHint}`;
+      res.status(502).json({ error: errorMessage });
+      return;
+    }
+    if (!paystackData?.status || !paystackData?.data?.authorization_url) {
+      res.status(502).json({
+        error:
+          (paystackData && typeof paystackData === 'object' ? String(paystackData.message || '') : '') ||
+          'Paystack did not return a checkout URL. Check your callback URL and Paystack configuration.',
+      });
       return;
     }
     await recordTenantPayment(req.masterDb, {
@@ -716,13 +814,14 @@ router.post('/subscription/paystack/initialize', async (req, res) => {
       channel: 'hosted-checkout',
       status: 'pending',
       currency: subscriptionSettings.currency,
-      amount: period.amount,
+      amount: roundedAmount,
       months: period.months,
       daysAdded: period.days,
       customerEmail,
       reason: 'Tenant subscription renewal',
       metadata: {
         accessCode: paystackData?.data?.access_code || '',
+        callbackUrl: callbackUrl || '',
       },
     });
     res.json({
@@ -732,14 +831,14 @@ router.post('/subscription/paystack/initialize', async (req, res) => {
       publicKeyAvailable: Boolean(PAYSTACK_PUBLIC_KEY),
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to initialize payment' });
+    res.status(500).json({ error: extractResponseError(error, 'Failed to initialize payment') });
   }
 });
 
 router.get('/subscription/paystack/verify', async (req, res) => {
   try {
     if (!PAYSTACK_SECRET_KEY) {
-      res.status(400).json({ error: 'Paystack is not configured yet' });
+      res.status(400).json({ error: 'Paystack secret key is not configured' });
       return;
     }
     const reference = String(req.query?.reference || '').trim();
@@ -758,8 +857,22 @@ router.get('/subscription/paystack/verify', async (req, res) => {
       },
     });
     const verifyData = await verifyResponse.json().catch(() => null);
-    if (!verifyResponse.ok || !verifyData?.status || !verifyData?.data) {
-      res.status(502).json({ error: verifyData?.message || 'Failed to verify payment' });
+    if (!verifyResponse.ok) {
+      const paystackMessage =
+        verifyData && typeof verifyData === 'object' ? String(verifyData.message || '') : '';
+      res.status(502).json({
+        error:
+          paystackMessage ||
+          `Unable to verify payment with Paystack (status ${verifyResponse.status}). Please try again.`,
+      });
+      return;
+    }
+    if (!verifyData?.status || !verifyData?.data) {
+      res.status(502).json({
+        error:
+          (verifyData && typeof verifyData === 'object' ? String(verifyData.message || '') : '') ||
+          'Paystack did not return verification details.',
+      });
       return;
     }
     const transaction = verifyData.data;
@@ -774,7 +887,12 @@ router.get('/subscription/paystack/verify', async (req, res) => {
           paystackResponse: transaction,
         },
       });
-      res.status(400).json({ error: 'Payment was not successful' });
+      res.status(400).json({
+        error:
+          typeof transaction.gateway_response === 'string' && transaction.gateway_response
+            ? `Payment failed: ${transaction.gateway_response}`
+            : 'Payment was not successful',
+      });
       return;
     }
     let updatedTenant = await req.masterDb.collection('tenants').findOne({ tenantId: paymentRecord.tenantId });
@@ -801,7 +919,7 @@ router.get('/subscription/paystack/verify', async (req, res) => {
       tenant: buildTenantSubscriptionPublicSummary(updatedTenant, subscriptionSettings),
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to verify payment' });
+    res.status(500).json({ error: extractResponseError(error, 'Failed to verify payment') });
   }
 });
 
@@ -1132,9 +1250,24 @@ router.put('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res
     const requestedDaysDelta = Math.round(Number(req.body?.daysDelta) || 0);
     const regenerateActivationCode = Boolean(req.body?.regenerateActivationCode);
     const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
+    const settings = await loadSubscriptionSettings(req.masterDb);
+    const plan = getPlanSubscriptionSettings(settings, existingTenant?.packageType || 'basic');
+    const requestedPricingOverrides = normalizeTenantPricingOverrides(req.body?.pricingOverrides, plan?.periods || []);
     const update = {
       updatedAt: new Date().toISOString(),
     };
+    let subscriptionPricingChanged = false;
+    const normalizedExistingOverrides = normalizeTenantPricingOverrides(existingTenant?.subscriptionPricingOverrides, plan?.periods || []);
+    const overrideKeys = new Set([...Object.keys(normalizedExistingOverrides), ...Object.keys(requestedPricingOverrides)]);
+    for (const key of overrideKeys) {
+      if (Number(normalizedExistingOverrides[key]) !== Number(requestedPricingOverrides[key])) {
+        subscriptionPricingChanged = true;
+        break;
+      }
+    }
+    if (subscriptionPricingChanged) {
+      update.subscriptionPricingOverrides = requestedPricingOverrides;
+    }
     if (requestedDaysDelta !== 0) {
       update.subscriptionExpiresAt = shiftTenantExpiry(existingTenant.subscriptionExpiresAt, requestedDaysDelta);
     }
@@ -1143,9 +1276,11 @@ router.put('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res
     } else if (requestedActivationCode.length === ACTIVATION_CODE_LENGTH) {
       update.activationCode = await ensureActivationCodeIsUnique(req.masterDb, requestedActivationCode, tenantId);
     }
-    await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
+    const hasChanges = Object.keys(update).length > 1 || Object.keys(update).some((key) => key !== 'updatedAt');
+    if (hasChanges) {
+      await req.masterDb.collection('tenants').updateOne({ tenantId }, { $set: update });
+    }
     const updatedTenant = await req.masterDb.collection('tenants').findOne({ tenantId });
-    const settings = await loadSubscriptionSettings(req.masterDb);
     if (requestedDaysDelta !== 0) {
       await recordTenantPayment(req.masterDb, {
         tenantId,
@@ -1170,7 +1305,7 @@ router.put('/tenants/:tenantId/subscription', requireSuperAdmin, async (req, res
       tenant: buildTenantSubscriptionAdminSummary(updatedTenant, settings),
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update tenant subscription' });
+    res.status(500).json({ error: extractResponseError(error, 'Failed to update tenant subscription') });
   }
 });
 
