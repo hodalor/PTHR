@@ -42,3 +42,6 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Gradle build cache (huge generated caches)
+.gradle-home/
