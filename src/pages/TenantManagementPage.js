@@ -67,6 +67,7 @@ export default function TenantManagementPage({ authToken }) {
     daysDelta: '',
     activationCode: '',
     reason: '',
+    pricingOverrides: {},
   });
 
   const authHeaders = useMemo(
@@ -174,6 +175,7 @@ export default function TenantManagementPage({ authToken }) {
       daysDelta: '',
       activationCode: '',
       reason: '',
+      pricingOverrides: {},
     });
   };
 
@@ -236,6 +238,9 @@ export default function TenantManagementPage({ authToken }) {
         daysDelta: '',
         activationCode: String(data?.tenant?.activationCode || ''),
         reason: '',
+        pricingOverrides: data?.tenant?.subscriptionPricingOverrides && typeof data.tenant.subscriptionPricingOverrides === 'object'
+          ? { ...data.tenant.subscriptionPricingOverrides }
+          : {},
       });
     } catch (loadError) {
       setTenantSubscriptionModal((prev) => ({
@@ -421,6 +426,7 @@ export default function TenantManagementPage({ authToken }) {
             activationCode: tenantSubscriptionModal.activationCode,
             regenerateActivationCode: Boolean(options.regenerateActivationCode),
             reason: tenantSubscriptionModal.reason,
+            pricingOverrides: tenantSubscriptionModal.pricingOverrides || {},
           }),
         }
       );
@@ -433,6 +439,10 @@ export default function TenantManagementPage({ authToken }) {
         saving: false,
         tenant: data?.tenant || prev.tenant,
         activationCode: String(data?.tenant?.activationCode || prev.activationCode || ''),
+        pricingOverrides:
+          data?.tenant?.subscriptionPricingOverrides && typeof data.tenant.subscriptionPricingOverrides === 'object'
+            ? { ...data.tenant.subscriptionPricingOverrides }
+            : prev.pricingOverrides || {},
         daysDelta: '',
         reason: '',
       }));
@@ -1162,6 +1172,82 @@ export default function TenantManagementPage({ authToken }) {
                     />
                   </label>
                 </div>
+
+                {Array.isArray(tenantSubscriptionModal.tenant?.periods) && tenantSubscriptionModal.tenant.periods.length > 0 ? (
+                  <div>
+                    <div className="panel-title-actions" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div>
+                        <div className="panel-title" style={{ marginBottom: 2 }}>Custom Tenant Pricing</div>
+                        <div className="form-hint" style={{ marginTop: 0 }}>
+                          Leave an amount empty to use the default plan price. Set a value to charge this tenant a custom amount for that period.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary-btn small"
+                        onClick={() =>
+                          setTenantSubscriptionModal((prev) => ({
+                            ...prev,
+                            pricingOverrides: {},
+                          }))
+                        }
+                        disabled={tenantSubscriptionModal.saving}
+                      >
+                        Reset to Defaults
+                      </button>
+                    </div>
+                    <div
+                      className="custom-pricing-grid"
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                        gap: 10,
+                      }}
+                    >
+                      {tenantSubscriptionModal.tenant.periods.map((period) => {
+                        const monthKey = `month_${Number(period.months)}`;
+                        const overrideValue = Number(tenantSubscriptionModal.pricingOverrides?.[monthKey]);
+                        const displayValue = Number.isFinite(overrideValue) && overrideValue > 0 ? overrideValue : '';
+                        const defaultAmount = Number(period.amount) || 0;
+                        return (
+                          <label key={monthKey} className="panel" style={{ padding: 12, margin: 0 }}>
+                            <div style={{ fontWeight: 700 }}>{period.days} days</div>
+                            <div style={{ fontSize: 12, color: '#627493', marginBottom: 6 }}>
+                              {period.months} month{period.months === 1 ? '' : 's'}
+                              {displayValue === '' ? null : (
+                                <span style={{ marginLeft: 6, color: '#1b3f8d', fontWeight: 600 }}>custom</span>
+                              )}
+                            </div>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder={`Default: ${formatMoney(defaultAmount, tenantSubscriptionModal.tenant?.currency || subscriptionForm.currency)}`}
+                              value={displayValue}
+                              onChange={(event) => {
+                                const rawValue = event.target.value;
+                                const numericValue = rawValue === '' ? null : Number(rawValue);
+                                setTenantSubscriptionModal((prev) => {
+                                  const nextOverrides = { ...(prev.pricingOverrides || {}) };
+                                  if (numericValue === null || !Number.isFinite(numericValue) || numericValue <= 0) {
+                                    delete nextOverrides[monthKey];
+                                  } else {
+                                    nextOverrides[monthKey] = Math.round(numericValue * 100) / 100;
+                                  }
+                                  return { ...prev, pricingOverrides: nextOverrides };
+                                });
+                              }}
+                              disabled={tenantSubscriptionModal.saving}
+                            />
+                            <div style={{ fontSize: 12, color: '#627493', marginTop: 6 }}>
+                              Currency: {tenantSubscriptionModal.tenant?.currency || subscriptionForm.currency}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="panel-title-actions">
                   <button

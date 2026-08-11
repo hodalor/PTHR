@@ -1905,6 +1905,22 @@ tbody tr:hover {
   gap: 6px;
 }
 
+.custom-pricing-grid label input {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .custom-pricing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .custom-pricing-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
 .settings-grid span,
 .field-title {
   font-size: 0.8rem;
