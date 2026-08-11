@@ -102,19 +102,34 @@ function isValidEmail(value) {
 
 function normalizeTenantPricingOverrides(value, basePeriods = []) {
   const requested = value && typeof value === 'object' && !Array.isArray(value) ? value : Array.isArray(value) ? {} : {};
-  const defaults = Array.isArray(basePeriods) ? basePeriods : [];
   const normalized = {};
+  for (let months = 1; months <= 12; months += 1) {
+    const key = `month_${months}`;
+    const rawValue = Number(requested[key]);
+    const isSet = Number.isFinite(rawValue) && rawValue > 0;
+    if (!isSet) {
+      continue;
+    }
+    normalized[key] = roundCurrencyAmount(rawValue);
+  }
+  return normalized;
+}
+
+function resolveTenantPricingOverridesWithDefaults(value, basePeriods = []) {
+  const stored = normalizeTenantPricingOverrides(value, []);
+  const defaults = Array.isArray(basePeriods) ? basePeriods : [];
+  const resolved = {};
   defaults.forEach((period) => {
     const months = Math.max(1, Math.min(12, Math.round(Number(period?.months) || 0)));
     if (!months) {
       return;
     }
-    const overrideValue = Number(requested[`month_${months}`]);
+    const key = `month_${months}`;
+    const storedValue = Number(stored[key]);
     const fallbackAmount = roundCurrencyAmount(Number(period?.amount) || 0);
-    const amount = Number.isFinite(overrideValue) && overrideValue > 0 ? roundCurrencyAmount(overrideValue) : fallbackAmount;
-    normalized[`month_${months}`] = amount;
+    resolved[key] = Number.isFinite(storedValue) && storedValue > 0 ? roundCurrencyAmount(storedValue) : fallbackAmount;
   });
-  return normalized;
+  return resolved;
 }
 
 function applyTenantPricingOverrides(periods, pricingOverrides) {
@@ -358,7 +373,7 @@ function buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings) {
 
 function buildTenantSubscriptionAdminSummary(tenant, subscriptionSettings) {
   const basePublic = buildTenantSubscriptionPublicSummary(tenant, subscriptionSettings);
-  const pricingOverrides = normalizeTenantPricingOverrides(tenant?.subscriptionPricingOverrides, basePublic.periods);
+  const pricingOverrides = normalizeTenantPricingOverrides(tenant?.subscriptionPricingOverrides, []);
   return {
     ...basePublic,
     activationCode: String(tenant?.activationCode || ''),
@@ -1185,6 +1200,9 @@ router.get('/tenants', requireSuperAdmin, async (req, res) => {
     const tenants = rows.map((tenant) => {
       const limits = resolveTenantEffectiveLimits(tenant);
       const plan = getPlanSubscriptionSettings(subscriptionSettings, tenant.packageType || 'basic');
+      const basePeriods = Array.isArray(plan?.periods) ? plan.periods : [];
+      const storedOverrides = normalizeTenantPricingOverrides(tenant?.subscriptionPricingOverrides, []);
+      const periods = applyTenantPricingOverrides(basePeriods, storedOverrides);
       return {
         id: String(tenant._id || tenant.tenantId),
         tenantId: tenant.tenantId,
@@ -1203,6 +1221,8 @@ router.get('/tenants', requireSuperAdmin, async (req, res) => {
         lastPaymentAt: tenant.lastPaymentAt || null,
         totalPaidAmount: roundCurrencyAmount(tenant.totalPaidAmount || 0),
         status: tenant.status || 'active',
+        subscriptionPricingOverrides: storedOverrides,
+        periods,
         createdAt: tenant.createdAt,
         updatedAt: tenant.updatedAt,
       };
@@ -1329,6 +1349,9 @@ router.post('/tenants', requireSuperAdmin, async (req, res) => {
     const now = new Date().toISOString();
     const grantedModules = resolveTenantGrantedModules(packageType, req.body?.grantedModules);
     const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
+    const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+    const plan = getPlanSubscriptionSettings(subscriptionSettings, packageType);
+    const subscriptionPricingOverrides = normalizeTenantPricingOverrides(req.body?.pricingOverrides, plan?.periods || []);
     const activationCode =
       requestedActivationCode.length === ACTIVATION_CODE_LENGTH
         ? await ensureActivationCodeIsUnique(req.masterDb, requestedActivationCode)
@@ -1349,6 +1372,7 @@ router.post('/tenants', requireSuperAdmin, async (req, res) => {
           ? Math.floor(Number(req.body.concurrentLoginLimitOverride))
           : null,
       subscriptionExpiresAt: req.body?.subscriptionExpiresAt ? String(req.body.subscriptionExpiresAt).slice(0, 10) : null,
+      subscriptionPricingOverrides,
       totalPaidAmount: 0,
       lastPaymentAt: null,
       status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
@@ -1380,6 +1404,18 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
     const packageType = String(req.body?.packageType || existingTenant.packageType || 'basic').trim().toLowerCase();
     const requestedActivationCode = normalizeActivationCode(req.body?.activationCode);
     const regenerateActivationCode = Boolean(req.body?.regenerateActivationCode);
+    const subscriptionSettings = await loadSubscriptionSettings(req.masterDb);
+    const plan = getPlanSubscriptionSettings(subscriptionSettings, packageType);
+    const requestedPricingOverrides = normalizeTenantPricingOverrides(req.body?.pricingOverrides, plan?.periods || []);
+    const normalizedExistingOverrides = normalizeTenantPricingOverrides(existingTenant?.subscriptionPricingOverrides, plan?.periods || []);
+    let subscriptionPricingChanged = false;
+    const overrideKeys = new Set([...Object.keys(normalizedExistingOverrides), ...Object.keys(requestedPricingOverrides)]);
+    for (const key of overrideKeys) {
+      if (Number(normalizedExistingOverrides[key]) !== Number(requestedPricingOverrides[key])) {
+        subscriptionPricingChanged = true;
+        break;
+      }
+    }
     const update = {
       name: String(req.body?.name || existingTenant.name || tenantId).trim(),
       packageType,
@@ -1396,6 +1432,9 @@ router.put('/tenants/:tenantId', requireSuperAdmin, async (req, res) => {
       status: String(req.body?.status || 'active') === 'inactive' ? 'inactive' : 'active',
       updatedAt: new Date().toISOString(),
     };
+    if (subscriptionPricingChanged) {
+      update.subscriptionPricingOverrides = requestedPricingOverrides;
+    }
     if (regenerateActivationCode) {
       update.activationCode = await generateUniqueActivationCode(req.masterDb);
     } else if (requestedActivationCode.length === ACTIVATION_CODE_LENGTH) {
