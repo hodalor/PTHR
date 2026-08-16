@@ -544,8 +544,10 @@ function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
   const requestedModules = Array.isArray(user?.allowedModules)
     ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
-  const baseline =
-    role === 'employee' && requestedModules.length === 0
+  const isAdminRole = role === 'admin' || role === 'tenant-admin' || role === 'superadmin';
+  const baseline = isAdminRole
+    ? tenantGrants
+    : role === 'employee' && requestedModules.length === 0
       ? defaultEmployeeModules
       : requestedModules.length > 0
         ? requestedModules

@@ -70,14 +70,18 @@ function resolvePackageLimits(packageType) {
 }
 
 function resolveTenantGrantedModules(packageType, requestedModules) {
+  const packageModules = resolvePackageModules(packageType);
   const requested = Array.isArray(requestedModules)
     ? requestedModules.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
-  if (requested.length === 0) {
-    return resolvePackageModules(packageType);
-  }
   const validSet = new Set(allModules);
-  return requested.filter((moduleId) => validSet.has(moduleId));
+  const merged = new Set(packageModules);
+  requested.forEach((moduleId) => {
+    if (validSet.has(moduleId)) {
+      merged.add(moduleId);
+    }
+  });
+  return Array.from(merged);
 }
 
 function resolveTenantEffectiveLimits(tenant) {
