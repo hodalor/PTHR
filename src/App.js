@@ -200,6 +200,36 @@ const getAllowedModuleSetForUser = (user) => {
   if (isMasterSuperAdmin) {
     return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
   }
+  const isAdminRole = normalizedRole === 'admin' || normalizedRole === 'tenant-admin' || normalizedRole === 'superadmin';
+  const adminBaseline = [
+    'employee-management',
+    'attendance-time',
+    'loan-records',
+    'fingerprint',
+    'leave-management',
+    'payroll-management',
+    'documents-records',
+    'reports-analytics',
+    'monitoring-tracking',
+    'user-management',
+    'settings',
+    'manual',
+    'auth-roles',
+    'recruitment',
+    'performance',
+    'training',
+  ];
+  if (isAdminRole) {
+    const merged = new Set(adminBaseline);
+    if (Array.isArray(user.allowedModules) && user.allowedModules.length > 0) {
+      user.allowedModules.forEach((moduleId) => {
+        if (moduleId !== 'tenant-management') {
+          merged.add(String(moduleId));
+        }
+      });
+    }
+    return merged;
+  }
   if (Array.isArray(user.allowedModules) && user.allowedModules.length > 0) {
     return new Set(user.allowedModules.filter((moduleId) => moduleId !== 'tenant-management'));
   }
