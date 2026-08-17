@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react';
 import PayrollPage from '../../pages/PayrollPage';
 import PayrollRecordForm from './PayrollRecordForm';
+import PayslipDocument from './PayslipDocument';
 import { enhancePayrollRows } from './enhancePayrollRows';
 import { parsePayrollCsvRows, downloadPayrollTemplate } from './payrollImport';
 import { computePayrollPreviewValues, formatPayrollPeriodLabel, toPayrollMonthInputValue } from './payrollUtils';
@@ -67,6 +68,7 @@ export const usePayrollAdapter = ({
   activeModuleId,
   activeModuleConfig,
   appSettings,
+  currentUser,
   employeeBaseRows,
   formValues,
   modalState,
@@ -302,31 +304,168 @@ export const usePayrollAdapter = ({
     />
   );
 
-  const renderDetailsExtras = () =>
-    payrollLoansForHeader.length > 0 ? (
-      <div className="employee-ops-card">
-        <div className="employee-ops-header">
-          <h5>Employee Loans</h5>
-          <span>{`${payrollLoansForHeader.length} loan(s)`}</span>
+  const renderDetailsExtras = ({ modalRow }) => {
+    const payrollRow = modalRow || null;
+    if (!payrollRow) {
+      return null;
+    }
+    const matchedEmployee = Array.isArray(employeeBaseRows)
+      ? employeeBaseRows.find((row) => {
+          const rowId = String(row.id || '').trim();
+          const rowName = String(row.fullName || '').trim().toLowerCase();
+          const payrollId = String(payrollRow.employeeId || '').trim();
+          const payrollName = String(payrollRow.employee || '').trim().toLowerCase();
+          return (
+            (payrollId && rowId === payrollId) ||
+            (payrollName && rowName === payrollName) ||
+            (payrollName && rowName && rowName.includes(payrollName))
+          );
+        }) || null
+      : null;
+    const employee = {
+      fullName: payrollRow.employee || matchedEmployee?.fullName || '',
+      employeeId: payrollRow.employeeId || matchedEmployee?.id || '',
+      address: matchedEmployee?.address || matchedEmployee?.location || '',
+      location: matchedEmployee?.location || '',
+      phone: payrollRow.mobileMoneyNumber || matchedEmployee?.phone || matchedEmployee?.personalPhone || matchedEmployee?.contactNumber || matchedEmployee?.mobileNumber || '',
+      email: matchedEmployee?.email || '',
+      department: matchedEmployee?.department || '',
+      position: matchedEmployee?.position || '',
+      taxId: payrollRow.taxId || matchedEmployee?.taxId || '',
+      pensionId: payrollRow.pensionId || matchedEmployee?.pensionId || '',
+      nhimaNumber: payrollRow.nhimaNumber || matchedEmployee?.nhimaNumber || '',
+    };
+    const idCardDesign = appSettings?.idCardDesign || {};
+    const company = {
+      companyName: String(idCardDesign.companyName || appSettings?.appName || currentUser?.tenantId || 'PTHR').trim(),
+      logoUrl: String(idCardDesign.logoUrl || '').trim(),
+      primaryColor: String(idCardDesign.primaryColor || '#0f4ca3'),
+      secondaryColor: String(idCardDesign.secondaryColor || '#21aa9c'),
+      companyAddress: String(idCardDesign.companyAddress || '').trim(),
+      companyPhone: String(idCardDesign.companyPhone || '').trim(),
+      companyEmail: String(idCardDesign.companyEmail || '').trim(),
+      companyWebsite: String(idCardDesign.companyWebsite || '').trim(),
+      defaultCurrency: String(appSettings?.defaultCurrency || 'GHS'),
+    };
+    const payroll = {
+      payrollId: String(payrollRow.id || '').trim(),
+      payDate: String(payrollRow.month || '').trim(),
+      status: String(payrollRow.status || 'Processing').trim(),
+      period: String(payrollRow.month || '').trim(),
+      workingDays: Number(payrollRow.workingDays) || '—',
+      paymentMethod: payrollRow.bankAccountNumber || payrollRow.mobileMoneyNumber ? 'Bank / Mobile Money Transfer' : 'Bank Transfer',
+    };
+    const allPayrollRows = Array.isArray(moduleRowsState?.['payroll-management']) ? moduleRowsState['payroll-management'] : [];
+    const handleOpenPrintPayslip = () => {
+      const contentHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <title>Payslip - ${employee.fullName || employee.employeeId || company.companyName}</title>
+            <style>
+              body { margin: 0; padding: 0; background: #fff; font-family: "Segoe UI", Arial, sans-serif; }
+              .payslip-print-host { width: 100%; padding: 0; }
+              @page { size: A4; margin: 8mm 10mm; }
+            </style>
+          </head>
+          <body>
+            <div id="payslip-host" class="payslip-print-host"></div>
+          </body>
+        </html>
+      `;
+      const printWindow = window.open('', '_blank', 'width=920,height=1180');
+      if (!printWindow) {
+        showToast('Please allow popups to download / print the payslip.', 'error');
+        return;
+      }
+      printWindow.document.open();
+      printWindow.document.write(contentHtml);
+      printWindow.document.close();
+      const host = printWindow.document.getElementById('payslip-host');
+      if (host) {
+        const container = document.createElement('div');
+        container.id = 'payslip-container';
+        container.style.width = '210mm';
+        container.style.margin = '0 auto';
+        host.appendChild(container);
+      }
+      const printDelayMs = 420;
+      setTimeout(() => {
+        try {
+          const appStyles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map((node) => {
+            if (node.tagName === 'STYLE') {
+              const style = printWindow.document.createElement('style');
+              style.textContent = node.textContent;
+              printWindow.document.head.appendChild(style);
+              return 'style';
+            }
+            const link = printWindow.document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = node.href;
+            printWindow.document.head.appendChild(link);
+            return 'link';
+          });
+          printWindow.document.body.classList.add('payslip-print-mode');
+          void appStyles;
+          printWindow.focus();
+          setTimeout(() => {
+            try {
+              printWindow.print();
+            } catch (error) {
+              showToast('Payslip preview is ready. Use Print → Save as PDF to download.', 'info');
+            }
+          }, printDelayMs);
+        } catch (error) {
+          showToast('Payslip preview opened. Use Print → Save as PDF to download.', 'info');
+        }
+      }, 120);
+    };
+    return (
+      <>
+        <div className="payslip-actions">
+          <button type="button" className="primary-btn" onClick={handleOpenPrintPayslip}>
+            🖨️ Generate / Download Payslip
+          </button>
+          <span className="muted-subtext">
+            Tip: In the print dialog choose <strong>Save as PDF</strong> to download.
+          </span>
         </div>
-        <div className="employee-ops-list">
-          {payrollLoansForHeader.map((loanRow) => (
-            <div className="employee-ops-row" key={loanRow.id}>
-              <div>
-                <p>{loanRow.type || 'Loan Record'}</p>
-                <span>
-                  {loanRow.issuedOn || '—'} • {loanRow.amount || '—'}
-                </span>
-              </div>
-              <div className="employee-ops-actions">
-                <strong>{loanRow.status || 'Active'}</strong>
-                <span>{loanRow.balance ? `Balance: ${loanRow.balance}` : 'Balance: —'}</span>
-              </div>
+        <PayslipDocument
+          company={company}
+          employee={employee}
+          payroll={payroll}
+          payrollRow={payrollRow}
+          allPayrollRows={allPayrollRows}
+          currency={company.defaultCurrency}
+        />
+        {payrollLoansForHeader.length > 0 ? (
+          <div className="employee-ops-card">
+            <div className="employee-ops-header">
+              <h5>Employee Loans</h5>
+              <span>{`${payrollLoansForHeader.length} loan(s)`}</span>
             </div>
-          ))}
-        </div>
-      </div>
-    ) : null;
+            <div className="employee-ops-list">
+              {payrollLoansForHeader.map((loanRow) => (
+                <div className="employee-ops-row" key={loanRow.id}>
+                  <div>
+                    <p>{loanRow.type || 'Loan Record'}</p>
+                    <span>
+                      {loanRow.issuedOn || '—'} • {loanRow.amount || '—'}
+                    </span>
+                  </div>
+                  <div className="employee-ops-actions">
+                    <strong>{loanRow.status || 'Active'}</strong>
+                    <span>{loanRow.balance ? `Balance: ${loanRow.balance}` : 'Balance: —'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </>
+    );
+  };
 
   return {
     active,

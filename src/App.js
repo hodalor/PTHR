@@ -738,6 +738,10 @@ function App({ initialModuleId }) {
       logoUrl: '',
       primaryColor: '#0f4ca3',
       secondaryColor: '#21aa9c',
+      companyAddress: '',
+      companyPhone: '',
+      companyEmail: '',
+      companyWebsite: '',
     },
     fingerprintIntegration: {
       mode: 'simulation',
@@ -4103,6 +4107,7 @@ function App({ initialModuleId }) {
     activeModuleId,
     activeModuleConfig,
     appSettings,
+    currentUser,
     employeeBaseRows,
     formValues,
     modalState,
