@@ -10,6 +10,7 @@ const {
   resolvePackageModules,
   resolveTenantGrantedModules,
   resolveTenantEffectiveLimits,
+  resolveUserAllowedModulesForTenant,
 } = require('../tenancy');
 
 const router = express.Router();
@@ -458,7 +459,7 @@ function sanitizeUser(user, tenantId, tenant) {
     packageType: tenant?.packageType || (tenantId === 'master' ? 'enterprise' : undefined),
     subscriptionExpiresAt: tenant?.subscriptionExpiresAt || null,
     subscriptionDaysRemaining: tenantId === 'master' ? null : getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt),
-    allowedModules: resolveUserAllowedModulesForTenant(user, tenant, tenantId),
+    allowedModules: resolveUserAllowedModulesForTenant({ user, tenant, tenantId, defaultEmployeeModules }),
   };
 }
 
@@ -532,33 +533,6 @@ function normalizeModuleIds(value) {
   return requestedModules.filter((moduleId) => moduleSet.has(moduleId));
 }
 
-function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
-  const role = String(user?.role || '').toLowerCase();
-  if (role === 'superadmin' && tenantId === 'master') {
-    return ['*'];
-  }
-  const packageModules = tenant ? resolvePackageModules(tenant.packageType) : [];
-  const tenantGrants = tenant
-    ? resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules)
-    : packageModules;
-  const requestedModules = Array.isArray(user?.allowedModules)
-    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
-    : [];
-  const isAdminRole = role === 'admin' || role === 'tenant-admin' || role === 'superadmin';
-  const baseline = isAdminRole
-    ? tenantGrants
-    : role === 'employee' && requestedModules.length === 0
-      ? defaultEmployeeModules
-      : requestedModules.length > 0
-        ? requestedModules
-        : tenantGrants;
-  const tenantSet = new Set(tenantGrants);
-  if (tenantSet.size === 0) {
-    return baseline;
-  }
-  return baseline.filter((moduleId) => tenantSet.has(moduleId));
-}
-
 async function requireUserManagementAccess(req, res, next) {
   try {
     const auth = await loadAuthUserFromToken(req);
@@ -577,7 +551,7 @@ async function requireUserManagementAccess(req, res, next) {
       res.status(403).json({ error: 'Super admin access is required' });
       return;
     }
-    const allowedModules = resolveUserAllowedModulesForTenant(auth.user, req.tenant, req.tenantId);
+    const allowedModules = resolveUserAllowedModulesForTenant({ user: auth.user, tenant: req.tenant, tenantId: req.tenantId, defaultEmployeeModules });
     if (role === 'employee' || !allowedModules.includes('user-management')) {
       res.status(403).json({ error: 'User management access is required' });
       return;
@@ -1136,7 +1110,7 @@ router.post('/users', requireUserManagementAccess, async (req, res) => {
       return;
     }
     if (!isMasterSuperAdmin) {
-      const actorAllowedModules = new Set(resolveUserAllowedModulesForTenant(req.authUser, req.tenant, req.tenantId));
+      const actorAllowedModules = new Set(resolveUserAllowedModulesForTenant({ user: req.authUser, tenant: req.tenant, tenantId: req.tenantId, defaultEmployeeModules }));
       const hasForbiddenModule = allowedModules.some((moduleId) => !actorAllowedModules.has(moduleId));
       if (hasForbiddenModule) {
         res.status(403).json({ error: 'You can only assign modules that are already enabled for your account' });

@@ -98,6 +98,33 @@ function resolveTenantEffectiveLimits(tenant) {
   };
 }
 
+function resolveUserAllowedModulesForTenant({ user, tenant, tenantId, defaultEmployeeModules = [] }) {
+  const role = String(user?.role || '').toLowerCase();
+  if (role === 'superadmin' && tenantId === 'master') {
+    return ['*'];
+  }
+  const packageModules = tenant ? resolvePackageModules(tenant.packageType) : [];
+  const tenantGrants = tenant
+    ? resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules)
+    : packageModules;
+  const requestedModules = Array.isArray(user?.allowedModules)
+    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const isAdminRole = role === 'admin' || role === 'tenant-admin' || role === 'superadmin';
+  const baseline = isAdminRole
+    ? tenantGrants
+    : role === 'employee' && requestedModules.length === 0
+      ? Array.isArray(defaultEmployeeModules) ? [...defaultEmployeeModules] : []
+      : requestedModules.length > 0
+        ? requestedModules
+        : tenantGrants;
+  const tenantSet = new Set(tenantGrants);
+  if (tenantSet.size === 0) {
+    return baseline;
+  }
+  return baseline.filter((moduleId) => tenantSet.has(moduleId));
+}
+
 module.exports = {
   allModules,
   packageDefaults,
@@ -106,4 +133,5 @@ module.exports = {
   resolvePackageLimits,
   resolveTenantGrantedModules,
   resolveTenantEffectiveLimits,
+  resolveUserAllowedModulesForTenant,
 };

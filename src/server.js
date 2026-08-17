@@ -8,10 +8,12 @@ const jwt = require('jsonwebtoken');
 const sharp = require('sharp');
 const https = require('https');
 const {
+  allModules,
   normalizeTenantId,
   resolvePackageModules,
   resolveTenantGrantedModules,
   resolveTenantEffectiveLimits,
+  resolveUserAllowedModulesForTenant,
 } = require('./tenancy');
 
 dotenv.config();
@@ -1583,31 +1585,6 @@ async function requireAuthenticatedTenantContext(req, res, next) {
   }
 }
 
-function resolveUserAllowedModulesForTenant(user, tenant, tenantId) {
-  const role = String(user?.role || '').toLowerCase();
-  if (role === 'superadmin' && tenantId === 'master') {
-    return ['*'];
-  }
-  const packageModules = tenant ? resolvePackageModules(tenant.packageType) : [];
-  const tenantGrants = tenant
-    ? resolveTenantGrantedModules(tenant.packageType, tenant.grantedModules)
-    : packageModules;
-  const requestedModules = Array.isArray(user.allowedModules)
-    ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
-    : [];
-  const baseline =
-    role === 'employee' && requestedModules.length === 0
-      ? defaultEmployeeModules
-      : requestedModules.length > 0
-        ? requestedModules
-        : tenantGrants;
-  const tenantSet = new Set(tenantGrants);
-  if (tenantSet.size === 0) {
-    return baseline;
-  }
-  return baseline.filter((moduleId) => tenantSet.has(moduleId));
-}
-
 app.get('/health', async (req, res) => {
   try {
     const masterDb = await connectToMongo();
@@ -1734,7 +1711,7 @@ app.use('/api/modules/:moduleId', async (req, res, next) => {
       next();
       return;
     }
-    const allowedModules = resolveUserAllowedModulesForTenant(user, req.tenant, req.tenantId);
+    const allowedModules = resolveUserAllowedModulesForTenant({ user, tenant: req.tenant, tenantId: req.tenantId, defaultEmployeeModules });
     if (!allowedModules.includes(moduleId)) {
       res.status(403).json({ error: 'Forbidden: module not enabled for this tenant/user' });
       return;
