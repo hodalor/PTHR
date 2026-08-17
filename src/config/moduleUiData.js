@@ -485,7 +485,7 @@ export const moduleUiData = {
       {
         key: 'status',
         label: 'Status',
-        widget: 'select',
+        type: 'select',
         options: ['Processing', 'Approved', 'Paid', 'On Hold', 'Cancelled'],
       },
     ],

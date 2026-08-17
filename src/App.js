@@ -6531,6 +6531,83 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <label>
+                      <span>Letterhead Company Name</span>
+                      <input
+                        value={appSettings.idCardDesign.companyName}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyName: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Letterhead Address</span>
+                      <textarea
+                        rows="3"
+                        value={appSettings.idCardDesign.companyAddress}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyAddress: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Letterhead Phone</span>
+                      <input
+                        value={appSettings.idCardDesign.companyPhone}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyPhone: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Letterhead Email</span>
+                      <input
+                        type="email"
+                        value={appSettings.idCardDesign.companyEmail}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyEmail: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Letterhead Website</span>
+                      <input
+                        value={appSettings.idCardDesign.companyWebsite}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyWebsite: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
                   </>
                 ) : null}
                 {settingsTab === 'attendance' ? (
@@ -8019,6 +8096,68 @@ function App({ initialModuleId }) {
                             idCardDesign: {
                               ...prev.idCardDesign,
                               companyName: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Company Address</span>
+                      <textarea
+                        rows="3"
+                        value={appSettings.idCardDesign.companyAddress}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyAddress: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Company Phone</span>
+                      <input
+                        value={appSettings.idCardDesign.companyPhone}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyPhone: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Company Email</span>
+                      <input
+                        type="email"
+                        value={appSettings.idCardDesign.companyEmail}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyEmail: event.target.value,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Company Website</span>
+                      <input
+                        value={appSettings.idCardDesign.companyWebsite}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            idCardDesign: {
+                              ...prev.idCardDesign,
+                              companyWebsite: event.target.value,
                             },
                           }))
                         }
