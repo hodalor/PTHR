@@ -482,7 +482,12 @@ export const moduleUiData = {
       { key: 'noClockInPenalty', label: 'No In Penalty', type: 'number' },
       { key: 'noClockOutPenalty', label: 'No Out Penalty', type: 'number' },
       { key: 'absentPenalty', label: 'Absent Penalty', type: 'number' },
-      { key: 'status', label: 'Status' },
+      {
+        key: 'status',
+        label: 'Status',
+        widget: 'select',
+        options: ['Processing', 'Approved', 'Paid', 'On Hold', 'Cancelled'],
+      },
     ],
     columns: [
       { key: 'id', label: 'Payroll ID' },

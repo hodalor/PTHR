@@ -357,88 +357,58 @@ export const usePayrollAdapter = ({
     };
     const allPayrollRows = Array.isArray(moduleRowsState?.['payroll-management']) ? moduleRowsState['payroll-management'] : [];
     const handleOpenPrintPayslip = () => {
-      const contentHtml = `
-        <!DOCTYPE html>
-        <html lang="en">
-          <head>
-            <meta charset="UTF-8" />
-            <title>Payslip - ${employee.fullName || employee.employeeId || company.companyName}</title>
-            <style>
-              body { margin: 0; padding: 0; background: #fff; font-family: "Segoe UI", Arial, sans-serif; }
-              .payslip-print-host { width: 100%; padding: 0; }
-              @page { size: A4; margin: 8mm 10mm; }
-            </style>
-          </head>
-          <body>
-            <div id="payslip-host" class="payslip-print-host"></div>
-          </body>
-        </html>
-      `;
-      const printWindow = window.open('', '_blank', 'width=920,height=1180');
-      if (!printWindow) {
-        showToast('Please allow popups to download / print the payslip.', 'error');
-        return;
-      }
-      printWindow.document.open();
-      printWindow.document.write(contentHtml);
-      printWindow.document.close();
-      const host = printWindow.document.getElementById('payslip-host');
-      if (host) {
-        const container = document.createElement('div');
-        container.id = 'payslip-container';
-        container.style.width = '210mm';
-        container.style.margin = '0 auto';
-        host.appendChild(container);
-      }
-      const printDelayMs = 420;
-      setTimeout(() => {
-        try {
-          const appStyles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map((node) => {
-            if (node.tagName === 'STYLE') {
-              const style = printWindow.document.createElement('style');
-              style.textContent = node.textContent;
-              printWindow.document.head.appendChild(style);
-              return 'style';
-            }
-            const link = printWindow.document.createElement('link');
-            link.rel = 'stylesheet';
-            link.href = node.href;
-            printWindow.document.head.appendChild(link);
-            return 'link';
-          });
-          printWindow.document.body.classList.add('payslip-print-mode');
-          void appStyles;
-          printWindow.focus();
-          setTimeout(() => {
-            try {
-              printWindow.print();
-            } catch (error) {
-              showToast('Payslip preview is ready. Use Print → Save as PDF to download.', 'info');
-            }
-          }, printDelayMs);
-        } catch (error) {
-          showToast('Payslip preview opened. Use Print → Save as PDF to download.', 'info');
+      try {
+        const body = document.body;
+        if (!body) {
+          return;
         }
-      }, 120);
+        body.classList.add('payslip-print-mode');
+        const cleanup = () => {
+          body.classList.remove('payslip-print-mode');
+          window.removeEventListener('afterprint', cleanup);
+          window.removeEventListener('beforeprint', clearFocus);
+        };
+        const clearFocus = () => {
+          if (document.activeElement && typeof document.activeElement.blur === 'function') {
+            document.activeElement.blur();
+          }
+        };
+        clearFocus();
+        window.addEventListener('afterprint', cleanup, { once: true });
+        setTimeout(() => {
+          try {
+            window.print();
+          } catch (error) {
+            cleanup();
+            showToast('Unable to open print dialog. Please use Ctrl+P / Cmd+P instead.', 'error');
+          } finally {
+            setTimeout(() => cleanup(), 100);
+          }
+        }, 240);
+      } catch (error) {
+        showToast('Unable to open print dialog. Please use Ctrl+P / Cmd+P instead.', 'error');
+      }
     };
     return (
       <>
-        <div className="payslip-actions">
-          <button type="button" className="primary-btn" onClick={handleOpenPrintPayslip}>
-            🖨️ Generate / Download Payslip
-          </button>
-          <span className="muted-subtext">
-            Tip: In the print dialog choose <strong>Save as PDF</strong> to download.
-          </span>
+        <div className="payslip-print-root">
+          <div className="payslip-actions">
+            <button type="button" className="primary-btn" onClick={handleOpenPrintPayslip}>
+              🖨️ Generate / Download Payslip
+            </button>
+            <span className="muted-subtext">
+              Tip: In the print dialog choose <strong>Save as PDF</strong> to download. Use Ctrl+P or Cmd+P at any time.
+            </span>
+          </div>
+          <PayslipDocument
+            company={company}
+            employee={employee}
+            payroll={payroll}
+            payrollRow={payrollRow}
+            allPayrollRows={allPayrollRows}
+            currency={company.defaultCurrency}
+          />
         </div>
-        <PayslipDocument
-          company={company}
-          employee={employee}
-          payroll={payroll}
-          payrollRow={payrollRow}
-          allPayrollRows={allPayrollRows}
-          currency={company.defaultCurrency}
-        />
         {payrollLoansForHeader.length > 0 ? (
           <div className="employee-ops-card">
             <div className="employee-ops-header">

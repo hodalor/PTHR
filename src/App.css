@@ -2732,38 +2732,44 @@ tbody tr:hover {
   gap: 4px;
 }
 
-body.payslip-print-mode .app-shell,
-body.payslip-print-mode .sidebar-root,
-body.payslip-print-mode header,
-body.payslip-print-mode #root > :not(.payslip-print-root),
-body.payslip-print-mode .module-page {
+body.payslip-print-mode {
+  background: #fff !important;
+  color: #172a45 !important;
+}
+
+body.payslip-print-mode * {
+  visibility: hidden !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+body.payslip-print-mode .payslip-print-root,
+body.payslip-print-mode .payslip-print-root * {
+  visibility: visible !important;
+}
+
+body.payslip-print-mode .payslip-print-root {
+  position: static !important;
+  width: 100% !important;
+  min-height: auto !important;
+  background: #fff !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: block !important;
+}
+
+body.payslip-print-mode .payslip-print-root .payslip-actions {
   display: none !important;
 }
 
-body.payslip-print-mode {
-  background: #fff !important;
-}
-
-.payslip-print-root {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  min-height: 100vh;
-  padding: 0;
-  background: #fff;
-  z-index: 999999;
-}
-
-.payslip-print-root .payslip-document {
-  max-width: none;
-  width: 210mm;
-  min-height: 297mm;
-  margin: 0 auto;
-  border-radius: 0;
-  border: none;
-  box-shadow: none;
-  padding: 14mm 14mm 18mm;
+body.payslip-print-mode .payslip-document {
+  max-width: none !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
 }
 
 @media print {
@@ -2776,43 +2782,24 @@ body.payslip-print-mode {
     background: #fff;
   }
 
-  body.payslip-print-mode *,
-  body.payslip-print-mode *::before,
-  body.payslip-print-mode *::after {
+  body.payslip-print-mode * {
     box-shadow: none !important;
     text-shadow: none !important;
-  }
-
-  .app-shell,
-  .sidebar-root,
-  header,
-  .module-page {
-    display: none !important;
   }
 
   .payslip-actions {
     display: none !important;
   }
 
-  .payslip-print-root {
-    position: static !important;
-    z-index: 1;
-  }
-
-  .payslip-document {
-    max-width: none;
-    width: 100%;
-    min-height: auto;
-    margin: 0;
-    padding: 0;
-    border-radius: 0;
-    border: none;
-    box-shadow: none;
-  }
-
   .payslip-net-pay-section {
     break-inside: avoid;
     page-break-inside: avoid;
   }
+
+  .payslip-document {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
 }
+
 
