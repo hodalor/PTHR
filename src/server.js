@@ -1217,8 +1217,27 @@ function normalizeAttendanceClockings(row) {
         }))
         .filter((clocking) => /^\d{1,2}:\d{2}$/.test(clocking.time))
     : [];
+  const dedupeClockings = (clockings) => {
+    const seen = new Set();
+    return clockings
+      .sort((left, right) => {
+        const byTime = String(left.time || '').localeCompare(String(right.time || ''));
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return String(left.createdAt || '').localeCompare(String(right.createdAt || ''));
+      })
+      .filter((clocking) => {
+        const key = `${clocking.mode}|${clocking.time}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+  };
   if (fromClockings.length > 0) {
-    return fromClockings.sort((left, right) => left.time.localeCompare(right.time));
+    return dedupeClockings(fromClockings);
   }
   const fallback = [];
   if (/^\d{1,2}:\d{2}$/.test(String(row?.checkIn || ''))) {
@@ -1245,7 +1264,42 @@ function normalizeAttendanceClockings(row) {
       createdAt: String(row?.date || ''),
     });
   }
-  return fallback.sort((left, right) => left.time.localeCompare(right.time));
+  return dedupeClockings(fallback);
+}
+
+function mergeDuplicateAttendanceRecords(records, context) {
+  const grouped = new Map();
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const employeeId = String(record?.employeeId || '').trim();
+    const employeeName = String(record?.employee || '').trim().toLowerCase();
+    const date = String(record?.date || '').trim();
+    const key = `${employeeId || employeeName}|${date}`;
+    if (!date || (!employeeId && !employeeName)) {
+      grouped.set(`row:${record?.id || Math.random()}`, [record]);
+      return;
+    }
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(record);
+  });
+  return [...grouped.values()].map((recordsForDay) => {
+    if (recordsForDay.length === 1) {
+      return enrichAttendanceRecordWithContext(recordsForDay[0], context);
+    }
+    const sorted = [...recordsForDay].sort((left, right) =>
+      String(right?.updatedAt || right?.createdAt || '').localeCompare(String(left?.updatedAt || left?.createdAt || ''))
+    );
+    const base = sorted[0];
+    const mergedClockings = sorted.flatMap((record) => normalizeAttendanceClockings(record));
+    return enrichAttendanceRecordWithContext(
+      {
+        ...base,
+        clockings: mergedClockings,
+      },
+      context
+    );
+  });
 }
 
 function enrichAttendanceRecordWithContext(payload, context) {
@@ -1758,17 +1812,12 @@ app.get('/api/modules/:moduleId', async (req, res) => {
     }
     const settings = normalizeAttendanceSettings(settingsRecord?.value);
     const normalizedRecords = await Promise.all(
-      records.map((row) =>
-        hydrateModuleRecordMedia(
-          moduleId,
-          enrichAttendanceRecordWithContext(row, {
-            settings,
-            employeeById,
-            employeeByEmployeeId,
-            employeeByName,
-          })
-        )
-      )
+      mergeDuplicateAttendanceRecords(records, {
+        settings,
+        employeeById,
+        employeeByEmployeeId,
+        employeeByName,
+      }).map((row) => hydrateModuleRecordMedia(moduleId, row))
     );
     res.json({ records: normalizedRecords });
   } catch (error) {
@@ -1825,6 +1874,56 @@ app.post('/api/modules/:moduleId', async (req, res) => {
       createdAt: incoming.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (moduleId === 'attendance-time') {
+      const employeeId = String(payload.employeeId || '').trim();
+      const employeeName = String(payload.employee || '').trim();
+      const date = String(payload.date || '').trim();
+      const attendanceMatch = [];
+      if (employeeId) {
+        attendanceMatch.push({ employeeId });
+      }
+      if (employeeName) {
+        attendanceMatch.push({ employee: employeeName });
+      }
+      const existingAttendance =
+        date && attendanceMatch.length > 0
+          ? await collection.findOne({
+              date,
+              $or: attendanceMatch,
+            })
+          : null;
+      if (existingAttendance) {
+        const merged = await enrichAttendanceRecord(
+          req.db,
+          {
+            ...existingAttendance,
+            ...payload,
+            id: existingAttendance.id,
+            createdAt: existingAttendance.createdAt || payload.createdAt,
+            clockings: [
+              ...normalizeAttendanceClockings(existingAttendance),
+              ...normalizeAttendanceClockings(payload),
+            ],
+          },
+          { tenantId: req.tenantId }
+        );
+        const { _id: existingId, ...mergedWithoutId } = merged;
+        void existingId;
+        await collection.updateOne(
+          { _id: existingAttendance._id },
+          {
+            $set: {
+              ...mergedWithoutId,
+              moduleId,
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+        const updated = await collection.findOne({ _id: existingAttendance._id });
+        res.json({ record: await hydrateModuleRecordMedia(moduleId, updated) });
+        return;
+      }
+    }
     let result;
     try {
       result = await collection.insertOne(payload);
