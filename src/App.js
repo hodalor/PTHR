@@ -5692,7 +5692,26 @@ function App({ initialModuleId }) {
           }
           const data = await response.json().catch(() => null);
           const saved = data?.record || rowWithId;
+          let nextRecords = null;
+          if (activeModuleId === 'employee-management') {
+            try {
+              const refreshResponse = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'), {
+                headers: authHeaders,
+              });
+              if (refreshResponse.ok) {
+                const refreshData = await refreshResponse.json().catch(() => null);
+                nextRecords = Array.isArray(refreshData?.records) ? refreshData.records : null;
+              }
+            } catch (error) {
+            }
+          }
           setModuleRowsState((prev) => {
+            if (Array.isArray(nextRecords)) {
+              return {
+                ...prev,
+                [activeModuleId]: nextRecords,
+              };
+            }
             const currentRows = prev[activeModuleId] || [];
             if (editRowId === 'new') {
               return {
@@ -5705,6 +5724,12 @@ function App({ initialModuleId }) {
               [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? saved : row)),
             };
           });
+          showToast(
+            activeModuleId === 'employee-management'
+              ? `${saved.fullName || saved.id || 'Employee'} saved successfully.`
+              : 'Record saved successfully.',
+            'success'
+          );
         } catch (error) {
           const message = 'Unable to save record.';
           setFormError(message);
