@@ -1394,6 +1394,9 @@ function App({ initialModuleId }) {
           return;
         }
         const records = Array.isArray(data.records) ? data.records : [];
+        // #region debug-point D:attendance-fetch
+        if (activeModuleId === 'attendance-time') { fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"D",location:"frontend/src/App.js:loadModuleRows",msg:"[DEBUG] attendance records fetched",data:{recordCount:records.length,sample:records.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0}))},ts:Date.now()})}).catch(()=>{}); }
+        // #endregion
         setModuleRowsState((prev) => ({
           ...prev,
           [activeModuleId]: records,
@@ -3043,6 +3046,27 @@ function App({ initialModuleId }) {
     },
     [normalizeAttendanceClockings]
   );
+  const doesAttendanceRowMatchEmployee = useCallback((row, employee) => {
+    if (!row || !employee) {
+      return false;
+    }
+    const rowEmployeeId = String(row.employeeId || '').trim();
+    const rowEmployeeName = String(row.employee || '').trim().toLowerCase();
+    const candidateIds = new Set(
+      [String(employee.id || '').trim(), String(employee.employeeId || '').trim()].filter(Boolean)
+    );
+    if (rowEmployeeId && candidateIds.has(rowEmployeeId)) {
+      return true;
+    }
+    return Boolean(rowEmployeeName) && rowEmployeeName === String(employee.fullName || '').trim().toLowerCase();
+  }, []);
+  const findAttendanceRowForEmployeeOnDate = useCallback(
+    (employee, targetDate) =>
+      attendanceRows.find(
+        (row) => String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
+      ) || null,
+    [attendanceRows, doesAttendanceRowMatchEmployee]
+  );
   const attendanceTodayRows = useMemo(() => {
     const scopedRows = attendanceRows.filter((row) => {
       if (currentUser && currentUser.role === 'employee') {
@@ -3070,6 +3094,41 @@ function App({ initialModuleId }) {
       return (toMinutesFromClock(bSummary.checkIn) || -1) - (toMinutesFromClock(aSummary.checkIn) || -1);
     });
   }, [attendanceRows, currentUser, getAttendanceClockSummary, todayIsoDate]);
+  useEffect(() => {
+    // #region debug-point D:attendance-today
+    if (activeModuleId === 'attendance-time') {
+      fetch("http://192.168.1.176:7777/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "attendance-photo-clock",
+          runId: "pre-fix",
+          hypothesisId: "D",
+          location: "frontend/src/App.js:attendanceTodayRows",
+          msg: "[DEBUG] attendance today rows derived",
+          data: {
+            todayIsoDate,
+            rowCount: attendanceTodayRows.length,
+            rows: attendanceTodayRows.slice(0, 12).map((row) => {
+              const summary = getAttendanceClockSummary(row);
+              return {
+                id: String(row?.id || ''),
+                employeeId: String(row?.employeeId || ''),
+                employee: String(row?.employee || ''),
+                date: String(row?.date || ''),
+                status: String(row?.status || ''),
+                checkIn: String(summary.checkIn || ''),
+                checkOut: String(summary.checkOut || ''),
+                clockings: Array.isArray(summary.clockings) ? summary.clockings.length : 0,
+              };
+            }),
+          },
+          ts: Date.now(),
+        }),
+      }).catch(() => {});
+    }
+    // #endregion
+  }, [activeModuleId, attendanceTodayRows, getAttendanceClockSummary, todayIsoDate]);
   const attendanceLateCount = useMemo(
     () => attendanceTodayRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
     [attendanceTodayRows]
@@ -3166,9 +3225,7 @@ function App({ initialModuleId }) {
       return true;
     });
     return scopedEmployees.map((employee) => {
-      const attendanceRow = attendanceRows.find(
-        (row) => String(row.employeeId || '') === String(employee.id || '') && String(row.date || '') === String(targetDate)
-      );
+      const attendanceRow = findAttendanceRowForEmployeeOnDate(employee, targetDate);
       const attendanceSummary = getAttendanceClockSummary(attendanceRow);
       const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
       const payrollProfile = getEmployeePayrollProfile({
@@ -3288,8 +3345,8 @@ function App({ initialModuleId }) {
   }, [
     currentUser,
     attendanceAuditDate,
-    attendanceRows,
     employeeBaseRows,
+    findAttendanceRowForEmployeeOnDate,
     getShiftScheduleForAttendance,
     getAttendanceClockSummary,
     leaveRows,
@@ -3628,14 +3685,23 @@ function App({ initialModuleId }) {
     if (!selectedComplianceRow) {
       return null;
     }
+    const matchedEmployee =
+      employeeBaseRows.find((employee) => String(employee.id || '').trim() === String(selectedComplianceRow.employeeId || '').trim()) ||
+      employeeBaseRows.find(
+        (employee) => String(employee.fullName || '').trim().toLowerCase() === String(selectedComplianceRow.employee || '').trim().toLowerCase()
+      ) ||
+      null;
     return (
-      attendanceRows.find(
-        (attendanceRow) =>
-          String(attendanceRow.employeeId || '') === String(selectedComplianceRow.employeeId || '') &&
-          String(attendanceRow.date || '') === String(selectedComplianceRow.date || '')
-      ) || null
+      (matchedEmployee
+        ? findAttendanceRowForEmployeeOnDate(matchedEmployee, selectedComplianceRow.date)
+        : attendanceRows.find(
+            (attendanceRow) =>
+              String(attendanceRow.date || '').trim() === String(selectedComplianceRow.date || '').trim() &&
+              String(attendanceRow.employee || '').trim().toLowerCase() ===
+                String(selectedComplianceRow.employee || '').trim().toLowerCase()
+          )) || null
     );
-  }, [attendanceRows, selectedComplianceRow]);
+  }, [attendanceRows, employeeBaseRows, findAttendanceRowForEmployeeOnDate, selectedComplianceRow]);
   const selectedComplianceClockings = useMemo(() => {
     if (selectedComplianceAttendanceRow) {
       return normalizeAttendanceClockings(selectedComplianceAttendanceRow);
@@ -4274,7 +4340,7 @@ function App({ initialModuleId }) {
     const currentRows = moduleRowsState['attendance-time'] || [];
     const previousAttendanceRows = [...currentRows];
     const existingRowIndex = currentRows.findIndex(
-      (row) => row.employeeId === effectiveEmployee.id && String(row.date || '') === nowDate
+      (row) => doesAttendanceRowMatchEmployee(row, effectiveEmployee) && String(row.date || '') === nowDate
     );
     const existingRow = existingRowIndex >= 0 ? currentRows[existingRowIndex] : null;
     const existingClockings = normalizeAttendanceClockings(existingRow);
@@ -4345,7 +4411,8 @@ function App({ initialModuleId }) {
         body: JSON.stringify(newRow),
       });
       if (!response.ok) {
-        throw new Error('Failed to save clock-in record');
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(errorPayload?.error || 'Failed to save clock-in record');
       }
       const data = await response.json();
       const savedRecord = data?.record || newRow;
@@ -4360,7 +4427,7 @@ function App({ initialModuleId }) {
         ...prev,
         'attendance-time': previousAttendanceRows,
       }));
-      showToast('Clock-in was not saved. Please try again.', 'error');
+      showToast(error instanceof Error ? error.message : 'Clock-in was not saved. Please try again.', 'error');
       return false;
     }
     showToast(`Thank you ${effectiveEmployee.fullName}, clock in captured successfully.`, 'success');
@@ -4387,7 +4454,7 @@ function App({ initialModuleId }) {
     const currentRows = moduleRowsState['attendance-time'] || [];
     const previousAttendanceRows = [...currentRows];
     const existingRow = currentRows.find(
-      (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
+      (row) => doesAttendanceRowMatchEmployee(row, effectiveEmployee) && String(row.date || '') === targetDate
     );
     if (!existingRow) {
       showToast(`No clock-in record found for ${effectiveEmployee.fullName} on ${targetDate}.`, 'error');
@@ -4395,7 +4462,7 @@ function App({ initialModuleId }) {
     }
     const stateRows = moduleRowsState['attendance-time'] || [];
     const existingRowIndex = stateRows.findIndex(
-      (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
+      (row) => doesAttendanceRowMatchEmployee(row, effectiveEmployee) && String(row.date || '') === targetDate
     );
     if (existingRowIndex < 0) {
       showToast(`No clock-in record found for ${effectiveEmployee.fullName} on ${targetDate}.`, 'error');
@@ -4455,7 +4522,7 @@ function App({ initialModuleId }) {
     setModuleRowsState((prev) => {
       const prevRows = prev['attendance-time'] || [];
       const idx = prevRows.findIndex(
-        (row) => String(row.employeeId || '') === String(effectiveEmployee.id || '') && String(row.date || '') === targetDate
+        (row) => doesAttendanceRowMatchEmployee(row, effectiveEmployee) && String(row.date || '') === targetDate
       );
       if (idx < 0) {
         return prev;
@@ -4478,14 +4545,15 @@ function App({ initialModuleId }) {
         }
       );
       if (!response.ok) {
-        throw new Error('Failed to save clock-out record');
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(errorPayload?.error || 'Failed to save clock-out record');
       }
     } catch (error) {
       setModuleRowsState((prev) => ({
         ...prev,
         'attendance-time': previousAttendanceRows,
       }));
-      showToast('Clock-out was not saved. Please try again.', 'error');
+      showToast(error instanceof Error ? error.message : 'Clock-out was not saved. Please try again.', 'error');
       return false;
     }
     showToast(`Thank you ${effectiveEmployee.fullName}, clock out captured successfully.`, 'success');
