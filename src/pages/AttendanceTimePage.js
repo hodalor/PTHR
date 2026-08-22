@@ -78,6 +78,7 @@ export default function AttendanceTimePage({
   const [clockCameraError, setClockCameraError] = useState('');
   const [attendancePhotoModal, setAttendancePhotoModal] = useState({ open: false, src: '', title: '' });
   const [attendancePhotoZoom, setAttendancePhotoZoom] = useState(1);
+  const [clockActionLoading, setClockActionLoading] = useState('');
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -301,19 +302,30 @@ export default function AttendanceTimePage({
   }, [setAttendanceClockDraft, setAttendanceSearchText, shiftOptions, stopClockCamera]);
 
   const handleClockInSubmit = useCallback(async () => {
+    if (clockActionLoading) {
+      return;
+    }
     if (Boolean(appSettings.requireWebClockInPhoto)) {
       setClockCameraMode('clock-in');
       setClockCameraError('');
       setIsClockCameraOpen(true);
       return;
     }
-    const success = await handleClockIn();
-    if (success) {
-      resetClockModalState();
+    setClockActionLoading('clock-in');
+    try {
+      const success = await handleClockIn();
+      if (success) {
+        resetClockModalState();
+      }
+    } finally {
+      setClockActionLoading('');
     }
-  }, [appSettings.requireWebClockInPhoto, handleClockIn, resetClockModalState]);
+  }, [appSettings.requireWebClockInPhoto, clockActionLoading, handleClockIn, resetClockModalState]);
 
   const handleCaptureClockPhoto = useCallback(async () => {
+    if (clockActionLoading) {
+      return;
+    }
     if (!videoRef.current || !canvasRef.current) {
       setClockCameraError('Camera preview is not ready yet. Please wait a moment and try again.');
       return;
@@ -331,27 +343,40 @@ export default function AttendanceTimePage({
     }
     context.drawImage(video, 0, 0, width, height);
     const photoDataUrl = canvas.toDataURL('image/jpeg', 0.72);
-    const success =
-      clockCameraMode === 'clock-out'
-        ? await handleClockOut(null, { photoDataUrl })
-        : await handleClockIn({ photoDataUrl });
-    if (success) {
-      resetClockModalState();
+    setClockActionLoading(clockCameraMode);
+    try {
+      const success =
+        clockCameraMode === 'clock-out'
+          ? await handleClockOut(null, { photoDataUrl })
+          : await handleClockIn({ photoDataUrl });
+      if (success) {
+        resetClockModalState();
+      }
+    } finally {
+      setClockActionLoading('');
     }
-  }, [clockCameraMode, handleClockIn, handleClockOut, resetClockModalState]);
+  }, [clockActionLoading, clockCameraMode, handleClockIn, handleClockOut, resetClockModalState]);
 
   const handleClockOutSubmit = useCallback(async () => {
+    if (clockActionLoading) {
+      return;
+    }
     if (Boolean(appSettings.requireWebClockInPhoto)) {
       setClockCameraMode('clock-out');
       setClockCameraError('');
       setIsClockCameraOpen(true);
       return;
     }
-    const success = await handleClockOut();
-    if (success) {
-      resetClockModalState();
+    setClockActionLoading('clock-out');
+    try {
+      const success = await handleClockOut();
+      if (success) {
+        resetClockModalState();
+      }
+    } finally {
+      setClockActionLoading('');
     }
-  }, [appSettings.requireWebClockInPhoto, handleClockOut, resetClockModalState]);
+  }, [appSettings.requireWebClockInPhoto, clockActionLoading, handleClockOut, resetClockModalState]);
 
   return (
     <div className="attendance-ops-card">
@@ -534,6 +559,8 @@ export default function AttendanceTimePage({
                   <option value="All">All</option>
                   <option value="On Time">On Time</option>
                   <option value="Late">Late</option>
+                  <option value="Pending Clock In">Pending Clock In</option>
+                  <option value="No Clock In">No Clock In</option>
                   <option value="Left Early">Left Early</option>
                   <option value="Clocked In Once">Clocked In Once</option>
                   <option value="Absent">Absent</option>
@@ -1317,11 +1344,21 @@ export default function AttendanceTimePage({
                 <input value={getCurrentClockValue()} readOnly />
               </label>
               <div className="attendance-ops-actions">
-                <button type="button" className="primary-btn" onClick={handleClockInSubmit}>
-                  Clock In
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={handleClockInSubmit}
+                  disabled={Boolean(clockActionLoading)}
+                >
+                  {clockActionLoading === 'clock-in' ? 'Clocking In...' : 'Clock In'}
                 </button>
-                <button type="button" className="neutral-btn" onClick={handleClockOutSubmit}>
-                  Clock Out
+                <button
+                  type="button"
+                  className="neutral-btn"
+                  onClick={handleClockOutSubmit}
+                  disabled={Boolean(clockActionLoading)}
+                >
+                  {clockActionLoading === 'clock-out' ? 'Clocking Out...' : 'Clock Out'}
                 </button>
               </div>
             </div>
@@ -1374,8 +1411,19 @@ export default function AttendanceTimePage({
               />
               <canvas ref={canvasRef} style={{ display: 'none' }} />
               <div className="attendance-ops-actions">
-                <button type="button" className="primary-btn" onClick={handleCaptureClockPhoto}>
-                  {clockCameraMode === 'clock-out' ? 'Take Selfie & Clock Out' : 'Take Selfie & Clock In'}
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={handleCaptureClockPhoto}
+                  disabled={Boolean(clockActionLoading)}
+                >
+                  {clockActionLoading === 'clock-out'
+                    ? 'Clocking Out...'
+                    : clockActionLoading === 'clock-in'
+                      ? 'Clocking In...'
+                      : clockCameraMode === 'clock-out'
+                        ? 'Take Selfie & Clock Out'
+                        : 'Take Selfie & Clock In'}
                 </button>
               </div>
             </div>

@@ -3060,40 +3060,114 @@ function App({ initialModuleId }) {
     }
     return Boolean(rowEmployeeName) && rowEmployeeName === String(employee.fullName || '').trim().toLowerCase();
   }, []);
-  const findAttendanceRowForEmployeeOnDate = useCallback(
-    (employee, targetDate) =>
-      attendanceRows.find(
-        (row) => String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
-      ) || null,
-    [attendanceRows, doesAttendanceRowMatchEmployee]
+  const mergeMatchingAttendanceRows = useCallback(
+    (matchingRows) => {
+      if (!Array.isArray(matchingRows) || matchingRows.length === 0) {
+        return null;
+      }
+      if (matchingRows.length === 1) {
+        return matchingRows[0];
+      }
+      const sortedRows = [...matchingRows].sort((left, right) =>
+        String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''))
+      );
+      const baseRow = sortedRows[0];
+      const seenClockings = new Set();
+      const mergedClockings = sortedRows
+        .flatMap((row) => normalizeAttendanceClockings(row))
+        .filter((clocking) => {
+          const key = [
+            String(clocking.mode || '').trim(),
+            String(clocking.time || '').trim(),
+            String(clocking.createdAt || '').trim(),
+            String(clocking.photoCapturedAt || '').trim(),
+          ].join('|');
+          if (seenClockings.has(key)) {
+            return false;
+          }
+          seenClockings.add(key);
+          return true;
+        })
+        .sort((left, right) => {
+          const timeCompare = String(left.time || '').localeCompare(String(right.time || ''));
+          if (timeCompare !== 0) {
+            return timeCompare;
+          }
+          return String(left.createdAt || '').localeCompare(String(right.createdAt || ''));
+        });
+      const mergedSummary = getAttendanceClockSummary({ ...baseRow, clockings: mergedClockings });
+      return {
+        ...baseRow,
+        clockings: mergedSummary.clockings,
+        checkIn: mergedSummary.checkIn || String(baseRow.checkIn || '').trim(),
+        checkOut: mergedSummary.checkOut || String(baseRow.checkOut || '').trim(),
+        workedHours:
+          mergedSummary.checkIn && mergedSummary.checkOut
+            ? formatWorkedDuration(mergedSummary.checkIn, mergedSummary.checkOut)
+            : String(baseRow.workedHours || ''),
+        checkInLat: mergedSummary.checkInLat,
+        checkInLng: mergedSummary.checkInLng,
+        checkOutLat: mergedSummary.checkOutLat,
+        checkOutLng: mergedSummary.checkOutLng,
+      };
+    },
+    [getAttendanceClockSummary, normalizeAttendanceClockings]
   );
-  const attendanceTodayRows = useMemo(() => {
-    const scopedRows = attendanceRows.filter((row) => {
-      if (currentUser && currentUser.role === 'employee') {
-        const employeeId = String(currentUser.employeeId || '').trim();
-        const employeeName = String(currentUser.fullName || '').trim();
-        const rowEmployeeId = String(row.employeeId || '').trim();
-        const rowEmployeeName = String(row.employee || '').trim();
-        if (employeeId) {
-          if (rowEmployeeId !== employeeId) {
-            return false;
-          }
-        } else if (employeeName) {
-          if (rowEmployeeName !== employeeName) {
-            return false;
-          }
-        } else {
+  const getMergedAttendanceRowsForDate = useCallback(
+    (targetDate) => {
+      const scopedRows = attendanceRows.filter((row) => {
+        if (String(row.date || '').trim() !== String(targetDate || '').trim()) {
           return false;
         }
-      }
-      return String(row.date || '') === todayIsoDate;
-    });
-    return scopedRows.sort((a, b) => {
+        if (currentUser && currentUser.role === 'employee') {
+          const employeeId = String(currentUser.employeeId || '').trim();
+          const employeeName = String(currentUser.fullName || '').trim().toLowerCase();
+          const rowEmployeeId = String(row.employeeId || '').trim();
+          const rowEmployeeName = String(row.employee || '').trim().toLowerCase();
+          if (employeeId) {
+            return rowEmployeeId === employeeId;
+          }
+          if (employeeName) {
+            return rowEmployeeName === employeeName;
+          }
+          return false;
+        }
+        return true;
+      });
+      const groupedRows = new Map();
+      scopedRows.forEach((row) => {
+        const matchedEmployee =
+          employeeBaseRows.find((employee) => doesAttendanceRowMatchEmployee(row, employee)) || null;
+        const groupingKey = matchedEmployee
+          ? String(matchedEmployee.id || matchedEmployee.employeeId || matchedEmployee.fullName || '').trim().toLowerCase()
+          : `${String(row.employeeId || '').trim().toLowerCase()}|${String(row.employee || '').trim().toLowerCase()}`;
+        if (!groupedRows.has(groupingKey)) {
+          groupedRows.set(groupingKey, []);
+        }
+        groupedRows.get(groupingKey).push(row);
+      });
+      return Array.from(groupedRows.values())
+        .map((rows) => mergeMatchingAttendanceRows(rows))
+        .filter(Boolean);
+    },
+    [attendanceRows, currentUser, doesAttendanceRowMatchEmployee, employeeBaseRows, mergeMatchingAttendanceRows]
+  );
+  const findAttendanceRowForEmployeeOnDate = useCallback(
+    (employee, targetDate) =>
+      mergeMatchingAttendanceRows(
+        attendanceRows.filter(
+          (row) => String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
+        )
+      ),
+    [attendanceRows, doesAttendanceRowMatchEmployee, mergeMatchingAttendanceRows]
+  );
+  const attendanceTodayRows = useMemo(() => {
+    return getMergedAttendanceRowsForDate(todayIsoDate).sort((a, b) => {
       const aSummary = getAttendanceClockSummary(a);
       const bSummary = getAttendanceClockSummary(b);
       return (toMinutesFromClock(bSummary.checkIn) || -1) - (toMinutesFromClock(aSummary.checkIn) || -1);
     });
-  }, [attendanceRows, currentUser, getAttendanceClockSummary, todayIsoDate]);
+  }, [getMergedAttendanceRowsForDate, getAttendanceClockSummary, todayIsoDate]);
   useEffect(() => {
     // #region debug-point D:attendance-today
     if (activeModuleId === 'attendance-time') {
@@ -3224,10 +3298,9 @@ function App({ initialModuleId }) {
       }
       return true;
     });
-    return scopedEmployees.map((employee) => {
-      const attendanceRow = findAttendanceRowForEmployeeOnDate(employee, targetDate);
-      const attendanceSummary = getAttendanceClockSummary(attendanceRow);
-      const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
+    const buildComplianceRow = (employee, matchedAttendanceRow = null) => {
+      const attendanceSummary = getAttendanceClockSummary(matchedAttendanceRow);
+      const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow: matchedAttendanceRow, employee });
       const payrollProfile = getEmployeePayrollProfile({
         moduleRowsState,
         employeeBaseRows,
@@ -3269,7 +3342,7 @@ function App({ initialModuleId }) {
           ? Math.max(0, (checkOutMinutes ?? 0) - shiftSchedule.overtimeStartMinutes)
           : 0;
       const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
-      const lateDeduction = toNumberValue(attendanceRow?.deductionAmount);
+      const lateDeduction = toNumberValue(matchedAttendanceRow?.deductionAmount);
       const countMissingClockIn =
         !isExempt &&
         !hasClockIn &&
@@ -3282,6 +3355,7 @@ function App({ initialModuleId }) {
       const noClockInPenalty = missingCount === 1 && countMissingClockIn ? dailyWage / 2 : 0;
       const noClockOutPenalty = missingCount === 1 && countMissingClockOut ? dailyWage / 2 : 0;
       const absentPenalty = missingCount >= 2 ? dailyWage : 0;
+      const pendingClockIn = !isExempt && !hasClockIn && !countMissingClockIn;
       const penalties = [];
       if (lateDeduction > 0) {
         penalties.push({
@@ -3316,7 +3390,9 @@ function App({ initialModuleId }) {
         dailyStatus = isOnLeave ? 'On Leave' : 'Off Duty';
       } else if (absentPenalty > 0) {
         dailyStatus = 'Absent';
-      } else if (noClockInPenalty > 0 || noClockOutPenalty > 0) {
+      } else if (!hasClockIn) {
+        dailyStatus = pendingClockIn ? 'Pending Clock In' : 'No Clock In';
+      } else if (noClockOutPenalty > 0) {
         dailyStatus = 'Clocked In Once';
       } else if (isLate) {
         dailyStatus = 'Late';
@@ -3341,12 +3417,30 @@ function App({ initialModuleId }) {
         overtimeAmount,
         penalties,
       };
-    });
+    };
+    const attendanceRowsForDate = getMergedAttendanceRowsForDate(targetDate);
+    const usedEmployeeIds = new Set();
+    const rowsFromAttendance = attendanceRowsForDate
+      .map((attendanceRow) => {
+        const matchedEmployee =
+          scopedEmployees.find((employee) => doesAttendanceRowMatchEmployee(attendanceRow, employee)) || null;
+        if (!matchedEmployee) {
+          return null;
+        }
+        usedEmployeeIds.add(String(matchedEmployee.id || '').trim());
+        return buildComplianceRow(matchedEmployee, attendanceRow);
+      })
+      .filter(Boolean);
+    const missingEmployeeRows = scopedEmployees
+      .filter((employee) => !usedEmployeeIds.has(String(employee.id || '').trim()))
+      .map((employee) => buildComplianceRow(employee, null));
+    return [...rowsFromAttendance, ...missingEmployeeRows];
   }, [
     currentUser,
     attendanceAuditDate,
+    doesAttendanceRowMatchEmployee,
     employeeBaseRows,
-    findAttendanceRowForEmployeeOnDate,
+    getMergedAttendanceRowsForDate,
     getShiftScheduleForAttendance,
     getAttendanceClockSummary,
     leaveRows,
