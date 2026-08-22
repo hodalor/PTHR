@@ -1267,6 +1267,54 @@ function normalizeAttendanceClockings(row) {
   return dedupeClockings(fallback);
 }
 
+function getAttendanceClockingsToValidate(nextRecord, existingRecord = null) {
+  const nextClockings = normalizeAttendanceClockings(nextRecord);
+  if (!existingRecord) {
+    return nextClockings;
+  }
+  const existingClockings = normalizeAttendanceClockings(existingRecord);
+  const existingById = new Map(
+    existingClockings
+      .map((clocking) => [String(clocking?.id || '').trim(), clocking])
+      .filter(([clockingId]) => Boolean(clockingId))
+  );
+  return nextClockings.filter((clocking) => {
+    const clockingId = String(clocking?.id || '').trim();
+    const previousClocking = clockingId ? existingById.get(clockingId) : null;
+    if (!previousClocking) {
+      return true;
+    }
+    return (
+      String(clocking?.time || '').trim() !== String(previousClocking?.time || '').trim() ||
+      String(clocking?.mode || '').trim() !== String(previousClocking?.mode || '').trim() ||
+      String(clocking?.photoDataUrl || '').trim() !== String(previousClocking?.photoDataUrl || '').trim()
+    );
+  });
+}
+
+async function validateAttendancePhotoRequirement(db, nextRecord, existingRecord = null) {
+  const [attendanceSettingsRecord, mobileSettingsRecord] = await Promise.all([
+    db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+    db.collection('appSettings').findOne({ _id: 'mobile-app' }),
+  ]);
+  const attendanceSettings = normalizeAttendanceSettings(attendanceSettingsRecord?.value);
+  const requireClockPhoto =
+    Boolean(attendanceSettings?.requireWebClockInPhoto) || Boolean(mobileSettingsRecord?.value?.requireClockInPhoto);
+  if (!requireClockPhoto) {
+    return;
+  }
+  const invalidClocking = getAttendanceClockingsToValidate(nextRecord, existingRecord).find(
+    (clocking) => !String(clocking?.photoDataUrl || '').trim()
+  );
+  if (!invalidClocking) {
+    return;
+  }
+  const modeLabel = invalidClocking.mode === 'clock-out' ? 'Clock-out' : 'Clock-in';
+  const error = new Error(`${modeLabel} photo is required before saving attendance.`);
+  error.statusCode = 400;
+  throw error;
+}
+
 function mergeDuplicateAttendanceRecords(records, context) {
   const grouped = new Map();
   (Array.isArray(records) ? records : []).forEach((record) => {
@@ -1372,6 +1420,9 @@ async function enrichAttendanceRecord(db, payload, options = {}) {
       $or: [{ id: employeeId }, { employeeId }, { fullName: employeeName }],
     }),
   ]);
+  // #region debug-point A:attendance-enrich
+  fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"A",location:"backend/src/server.js:enrichAttendanceRecord",msg:"[DEBUG] enrich attendance payload",data:{tenantId:options.tenantId||"master",employeeId,employeeName,date:String(payloadSource.date||"").trim(),incomingClockings:Array.isArray(payloadSource.clockings)?payloadSource.clockings.length:0,incomingPhotos:Array.isArray(payloadSource.clockings)?payloadSource.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,requireWebClockInPhoto:Boolean(settingsRecord?.value?.requireWebClockInPhoto)},ts:Date.now()})}).catch(()=>{});
+  // #endregion
   return enrichAttendanceRecordWithContext(source, {
     settings: normalizeAttendanceSettings(settingsRecord?.value),
     employeeById: new Map(employee?.id ? [[String(employee.id), employee]] : []),
@@ -1819,6 +1870,9 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         employeeByName,
       }).map((row) => hydrateModuleRecordMedia(moduleId, row))
     );
+    // #region debug-point C:attendance-get
+    fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"C",location:"backend/src/server.js:/api/modules/:moduleId GET attendance-time",msg:"[DEBUG] attendance records loaded",data:{rawCount:records.length,mergedCount:normalizedRecords.length,sample:normalizedRecords.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0}))},ts:Date.now()})}).catch(()=>{});
+    // #endregion
     res.json({ records: normalizedRecords });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load records' });
@@ -1892,6 +1946,10 @@ app.post('/api/modules/:moduleId', async (req, res) => {
               $or: attendanceMatch,
             })
           : null;
+      // #region debug-point B:attendance-post
+      fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"B",location:"backend/src/server.js:/api/modules/:moduleId POST attendance-time",msg:"[DEBUG] attendance post candidate",data:{employeeId,employeeName,date,hasExistingAttendance:Boolean(existingAttendance),payloadClockings:Array.isArray(payload.clockings)?payload.clockings.length:0,payloadPhotos:Array.isArray(payload.clockings)?payload.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,payloadCheckIn:String(payload.checkIn||""),payloadCheckOut:String(payload.checkOut||"")},ts:Date.now()})}).catch(()=>{});
+      // #endregion
+      await validateAttendancePhotoRequirement(req.db, payload, existingAttendance);
       if (existingAttendance) {
         const merged = await enrichAttendanceRecord(
           req.db,
@@ -1945,7 +2003,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     }
     res.status(201).json({ record: await hydrateModuleRecordMedia(moduleId, inserted) });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to create record' });
+    res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to create record' });
   }
 });
 
@@ -1980,6 +2038,12 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
       moduleId,
       updatedAt: new Date().toISOString(),
     };
+    // #region debug-point B:attendance-put
+    if (moduleId === 'attendance-time') { fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"B",location:"backend/src/server.js:/api/modules/:moduleId/:recordId PUT attendance-time",msg:"[DEBUG] attendance put update",data:{recordId,employeeId:String(update.employeeId||""),employee:String(update.employee||""),date:String(update.date||""),clockings:Array.isArray(update.clockings)?update.clockings.length:0,photos:Array.isArray(update.clockings)?update.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,checkIn:String(update.checkIn||""),checkOut:String(update.checkOut||"")},ts:Date.now()})}).catch(()=>{}); }
+    // #endregion
+    if (moduleId === 'attendance-time') {
+      await validateAttendancePhotoRequirement(req.db, update, existingRecord);
+    }
     const result = await collection.updateOne({ id: recordId }, { $set: update });
     const updated = await collection.findOne({ id: recordId });
     if (moduleId === 'employee-management') {
@@ -1988,7 +2052,7 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     res.json({ record: await hydrateModuleRecordMedia(moduleId, updated) });
   } catch (error) {
     console.error('Failed to update record', error);
-    res.status(500).json({ error: 'Failed to update record' });
+    res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to update record' });
   }
 });
 
