@@ -374,7 +374,11 @@ export default function AttendanceTimePage({
             <button
               type="button"
               className={`settings-tab-btn ${attendanceViewTab === 'compliance' ? 'active' : ''}`}
-              onClick={() => setAttendanceViewTab('compliance')}
+              onClick={() => {
+                setAttendanceViewTab('compliance');
+                setAttendanceAuditFilter('All');
+                setAttendanceAuditSearchText('');
+              }}
             >
               Daily Compliance
             </button>
@@ -647,7 +651,27 @@ export default function AttendanceTimePage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={7}>No records for the selected filters.</td>
+                    <td colSpan={7}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                        <span>
+                          {attendanceAuditFilter !== 'All' || attendanceAuditSearchText.trim()
+                            ? 'No records match the current compliance filters.'
+                            : 'No compliance records are available for the selected date.'}
+                        </span>
+                        {attendanceAuditFilter !== 'All' || attendanceAuditSearchText.trim() ? (
+                          <button
+                            type="button"
+                            className="neutral-btn"
+                            onClick={() => {
+                              setAttendanceAuditFilter('All');
+                              setAttendanceAuditSearchText('');
+                            }}
+                          >
+                            Show All Records
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
                   </tr>
                 )}
               </tbody>
