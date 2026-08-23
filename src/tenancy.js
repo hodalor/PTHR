@@ -69,6 +69,28 @@ function resolvePackageLimits(packageType) {
   };
 }
 
+function resolveRoleDefaultModules(role, defaultEmployeeModules = []) {
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  if (normalizedRole === 'employee') {
+    return Array.isArray(defaultEmployeeModules) ? [...defaultEmployeeModules] : [];
+  }
+  if (normalizedRole === 'manager') {
+    return ['employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'];
+  }
+  if (normalizedRole === 'hr') {
+    return [
+      'employee-management',
+      'attendance-time',
+      'loan-records',
+      'leave-management',
+      'reports-analytics',
+      'user-management',
+      'manual',
+    ];
+  }
+  return [];
+}
+
 function resolveTenantGrantedModules(packageType, requestedModules) {
   const packageModules = resolvePackageModules(packageType);
   const requested = Array.isArray(requestedModules)
@@ -111,12 +133,13 @@ function resolveUserAllowedModulesForTenant({ user, tenant, tenantId, defaultEmp
     ? user.allowedModules.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
   const isAdminRole = role === 'admin' || role === 'tenant-admin' || role === 'superadmin';
+  const roleDefaults = resolveRoleDefaultModules(role, defaultEmployeeModules);
   const baseline = isAdminRole
     ? tenantGrants
-    : role === 'employee' && requestedModules.length === 0
-      ? Array.isArray(defaultEmployeeModules) ? [...defaultEmployeeModules] : []
-      : requestedModules.length > 0
-        ? requestedModules
+    : requestedModules.length > 0
+      ? requestedModules
+      : roleDefaults.length > 0
+        ? roleDefaults
         : tenantGrants;
   const tenantSet = new Set(tenantGrants);
   if (tenantSet.size === 0) {
@@ -133,5 +156,6 @@ module.exports = {
   resolvePackageLimits,
   resolveTenantGrantedModules,
   resolveTenantEffectiveLimits,
+  resolveRoleDefaultModules,
   resolveUserAllowedModulesForTenant,
 };

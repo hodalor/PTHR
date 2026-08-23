@@ -38,6 +38,7 @@ const defaultSubscriptionPlanCatalog = {
 const roleRank = {
   employee: 1,
   manager: 2,
+  hr: 2,
   admin: 3,
   'tenant-admin': 3,
   superadmin: 4,
@@ -566,6 +567,24 @@ async function requireUserManagementAccess(req, res, next) {
 
 function getRoleLevel(value) {
   return roleRank[String(value || '').trim().toLowerCase()] || 0;
+}
+
+async function syncUserAccessToEmployeeRecord(db, userLikeRecord) {
+  const employeeId = String(userLikeRecord?.employeeId || '').trim();
+  if (!employeeId) {
+    return;
+  }
+  await db.collection('employees').updateOne(
+    { id: employeeId },
+    {
+      $set: {
+        fullName: String(userLikeRecord?.fullName || '').trim(),
+        role: String(userLikeRecord?.role || 'employee').trim().toLowerCase(),
+        allowedModules: normalizeModuleIds(userLikeRecord?.allowedModules),
+        updatedAt: new Date().toISOString(),
+      },
+    }
+  );
 }
 
 async function createTenantAdminUser(db, tenantId, payload) {
@@ -1138,6 +1157,7 @@ router.post('/users', requireUserManagementAccess, async (req, res) => {
       updatedAt: now,
     };
     const result = await req.db.collection('users').insertOne(userDoc);
+    await syncUserAccessToEmployeeRecord(req.db, userDoc);
     res.status(201).json({
       user: sanitizeUser({ ...userDoc, _id: result.insertedId }, req.tenantId, req.tenant),
     });
@@ -1147,6 +1167,81 @@ router.post('/users', requireUserManagementAccess, async (req, res) => {
       return;
     }
     res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+router.put('/users/:userId', requireUserManagementAccess, async (req, res) => {
+  try {
+    await ensureTenantIndexes(req.db);
+    const userId = String(req.params?.userId || '').trim();
+    if (!ObjectId.isValid(userId)) {
+      res.status(400).json({ error: 'Invalid user selected' });
+      return;
+    }
+    const existingUser = await req.db.collection('users').findOne({ _id: new ObjectId(userId) });
+    if (!existingUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const actorRole = String(req.authUser?.role || '').trim().toLowerCase();
+    const actorRoleLevel = getRoleLevel(actorRole);
+    const targetRoleLevel = getRoleLevel(existingUser.role);
+    const requestedRole = String(req.body?.role || existingUser.role || 'employee').trim().toLowerCase();
+    const requestedRoleLevel = getRoleLevel(requestedRole);
+    const isMasterSuperAdmin = actorRole === 'superadmin' && req.tenantId === 'master';
+    if (!requestedRoleLevel) {
+      res.status(400).json({ error: 'Invalid role selected' });
+      return;
+    }
+    if (!isMasterSuperAdmin && String(existingUser.role || '').trim().toLowerCase() === 'superadmin') {
+      res.status(403).json({ error: 'Only the master super admin can edit super admin users' });
+      return;
+    }
+    if (!isMasterSuperAdmin && targetRoleLevel >= actorRoleLevel) {
+      res.status(403).json({ error: 'You can only edit users with a lower role than your own' });
+      return;
+    }
+    if (!isMasterSuperAdmin && requestedRole === 'superadmin') {
+      res.status(403).json({ error: 'Only the master super admin can assign super admin role' });
+      return;
+    }
+    if (!isMasterSuperAdmin && requestedRoleLevel >= actorRoleLevel) {
+      res.status(403).json({ error: 'You can only assign a lower role than your own' });
+      return;
+    }
+    const allowedModules = normalizeModuleIds(req.body?.allowedModules);
+    if (!isMasterSuperAdmin) {
+      const actorAllowedModules = new Set(
+        resolveUserAllowedModulesForTenant({ user: req.authUser, tenant: req.tenant, tenantId: req.tenantId, defaultEmployeeModules })
+      );
+      const hasForbiddenModule = allowedModules.some((moduleId) => !actorAllowedModules.has(moduleId));
+      if (hasForbiddenModule) {
+        res.status(403).json({ error: 'You can only assign modules that are already enabled for your account' });
+        return;
+      }
+    }
+    const fullName = String(req.body?.fullName || existingUser.fullName || existingUser.username || '').trim();
+    const isActive = req.body?.isActive === undefined ? existingUser.isActive !== false : Boolean(req.body?.isActive);
+    const password = String(req.body?.password || '');
+    const now = new Date().toISOString();
+    const update = {
+      fullName: fullName || existingUser.username,
+      role: requestedRole,
+      allowedModules,
+      isActive,
+      updatedAt: now,
+    };
+    if (password) {
+      update.passwordHash = await bcrypt.hash(password, 10);
+    }
+    await req.db.collection('users').updateOne({ _id: existingUser._id }, { $set: update });
+    const updatedUser = await req.db.collection('users').findOne({ _id: existingUser._id });
+    await syncUserAccessToEmployeeRecord(req.db, updatedUser);
+    res.json({
+      user: sanitizeUser(updatedUser, req.tenantId, req.tenant),
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update user' });
   }
 });
 

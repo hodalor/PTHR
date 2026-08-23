@@ -37,6 +37,7 @@ const GCS_CLIENT_EMAIL = String(process.env.GCS_CLIENT_EMAIL || '').trim();
 const GCS_PRIVATE_KEY_ID = String(process.env.GCS_PRIVATE_KEY_ID || '').trim();
 const GCS_PRIVATE_KEY = String(process.env.GCS_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const allowedUserRoles = new Set(['employee', 'manager', 'hr', 'admin', 'tenant-admin', 'superadmin']);
 
 const moduleCollections = {
   'employee-management': 'employees',
@@ -481,6 +482,25 @@ async function hydrateModuleRecordMedia(moduleId, record) {
     return signAttendanceRecordMedia(record);
   }
   return record;
+}
+
+function mergeEmployeeAuthAccess(record, user, tenant, tenantId) {
+  if (!record) {
+    return record;
+  }
+  if (!user) {
+    return {
+      ...record,
+      role: normalizeUserRole(record.role, 'employee'),
+      allowedModules: normalizeModuleIds(record.allowedModules),
+    };
+  }
+  return {
+    ...record,
+    role: normalizeUserRole(user.role, record.role || 'employee'),
+    allowedModules: resolveUserAllowedModulesForTenant({ user, tenant, tenantId, defaultEmployeeModules }),
+    accountIsActive: user.isActive !== false,
+  };
 }
 
 function normalizeHexColor(value, fallback = '#0a73d9') {
@@ -1535,6 +1555,24 @@ function keepDigitsOnly(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
+function normalizeModuleIds(value) {
+  const moduleSet = new Set(allModules);
+  const requestedModules = Array.isArray(value)
+    ? value
+    : String(value || '')
+        .split(',')
+        .map((item) => item.trim());
+  return requestedModules.filter((moduleId) => moduleSet.has(moduleId));
+}
+
+function normalizeUserRole(value, fallback = 'employee') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (allowedUserRoles.has(normalized)) {
+    return normalized;
+  }
+  return String(fallback || 'employee').trim().toLowerCase();
+}
+
 function normalizeEmployeePhoneFields(record) {
   const source = record || {};
   return EMPLOYEE_PHONE_FIELDS.reduce(
@@ -1544,6 +1582,15 @@ function normalizeEmployeePhoneFields(record) {
     }),
     { ...source }
   );
+}
+
+function normalizeEmployeeAccountFields(record) {
+  const source = record || {};
+  return {
+    ...source,
+    role: normalizeUserRole(source.role, 'employee'),
+    allowedModules: normalizeModuleIds(source.allowedModules),
+  };
 }
 
 async function resolveNextEmployeeId(db, requestedId) {
@@ -1582,6 +1629,15 @@ async function syncEmployeeUser(db, employee) {
     });
     const passwordHash = await bcrypt.hash(portalPassword, 10);
     const now = new Date().toISOString();
+    const requestedRole = normalizeUserRole(
+      Object.prototype.hasOwnProperty.call(employee || {}, 'role') ? employee.role : existing?.role || 'employee',
+      existing?.role || 'employee'
+    );
+    const requestedAllowedModules = Object.prototype.hasOwnProperty.call(employee || {}, 'allowedModules')
+      ? normalizeModuleIds(employee.allowedModules)
+      : Array.isArray(existing?.allowedModules)
+        ? existing.allowedModules
+        : [];
     if (existing) {
       await users.updateOne(
         { _id: existing._id },
@@ -1591,7 +1647,8 @@ async function syncEmployeeUser(db, employee) {
             fullName: employee.fullName || username,
             employeeId,
             passwordHash,
-            role: existing.role || 'employee',
+            role: requestedRole,
+            allowedModules: requestedAllowedModules,
             isActive: existing.isActive !== false,
             updatedAt: now,
           },
@@ -1603,8 +1660,8 @@ async function syncEmployeeUser(db, employee) {
         fullName: employee.fullName || username,
         employeeId,
         passwordHash,
-        role: 'employee',
-        allowedModules: [],
+        role: requestedRole,
+        allowedModules: requestedAllowedModules,
         isActive: true,
         createdAt: now,
         updatedAt: now,
@@ -1838,6 +1895,28 @@ app.get('/api/modules/:moduleId', async (req, res) => {
     }
     const records = await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
+      if (moduleId === 'employee-management') {
+        const users = await req.db.collection('users').find({ employeeId: { $ne: '' } }).toArray();
+        const userByEmployeeId = new Map(
+          users.map((user) => [String(user.employeeId || '').trim(), user]).filter(([employeeId]) => employeeId)
+        );
+        res.json({
+          records: await Promise.all(
+            records.map((record) =>
+              hydrateModuleRecordMedia(
+                moduleId,
+                mergeEmployeeAuthAccess(
+                  record,
+                  userByEmployeeId.get(String(record?.id || '').trim()) || null,
+                  req.tenant,
+                  req.tenantId
+                )
+              )
+            )
+          ),
+        });
+        return;
+      }
       res.json({
         records: await Promise.all(records.map((record) => hydrateModuleRecordMedia(moduleId, record))),
       });
@@ -1902,7 +1981,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
       moduleId === 'attendance-time'
         ? await enrichAttendanceRecord(req.db, req.body, { tenantId: req.tenantId })
         : moduleId === 'employee-management'
-          ? normalizeEmployeePhoneFields(req.body)
+          ? normalizeEmployeeAccountFields(normalizeEmployeePhoneFields(req.body))
           : req.body;
     if (moduleId === 'employee-management') {
       const incomingId = String(incoming?.id || '').trim().toUpperCase();
@@ -2026,7 +2105,7 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
       moduleId === 'attendance-time'
         ? await enrichAttendanceRecord(req.db, mergedRequest, { tenantId: req.tenantId })
         : moduleId === 'employee-management'
-          ? await normalizeEmployeeStorageFields(normalizeEmployeePhoneFields(mergedRequest), {
+          ? await normalizeEmployeeStorageFields(normalizeEmployeeAccountFields(normalizeEmployeePhoneFields(mergedRequest)), {
               tenantId: req.tenantId,
               employeeId: String(recordId || mergedRequest?.id || '').trim(),
             })
