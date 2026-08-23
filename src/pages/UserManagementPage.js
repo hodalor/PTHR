@@ -13,6 +13,8 @@ const roleModulePresets = {
     .flatMap((section) => section.items.map((item) => item.id))
     .filter((moduleId) => moduleId !== 'tenant-management'),
 };
+const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
+const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
 
 const normalizeModuleList = (value) =>
   Array.isArray(value)
@@ -32,6 +34,11 @@ const areModuleListsEqual = (left, right) => {
 };
 
 const getDefaultModulesForRole = (role) => [...(roleModulePresets[String(role || '').trim().toLowerCase()] || [])];
+const normalizeLifecycleValue = (value) => String(value || '').trim().toLowerCase();
+const isInactiveUserAccount = (user) =>
+  user?.isActive === false ||
+  blockedEmployeeStatusValues.has(normalizeLifecycleValue(user?.employeeStatus)) ||
+  blockedEmployeeStageValues.has(normalizeLifecycleValue(user?.employeeEmploymentState));
 
 const buildInitialFormValues = () => ({
   username: '',
@@ -50,6 +57,7 @@ function UserManagementPage({ authToken, currentUser }) {
   const [saving, setSaving] = useState(false);
   const [formValues, setFormValues] = useState(buildInitialFormValues);
   const [editingUserId, setEditingUserId] = useState('');
+  const [userDirectoryTab, setUserDirectoryTab] = useState('active');
 
   const allModuleOptions = useMemo(
     () =>
@@ -112,6 +120,13 @@ function UserManagementPage({ authToken, currentUser }) {
     () => users.find((user) => String(user.id) === String(editingUserId)) || null,
     [editingUserId, users]
   );
+  const filteredUsers = useMemo(
+    () =>
+      users.filter((user) => (userDirectoryTab === 'inactive' ? isInactiveUserAccount(user) : !isInactiveUserAccount(user))),
+    [userDirectoryTab, users]
+  );
+  const activeUserCount = useMemo(() => users.filter((user) => !isInactiveUserAccount(user)).length, [users]);
+  const inactiveUserCount = useMemo(() => users.filter((user) => isInactiveUserAccount(user)).length, [users]);
 
   const fetchUsers = useCallback(async () => {
       if (!authToken) {
@@ -194,6 +209,21 @@ function UserManagementPage({ authToken, currentUser }) {
     }
     return modules.map((moduleId) => moduleLabelMap[moduleId] || moduleId).join(', ');
   };
+  const getUserStatusLabel = (user) => {
+    if (user?.accountDisabledReason) {
+      return user.accountDisabledReason;
+    }
+    if (user?.employeeEmploymentState) {
+      return user.employeeEmploymentState;
+    }
+    if (user?.employeeStatus) {
+      return user.employeeStatus;
+    }
+    if (user?.isActive === false) {
+      return 'Inactive';
+    }
+    return 'Active';
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -235,11 +265,7 @@ function UserManagementPage({ authToken, currentUser }) {
       }
       const data = await response.json();
       if (data && data.user) {
-        setUsers((prev) =>
-          isEditing
-            ? prev.map((user) => (user.id === data.user.id ? data.user : user))
-            : [data.user, ...prev]
-        );
+        await fetchUsers();
         resetForm();
       }
     } catch (submitError) {
@@ -308,27 +334,38 @@ function UserManagementPage({ authToken, currentUser }) {
                 ))}
               </select>
             </label>
-            <label>
+            <div>
               <span>Allowed Modules</span>
-              <select
-                className="filter-select"
-                multiple
-                size={Math.min(8, Math.max(4, assignableModuleOptions.length || 4))}
-                value={normalizeModuleList(formValues.allowedModules)}
-                onChange={(event) =>
-                  handleChange(
-                    'allowedModules',
-                    Array.from(event.target.selectedOptions).map((option) => option.value)
-                  )
-                }
-              >
-                {assignableModuleOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <div className="multi-select-checklist">
+                {assignableModuleOptions.map((option) => {
+                  const checked = normalizeModuleList(formValues.allowedModules).includes(option.value);
+                  return (
+                    <label
+                      key={option.value}
+                      className={`multi-select-option ${checked ? 'selected' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          const isChecked = event.target.checked;
+                          setFormValues((prev) => {
+                            const current = normalizeModuleList(prev.allowedModules);
+                            return {
+                              ...prev,
+                              allowedModules: isChecked
+                                ? [...new Set([...current, option.value])]
+                                : current.filter((value) => value !== option.value),
+                            };
+                          });
+                        }}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
             <label>
               <span>Status</span>
               <select
@@ -354,12 +391,28 @@ function UserManagementPage({ authToken, currentUser }) {
           </form>
           <div style={{ marginTop: 10, fontSize: 12, color: '#58688f' }}>
             {editingUser
-              ? 'Username and Employee ID stay locked during edit to avoid account conflicts. Hold `Cmd` while clicking to choose multiple modules.'
-              : 'Hold `Cmd` while clicking to choose multiple modules from the dropdown.'}
+              ? 'Username and Employee ID stay locked during edit to avoid account conflicts. Tick the modules you want to assign.'
+              : 'Tick the modules you want to assign.'}
           </div>
         </div>
         <div className="form-section">
           <div className="form-section-title">Existing Users</div>
+          <div className="settings-tab-strip">
+            <button
+              type="button"
+              className={`settings-tab-btn ${userDirectoryTab === 'active' ? 'active' : ''}`}
+              onClick={() => setUserDirectoryTab('active')}
+            >
+              Active Users ({activeUserCount})
+            </button>
+            <button
+              type="button"
+              className={`settings-tab-btn ${userDirectoryTab === 'inactive' ? 'active' : ''}`}
+              onClick={() => setUserDirectoryTab('inactive')}
+            >
+              Inactive Users ({inactiveUserCount})
+            </button>
+          </div>
           {loading ? (
             <div>Loading users...</div>
           ) : (
@@ -376,13 +429,13 @@ function UserManagementPage({ authToken, currentUser }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {users.map((user) => (
+                  {filteredUsers.map((user) => (
                     <tr key={user.id}>
                       <td>{user.username}</td>
                       <td>{user.fullName}</td>
                       <td>{user.role}</td>
                       <td>{formatModuleList(user.allowedModules)}</td>
-                      <td>{user.isActive ? 'Active' : 'Inactive'}</td>
+                      <td>{getUserStatusLabel(user)}</td>
                       <td>
                         <button type="button" className="mini-btn" onClick={() => startEdit(user)}>
                           Edit Access
@@ -390,7 +443,7 @@ function UserManagementPage({ authToken, currentUser }) {
                       </td>
                     </tr>
                   ))}
-                  {!users.length ? (
+                  {!filteredUsers.length ? (
                     <tr>
                       <td colSpan={6}>No users yet.</td>
                     </tr>

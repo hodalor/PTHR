@@ -120,6 +120,8 @@ const roleModulePresets = {
   hr: ['employee-management', 'attendance-time', 'loan-records', 'leave-management', 'reports-analytics', 'user-management', 'manual'],
   admin: allModuleOptions.map((option) => option.value).filter((value) => value !== 'tenant-management'),
 };
+const inactiveEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
+const inactiveEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
 
 const normalizeModuleList = (value) =>
   Array.isArray(value)
@@ -139,6 +141,11 @@ const areModuleListsEqual = (left, right) => {
 };
 
 const getDefaultModulesForRole = (role) => [...(roleModulePresets[String(role || '').trim().toLowerCase()] || [])];
+const isInactiveEmployeeRecord = (record) => {
+  const normalizedStatus = String(record?.status || '').trim().toLowerCase();
+  const normalizedStage = String(record?.employmentState || '').trim().toLowerCase();
+  return inactiveEmployeeStatusValues.has(normalizedStatus) || inactiveEmployeeStageValues.has(normalizedStage);
+};
 
 const getContractCountdown = (contractEndDate) => {
   if (!contractEndDate) {
@@ -618,6 +625,7 @@ function App({ initialModuleId }) {
   const [identifierTaxLabelInput, setIdentifierTaxLabelInput] = useState('');
   const [identifierLabelError, setIdentifierLabelError] = useState('');
   const [employeeDetailRecordTab, setEmployeeDetailRecordTab] = useState('leave');
+  const [employeeDirectoryTab, setEmployeeDirectoryTab] = useState('active');
   const [showEmployeePortalPassword, setShowEmployeePortalPassword] = useState(false);
   const [attendanceClockDraft, setAttendanceClockDraft] = useState({
     employeeId: '',
@@ -2203,6 +2211,22 @@ function App({ initialModuleId }) {
     }
     return ['All', ...new Set(rows.map((row) => String(row.employmentState || '').trim()).filter(Boolean))];
   }, [isEmployeeModule, rows]);
+  const employeeDirectoryCounts = useMemo(() => {
+    if (!isEmployeeModule) {
+      return { active: 0, inactive: 0 };
+    }
+    return rows.reduce(
+      (accumulator, row) => {
+        if (isInactiveEmployeeRecord(row)) {
+          accumulator.inactive += 1;
+        } else {
+          accumulator.active += 1;
+        }
+        return accumulator;
+      },
+      { active: 0, inactive: 0 }
+    );
+  }, [isEmployeeModule, rows]);
   const leaveRows = useMemo(() => moduleRowsState['leave-management'] || [], [moduleRowsState]);
   const employeeLeaveRequests = useMemo(() => {
     if (!isEmployeeModule || !modalRow) {
@@ -2894,6 +2918,45 @@ function App({ initialModuleId }) {
         </label>
       );
     }
+    if (field.type === 'multiselect') {
+      return (
+        <div key={field.key} className="form-grid-multiselect">
+          <span>
+            {getFieldLabel(field)}
+            {field.required ? ' *' : ''}
+          </span>
+          <div className="multi-select-checklist">
+            {getFieldOptions(field).map((option) => {
+              const checked = normalizeModuleList(formValues[field.key]).includes(option.value);
+              return (
+                <label
+                  key={option.value}
+                  className={`multi-select-option ${checked ? 'selected' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => {
+                      const isChecked = event.target.checked;
+                      setFormValues((prev) => {
+                        const current = normalizeModuleList(prev[field.key]);
+                        return {
+                          ...prev,
+                          [field.key]: isChecked
+                            ? [...new Set([...current, option.value])]
+                            : current.filter((value) => value !== option.value),
+                        };
+                      });
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
     return (
       <label key={field.key}>
         <span>
@@ -2929,26 +2992,6 @@ function App({ initialModuleId }) {
             }
           >
             <option value="">Select {getFieldLabel(field)}</option>
-            {getFieldOptions(field).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        ) : field.type === 'multiselect' ? (
-          <select
-            className="filter-select"
-            multiple
-            size={Math.min(8, Math.max(4, getFieldOptions(field).length || 4))}
-            value={normalizeModuleList(formValues[field.key])}
-            onChange={(event) => {
-              const nextValues = Array.from(event.target.selectedOptions).map((option) => option.value);
-              setFormValues((prev) => ({
-                ...prev,
-                [field.key]: nextValues,
-              }));
-            }}
-          >
             {getFieldOptions(field).map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -4241,6 +4284,8 @@ function App({ initialModuleId }) {
       const matchesStatus = statusFilterValue === 'All' || String(row.status) === String(statusFilterValue);
       const matchesEmploymentStage =
         employmentStageFilterValue === 'All' || String(row.employmentState) === String(employmentStageFilterValue);
+      const matchesDirectoryTab =
+        employeeDirectoryTab === 'inactive' ? isInactiveEmployeeRecord(row) : !isInactiveEmployeeRecord(row);
       const daysLeft = getContractDaysLeft(row.contractEndDate);
       const matchesExpiryFilter =
         expiryFilterValue === 'All' ||
@@ -4248,7 +4293,7 @@ function App({ initialModuleId }) {
         (expiryFilterValue === 'after30' && Number.isFinite(daysLeft) && daysLeft > 30) ||
         (expiryFilterValue === 'expired' && Number.isFinite(daysLeft) && daysLeft < 0) ||
         (expiryFilterValue === 'no-end-date' && !Number.isFinite(daysLeft));
-      return matchesSearch && matchesFilter && matchesStatus && matchesEmploymentStage && matchesExpiryFilter;
+      return matchesSearch && matchesFilter && matchesStatus && matchesEmploymentStage && matchesDirectoryTab && matchesExpiryFilter;
     });
     if (!isEmployeeModule || sortByValue === 'default') {
       return filtered;
@@ -4274,6 +4319,7 @@ function App({ initialModuleId }) {
   }, [
     activeFilterField,
     activeModuleConfig,
+    employeeDirectoryTab,
     employmentStageFilterValue,
     expiryFilterValue,
     filterValue,
@@ -8755,115 +8801,135 @@ function App({ initialModuleId }) {
               ) : null}
 
               {showMainModuleTable ? (
-                <div className="toolbar">
-                <input
-                  className="search-input"
-                  placeholder="Search records..."
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                />
-                <select
-                  className="filter-select"
-                  value={filterValue}
-                  onChange={(event) => setFilterValue(event.target.value)}
-                >
-                  {filterOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {activeModuleConfig.filterLabel}: {option}
-                    </option>
-                  ))}
-                </select>
-                {isEmployeeModule ? (
-                  <select
-                    className="filter-select"
-                    value={statusFilterValue}
-                    onChange={(event) => setStatusFilterValue(event.target.value)}
-                  >
-                    {employeeStatusOptions.map((option) => (
-                      <option key={option} value={option}>
-                        Status: {option}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                {isEmployeeModule ? (
-                  <select
-                    className="filter-select"
-                    value={employmentStageFilterValue}
-                    onChange={(event) => setEmploymentStageFilterValue(event.target.value)}
-                  >
-                    {employeeStageOptions.map((option) => (
-                      <option key={option} value={option}>
-                        Employment Stage: {option}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                {isEmployeeModule ? (
-                  <select
-                    className="filter-select"
-                    value={expiryFilterValue}
-                    onChange={(event) => setExpiryFilterValue(event.target.value)}
-                  >
-                    <option value="All">Expiry: All</option>
-                    <option value="within30">Expiry: 0-30 days</option>
-                    <option value="after30">Expiry: Above 30 days</option>
-                    <option value="expired">Expiry: Already expired</option>
-                    <option value="no-end-date">Expiry: No end date</option>
-                  </select>
-                ) : null}
-                {isEmployeeModule ? (
-                  <select
-                    className="filter-select"
-                    value={sortByValue}
-                    onChange={(event) => setSortByValue(event.target.value)}
-                  >
-                    <option value="default">Sort: Default</option>
-                    <option value="expiry-priority">Sort: Expiry priority</option>
-                    <option value="closest-expiry">Sort: Closest expiry date</option>
-                  </select>
-                ) : null}
-                <button
-                  type="button"
-                  className="neutral-btn"
-                  onClick={() => {
-                    setSearchText('');
-                    setFilterValue('All');
-                    setStatusFilterValue('All');
-                    setEmploymentStageFilterValue('All');
-                    setExpiryFilterValue('All');
-                    setSortByValue('default');
-                  }}
-                >
-                  Reset
-                </button>
-                <button
-                  type="button"
-                  className="neutral-btn"
-                  onClick={() =>
-                    downloadCsv(
-                      `${activeModuleId}-${getTodayIsoDate()}.csv`,
-                      tableColumns.map((column) => ({ key: column.key, label: column.label })),
-                      filteredRows
-                    )
-                  }
-                >
-                  Export CSV
-                </button>
-                <button
-                  type="button"
-                  className="neutral-btn"
-                  onClick={() =>
-                    downloadPdf(
-                      `${activeModuleConfig.title} - ${getTodayIsoDate()}`,
-                      tableColumns.map((column) => ({ key: column.key, label: column.label })),
-                      filteredRows
-                    )
-                  }
-                >
-                  Export PDF
-                </button>
-                </div>
+                <>
+                  {isEmployeeModule ? (
+                    <div className="settings-tab-strip" style={{ marginBottom: 10 }}>
+                      <button
+                        type="button"
+                        className={`settings-tab-btn ${employeeDirectoryTab === 'active' ? 'active' : ''}`}
+                        onClick={() => setEmployeeDirectoryTab('active')}
+                      >
+                        Active Employees ({employeeDirectoryCounts.active})
+                      </button>
+                      <button
+                        type="button"
+                        className={`settings-tab-btn ${employeeDirectoryTab === 'inactive' ? 'active' : ''}`}
+                        onClick={() => setEmployeeDirectoryTab('inactive')}
+                      >
+                        Inactive Employees ({employeeDirectoryCounts.inactive})
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="toolbar">
+                    <input
+                      className="search-input"
+                      placeholder="Search records..."
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                    />
+                    <select
+                      className="filter-select"
+                      value={filterValue}
+                      onChange={(event) => setFilterValue(event.target.value)}
+                    >
+                      {filterOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {activeModuleConfig.filterLabel}: {option}
+                        </option>
+                      ))}
+                    </select>
+                    {isEmployeeModule ? (
+                      <select
+                        className="filter-select"
+                        value={statusFilterValue}
+                        onChange={(event) => setStatusFilterValue(event.target.value)}
+                      >
+                        {employeeStatusOptions.map((option) => (
+                          <option key={option} value={option}>
+                            Status: {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    {isEmployeeModule ? (
+                      <select
+                        className="filter-select"
+                        value={employmentStageFilterValue}
+                        onChange={(event) => setEmploymentStageFilterValue(event.target.value)}
+                      >
+                        {employeeStageOptions.map((option) => (
+                          <option key={option} value={option}>
+                            Employment Stage: {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    {isEmployeeModule ? (
+                      <select
+                        className="filter-select"
+                        value={expiryFilterValue}
+                        onChange={(event) => setExpiryFilterValue(event.target.value)}
+                      >
+                        <option value="All">Expiry: All</option>
+                        <option value="within30">Expiry: 0-30 days</option>
+                        <option value="after30">Expiry: Above 30 days</option>
+                        <option value="expired">Expiry: Already expired</option>
+                        <option value="no-end-date">Expiry: No end date</option>
+                      </select>
+                    ) : null}
+                    {isEmployeeModule ? (
+                      <select
+                        className="filter-select"
+                        value={sortByValue}
+                        onChange={(event) => setSortByValue(event.target.value)}
+                      >
+                        <option value="default">Sort: Default</option>
+                        <option value="expiry-priority">Sort: Expiry priority</option>
+                        <option value="closest-expiry">Sort: Closest expiry date</option>
+                      </select>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => {
+                        setSearchText('');
+                        setFilterValue('All');
+                        setStatusFilterValue('All');
+                        setEmploymentStageFilterValue('All');
+                        setExpiryFilterValue('All');
+                        setSortByValue('default');
+                      }}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() =>
+                        downloadCsv(
+                          `${activeModuleId}-${getTodayIsoDate()}.csv`,
+                          tableColumns.map((column) => ({ key: column.key, label: column.label })),
+                          filteredRows
+                        )
+                      }
+                    >
+                      Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() =>
+                        downloadPdf(
+                          `${activeModuleConfig.title} - ${getTodayIsoDate()}`,
+                          tableColumns.map((column) => ({ key: column.key, label: column.label })),
+                          filteredRows
+                        )
+                      }
+                    >
+                      Export PDF
+                    </button>
+                  </div>
+                </>
               ) : null}
 
               {showMainModuleTable ? (
