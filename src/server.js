@@ -38,6 +38,8 @@ const GCS_PRIVATE_KEY_ID = String(process.env.GCS_PRIVATE_KEY_ID || '').trim();
 const GCS_PRIVATE_KEY = String(process.env.GCS_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
 const allowedUserRoles = new Set(['employee', 'manager', 'hr', 'admin', 'tenant-admin', 'superadmin']);
+const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
+const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
 
 const moduleCollections = {
   'employee-management': 'employees',
@@ -144,6 +146,25 @@ const defaultGeneralSettings = {
 };
 
 let gcsBucket = null;
+
+function normalizeEmployeeLifecycleValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getEmployeeAccessBlockReason(employee) {
+  if (!employee) {
+    return '';
+  }
+  const normalizedStatus = normalizeEmployeeLifecycleValue(employee.status);
+  const normalizedEmploymentState = normalizeEmployeeLifecycleValue(employee.employmentState);
+  if (blockedEmployeeStatusValues.has(normalizedStatus)) {
+    return `Employee status is ${String(employee.status || 'inactive').trim()}`;
+  }
+  if (blockedEmployeeStageValues.has(normalizedEmploymentState)) {
+    return `Employment stage is ${String(employee.employmentState || 'inactive').trim()}`;
+  }
+  return '';
+}
 
 function sanitizePathSegment(value, fallback = 'file') {
   const normalized = String(value || '')
@@ -1638,6 +1659,8 @@ async function syncEmployeeUser(db, employee) {
       : Array.isArray(existing?.allowedModules)
         ? existing.allowedModules
         : [];
+    const employeeAccessBlocked = Boolean(getEmployeeAccessBlockReason(employee));
+    const nextIsActive = employeeAccessBlocked ? false : existing?.isActive !== false;
     if (existing) {
       await users.updateOne(
         { _id: existing._id },
@@ -1649,11 +1672,17 @@ async function syncEmployeeUser(db, employee) {
             passwordHash,
             role: requestedRole,
             allowedModules: requestedAllowedModules,
-            isActive: existing.isActive !== false,
+            isActive: nextIsActive,
             updatedAt: now,
           },
         }
       );
+      if (!nextIsActive) {
+        await db.collection('authSessions').updateMany(
+          { userId: String(existing._id), revokedAt: null },
+          { $set: { revokedAt: now, updatedAt: now } }
+        );
+      }
     } else {
       await users.insertOne({
         username,
@@ -1662,7 +1691,7 @@ async function syncEmployeeUser(db, employee) {
         passwordHash,
         role: requestedRole,
         allowedModules: requestedAllowedModules,
-        isActive: true,
+        isActive: !employeeAccessBlocked,
         createdAt: now,
         updatedAt: now,
       });
@@ -1670,6 +1699,32 @@ async function syncEmployeeUser(db, employee) {
   } catch (error) {
     console.error('Failed to sync employee user', error);
   }
+}
+
+async function deleteEmployeeUserAccess(db, employeeId) {
+  const normalizedEmployeeId = String(employeeId || '').trim();
+  if (!normalizedEmployeeId) {
+    return;
+  }
+  const users = db.collection('users');
+  const linkedUsers = await users
+    .find(
+      {
+        $or: [{ employeeId: normalizedEmployeeId }, { username: normalizedEmployeeId }],
+      },
+      { projection: { _id: 1 } }
+    )
+    .toArray();
+  if (linkedUsers.length === 0) {
+    return;
+  }
+  const linkedUserIds = linkedUsers.map((user) => String(user._id));
+  await users.deleteMany({
+    _id: { $in: linkedUsers.map((user) => user._id) },
+  });
+  await db.collection('authSessions').deleteMany({
+    userId: { $in: linkedUserIds },
+  });
 }
 
 async function persistModuleRecord(db, moduleId, record) {
@@ -1722,6 +1777,17 @@ async function loadAuthUserFromRequest(req) {
       expiresAt: { $gt: new Date().toISOString() },
     });
     if (!activeSession) {
+      return null;
+    }
+  }
+  if (String(user.role || '').toLowerCase() !== 'superadmin' || req.tenantId !== 'master') {
+    const employee = user.employeeId
+      ? await req.db.collection('employees').findOne(
+          { id: String(user.employeeId || '').trim() },
+          { projection: { status: 1, employmentState: 1 } }
+        )
+      : null;
+    if (getEmployeeAccessBlockReason(employee)) {
       return null;
     }
   }
@@ -2143,10 +2209,14 @@ app.delete('/api/modules/:moduleId/:recordId', async (req, res) => {
       res.status(404).json({ error: 'Unknown module' });
       return;
     }
-    const result = await collection.deleteOne({ id: recordId });
-    if (result.deletedCount === 0) {
+    const existingRecord = await collection.findOne({ id: recordId }, { projection: { id: 1 } });
+    if (!existingRecord) {
       res.status(404).json({ error: 'Record not found' });
       return;
+    }
+    const result = await collection.deleteOne({ id: recordId });
+    if (moduleId === 'employee-management' && result.deletedCount > 0) {
+      await deleteEmployeeUserAccess(req.db, recordId);
     }
     res.json({ ok: true });
   } catch (error) {

@@ -43,6 +43,44 @@ const roleRank = {
   'tenant-admin': 3,
   superadmin: 4,
 };
+const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
+const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
+
+function normalizeEmployeeLifecycleValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getEmployeeAccessBlockReason(employee) {
+  if (!employee) {
+    return '';
+  }
+  const normalizedStatus = normalizeEmployeeLifecycleValue(employee.status);
+  const normalizedEmploymentState = normalizeEmployeeLifecycleValue(employee.employmentState);
+  if (blockedEmployeeStatusValues.has(normalizedStatus)) {
+    return `Employee status is ${String(employee.status || 'inactive').trim()}`;
+  }
+  if (blockedEmployeeStageValues.has(normalizedEmploymentState)) {
+    return `Employment stage is ${String(employee.employmentState || 'inactive').trim()}`;
+  }
+  return '';
+}
+
+async function getLinkedEmployeeAccessState(db, userLike) {
+  const employeeId = String(userLike?.employeeId || '').trim();
+  if (!employeeId) {
+    return { employee: null, blocked: false, reason: '' };
+  }
+  const employee = await db.collection('employees').findOne(
+    { id: employeeId },
+    { projection: { id: 1, status: 1, employmentState: 1 } }
+  );
+  const reason = getEmployeeAccessBlockReason(employee);
+  return {
+    employee,
+    blocked: Boolean(reason),
+    reason,
+  };
+}
 
 function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -461,6 +499,9 @@ function sanitizeUser(user, tenantId, tenant) {
     subscriptionExpiresAt: tenant?.subscriptionExpiresAt || null,
     subscriptionDaysRemaining: tenantId === 'master' ? null : getSubscriptionDaysRemaining(tenant?.subscriptionExpiresAt),
     allowedModules: resolveUserAllowedModulesForTenant({ user, tenant, tenantId, defaultEmployeeModules }),
+    employeeStatus: String(user?.employeeStatus || ''),
+    employeeEmploymentState: String(user?.employeeEmploymentState || ''),
+    accountDisabledReason: String(user?.accountDisabledReason || ''),
   };
 }
 
@@ -505,6 +546,10 @@ async function loadAuthUserFromToken(req) {
     if (!activeSession) {
       return null;
     }
+  }
+  const employeeAccessState = await getLinkedEmployeeAccessState(req.db, user);
+  if (employeeAccessState.blocked) {
+    return null;
   }
   return { user, payload, token };
 }
@@ -994,6 +1039,13 @@ router.post('/login', async (req, res) => {
       res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
       return;
     }
+    const employeeAccessState = await getLinkedEmployeeAccessState(req.db, user);
+    if (employeeAccessState.blocked) {
+      res.status(403).json({
+        error: `${employeeAccessState.reason}. This account cannot sign in.`,
+      });
+      return;
+    }
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
       res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
@@ -1091,8 +1143,26 @@ router.get('/users', requireUserManagementAccess, async (req, res) => {
   try {
     await ensureTenantIndexes(req.db);
     const users = await req.db.collection('users').find({}).sort({ createdAt: -1, username: 1 }).toArray();
+    const employees = await req.db
+      .collection('employees')
+      .find({}, { projection: { id: 1, status: 1, employmentState: 1 } })
+      .toArray();
+    const employeeById = new Map(employees.map((employee) => [String(employee.id || '').trim(), employee]).filter(([id]) => id));
     res.json({
-      users: users.map((user) => sanitizeUser(user, req.tenantId, req.tenant)),
+      users: users.map((user) => {
+        const linkedEmployee = employeeById.get(String(user.employeeId || '').trim()) || null;
+        const accessReason = getEmployeeAccessBlockReason(linkedEmployee);
+        return sanitizeUser(
+          {
+            ...user,
+            employeeStatus: String(linkedEmployee?.status || ''),
+            employeeEmploymentState: String(linkedEmployee?.employmentState || ''),
+            accountDisabledReason: accessReason,
+          },
+          req.tenantId,
+          req.tenant
+        );
+      }),
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load users' });
