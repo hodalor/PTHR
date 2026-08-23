@@ -103,6 +103,42 @@ const googleTileBaseUrl = googleMapsTileKey
 
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const allModuleOptions = sidebarSections.flatMap((section) =>
+  section.items.map((item) => ({
+    value: item.id,
+    label: item.label,
+  }))
+);
+const allModuleLabelMap = allModuleOptions.reduce((accumulator, option) => {
+  accumulator[option.value] = option.label;
+  return accumulator;
+}, {});
+const defaultEmployeePortalModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const roleModulePresets = {
+  employee: defaultEmployeePortalModules,
+  manager: ['employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'],
+  hr: ['employee-management', 'attendance-time', 'loan-records', 'leave-management', 'reports-analytics', 'user-management', 'manual'],
+  admin: allModuleOptions.map((option) => option.value).filter((value) => value !== 'tenant-management'),
+};
+
+const normalizeModuleList = (value) =>
+  Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : String(value || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+const areModuleListsEqual = (left, right) => {
+  const leftList = [...new Set(normalizeModuleList(left))].sort();
+  const rightList = [...new Set(normalizeModuleList(right))].sort();
+  if (leftList.length !== rightList.length) {
+    return false;
+  }
+  return leftList.every((item, index) => item === rightList[index]);
+};
+
+const getDefaultModulesForRole = (role) => [...(roleModulePresets[String(role || '').trim().toLowerCase()] || [])];
 
 const getContractCountdown = (contractEndDate) => {
   if (!contractEndDate) {
@@ -569,6 +605,7 @@ function App({ initialModuleId }) {
   const [formValues, setFormValues] = useState({});
   const [formError, setFormError] = useState('');
   const [recordSaving, setRecordSaving] = useState(false);
+  const [showEmployeeMoreFields, setShowEmployeeMoreFields] = useState(false);
   const [departmentNameInput, setDepartmentNameInput] = useState('');
   const [departmentCodeInput, setDepartmentCodeInput] = useState('');
   const [departmentEditingName, setDepartmentEditingName] = useState('');
@@ -1901,6 +1938,21 @@ function App({ initialModuleId }) {
     }
     return activeModuleConfig.formFields.filter((field) => shouldDisplayField(field, formValues));
   }, [activeModuleConfig, formValues]);
+  const displayedEmployeeFormFields = useMemo(() => {
+    if (activeModuleId !== 'employee-management') {
+      return visibleFormFields;
+    }
+    if (showEmployeeMoreFields) {
+      return visibleFormFields;
+    }
+    return visibleFormFields.filter((field) => field.required || field.alwaysVisible);
+  }, [activeModuleId, showEmployeeMoreFields, visibleFormFields]);
+  const hiddenEmployeeFieldCount = useMemo(() => {
+    if (activeModuleId !== 'employee-management') {
+      return 0;
+    }
+    return Math.max(0, visibleFormFields.length - displayedEmployeeFormFields.length);
+  }, [activeModuleId, displayedEmployeeFormFields.length, visibleFormFields.length]);
   const currentDepartmentOptions = useMemo(
     () => appSettings.departments.map((department) => department.name),
     [appSettings.departments]
@@ -1984,6 +2036,35 @@ function App({ initialModuleId }) {
     }
     return field.label;
   };
+  const getFieldOptions = useCallback(
+    (field) => {
+      if (!field) {
+        return [];
+      }
+      const rawOptions =
+        field.key === 'department' && activeModuleId === 'employee-management'
+          ? currentDepartmentOptions
+          : field.key === 'employmentState' && activeModuleId === 'employee-management'
+            ? currentEmploymentStageOptions
+            : field.key === 'assignedShift' && activeModuleId === 'employee-management'
+              ? attendanceShiftOptions.map((shift) => shift.name)
+              : field.key === 'shift' && activeModuleId === 'attendance-time'
+                ? attendanceShiftOptions.map((shift) => shift.name)
+                : field.options || [];
+      return rawOptions.map((option) =>
+        typeof option === 'object' && option !== null
+          ? {
+              value: String(option.value ?? option.id ?? option.label ?? ''),
+              label: String(option.label ?? option.name ?? option.value ?? option.id ?? ''),
+            }
+          : {
+              value: String(option),
+              label: String(option),
+            }
+      );
+    },
+    [activeModuleId, attendanceShiftOptions, currentDepartmentOptions, currentEmploymentStageOptions]
+  );
   const isEmployeeModule = activeModuleId === 'employee-management';
   const employeeFormSections = useMemo(
     () =>
@@ -2074,11 +2155,11 @@ function App({ initialModuleId }) {
       return {};
     }
     const map = {};
-    visibleFormFields.forEach((field) => {
+    displayedEmployeeFormFields.forEach((field) => {
       map[field.key] = field;
     });
     return map;
-  }, [isEmployeeModule, visibleFormFields]);
+  }, [displayedEmployeeFormFields, isEmployeeModule]);
   const genericFormSections = useMemo(() => {
     if (isEmployeeModule || !activeModuleConfig) {
       return [];
@@ -2768,6 +2849,24 @@ function App({ initialModuleId }) {
       </div>
     );
   };
+  const renderTableCellValue = (columnKey, value) => {
+    if (columnKey === 'allowedModules') {
+      const modules = normalizeModuleList(value);
+      return modules.length > 0
+        ? modules.map((moduleId) => allModuleLabelMap[moduleId] || moduleId).join(', ')
+        : 'Default access';
+    }
+    if (Array.isArray(value)) {
+      return value.join(', ');
+    }
+    if (typeof value === 'boolean' && (columnKey === 'isActive' || columnKey === 'accountIsActive')) {
+      return value ? 'Active' : 'Inactive';
+    }
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    return String(value);
+  };
   const renderFormFieldControl = (field) => {
     if (!field) {
       return null;
@@ -2806,26 +2905,53 @@ function App({ initialModuleId }) {
             className="filter-select"
             value={formValues[field.key] ?? ''}
             onChange={(event) =>
-              setFormValues((prev) => ({
-                ...prev,
-                [field.key]: event.target.value,
-              }))
+              setFormValues((prev) => {
+                const nextValue = event.target.value;
+                if (activeModuleId === 'employee-management' && field.key === 'role') {
+                  const previousRole = String(prev.role || '').trim().toLowerCase();
+                  const previousModules = normalizeModuleList(prev.allowedModules);
+                  const previousPreset = getDefaultModulesForRole(previousRole);
+                  const nextModules =
+                    previousModules.length === 0 || areModuleListsEqual(previousModules, previousPreset)
+                      ? getDefaultModulesForRole(nextValue)
+                      : previousModules;
+                  return {
+                    ...prev,
+                    role: nextValue,
+                    allowedModules: nextModules,
+                  };
+                }
+                return {
+                  ...prev,
+                  [field.key]: nextValue,
+                };
+              })
             }
           >
             <option value="">Select {getFieldLabel(field)}</option>
-            {(
-              field.key === 'department' && activeModuleId === 'employee-management'
-                ? currentDepartmentOptions
-                : field.key === 'employmentState' && activeModuleId === 'employee-management'
-                  ? currentEmploymentStageOptions
-                  : field.key === 'assignedShift' && activeModuleId === 'employee-management'
-                    ? attendanceShiftOptions.map((shift) => shift.name)
-                    : field.key === 'shift' && activeModuleId === 'attendance-time'
-                      ? attendanceShiftOptions.map((shift) => shift.name)
-                  : field.options || []
-            ).map((option) => (
-              <option key={option} value={option}>
-                {option}
+            {getFieldOptions(field).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        ) : field.type === 'multiselect' ? (
+          <select
+            className="filter-select"
+            multiple
+            size={Math.min(8, Math.max(4, getFieldOptions(field).length || 4))}
+            value={normalizeModuleList(formValues[field.key])}
+            onChange={(event) => {
+              const nextValues = Array.from(event.target.selectedOptions).map((option) => option.value);
+              setFormValues((prev) => ({
+                ...prev,
+                [field.key]: nextValues,
+              }));
+            }}
+          >
+            {getFieldOptions(field).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>
@@ -5183,6 +5309,22 @@ function App({ initialModuleId }) {
     setShowEmployeePortalPassword(false);
   };
 
+  const normalizeFormValuesForConfig = useCallback(
+    (source) => {
+      const next = { ...(source || {}) };
+      if (!activeModuleConfig) {
+        return next;
+      }
+      activeModuleConfig.formFields.forEach((field) => {
+        if (field.type === 'multiselect') {
+          next[field.key] = normalizeModuleList(next[field.key]);
+        }
+      });
+      return next;
+    },
+    [activeModuleConfig]
+  );
+
   const startCreate = () => {
     const employeeRowForSelf = getCurrentEmployeeRow();
     const adapterInitialValues =
@@ -5242,8 +5384,14 @@ function App({ initialModuleId }) {
                 managerApproval: 'Pending',
                 status: 'Pending Department',
               }
-          : adapterInitialValues || {}
+          : activeModuleId === 'employee-management'
+            ? {
+                role: 'employee',
+                allowedModules: getDefaultModulesForRole('employee'),
+              }
+            : normalizeFormValuesForConfig(adapterInitialValues || {})
     );
+    setShowEmployeeMoreFields(false);
     setFormError('');
     setModalState({ mode: 'form', rowId: null });
   };
@@ -5261,8 +5409,9 @@ function App({ initialModuleId }) {
     setFormValues(
       activeModuleId === 'leave-management'
         ? { ...row, leaveEmployeeSearch: `${row.employee || ''} ${row.employeeId || ''}`.trim() }
-        : adapterEditValues || { ...row }
+        : normalizeFormValuesForConfig(adapterEditValues || { ...row })
     );
+    setShowEmployeeMoreFields(false);
     setFormError('');
     setModalState({ mode: 'form', rowId: row.id });
   };
@@ -8743,7 +8892,7 @@ function App({ initialModuleId }) {
                                   {getContractCountdown(row.contractEndDate)?.shortLabel || '—'}
                                 </span>
                               ) : (
-                                row[column.key]
+                                renderTableCellValue(column.key, row[column.key])
                               )}
                             </td>
                           ))}
@@ -9020,25 +9169,58 @@ function App({ initialModuleId }) {
                   {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderFormBody === 'function' ? (
                     moduleAdapter.renderFormBody({ renderFormFieldControl })
                   ) : isEmployeeModule ? (
-                    <div className="form-section-grid">
-                      {employeeFormSections
-                        .map((section) => ({
-                          id: section.id,
-                          title: section.title,
-                          fields: section.fields
-                            .map((key) => employeeFormFieldMap[key])
-                            .filter(Boolean),
-                        }))
-                        .filter((section) => section.fields.length > 0)
-                        .map((section) => (
-                          <div key={section.id} className="form-section">
-                            <p className="form-section-title">{section.title}</p>
-                            <div className="form-grid">
-                              {section.fields.map((field) => renderFormFieldControl(field))}
+                    <>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          marginBottom: 16,
+                          padding: '12px 14px',
+                          border: '1px solid #d8e2f0',
+                          borderRadius: 12,
+                          background: '#f8fbff',
+                        }}
+                      >
+                        <div>
+                          <strong style={{ display: 'block', color: '#1d2b45', marginBottom: 4 }}>
+                            Required fields first
+                          </strong>
+                          <span style={{ fontSize: 12, color: '#5f6f8f' }}>
+                            The employee form starts with the essentials, then you can expand the rest when needed.
+                          </span>
+                        </div>
+                        {hiddenEmployeeFieldCount > 0 ? (
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            onClick={() => setShowEmployeeMoreFields((prev) => !prev)}
+                          >
+                            {showEmployeeMoreFields ? 'Hide extra fields' : `Show more fields (${hiddenEmployeeFieldCount})`}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="form-section-grid">
+                        {employeeFormSections
+                          .map((section) => ({
+                            id: section.id,
+                            title: section.title,
+                            fields: section.fields
+                              .map((key) => employeeFormFieldMap[key])
+                              .filter(Boolean),
+                          }))
+                          .filter((section) => section.fields.length > 0)
+                          .map((section) => (
+                            <div key={section.id} className="form-section">
+                              <p className="form-section-title">{section.title}</p>
+                              <div className="form-grid">
+                                {section.fields.map((field) => renderFormFieldControl(field))}
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                    </div>
+                          ))}
+                      </div>
+                    </>
                   ) : (
                     <>
                       {activeModuleId === 'loan-records' ? (

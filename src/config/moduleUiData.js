@@ -33,6 +33,26 @@ export const sidebarSections = [
   },
 ];
 
+const moduleAccessOptions = sidebarSections.flatMap((section) =>
+  section.items.map((item) => ({
+    value: item.id,
+    label: item.label,
+  }))
+);
+
+const employeeAccessRoleOptions = [
+  { value: 'employee', label: 'Employee' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'hr', label: 'HR' },
+  { value: 'admin', label: 'Admin' },
+];
+
+const userRoleOptions = [
+  ...employeeAccessRoleOptions,
+  { value: 'tenant-admin', label: 'Tenant Admin' },
+  { value: 'superadmin', label: 'Super Admin' },
+];
+
 export const moduleUiData = {
   'employee-management': {
     title: 'Employee Management',
@@ -61,6 +81,21 @@ export const moduleUiData = {
       { key: 'phoneSecondary', label: 'Phone 2', type: 'tel' },
       { key: 'email', label: 'Email', type: 'email', required: true },
       { key: 'password', label: 'Portal Password', type: 'password', required: true },
+      {
+        key: 'role',
+        label: 'User Role',
+        type: 'select',
+        required: true,
+        alwaysVisible: true,
+        options: employeeAccessRoleOptions,
+      },
+      {
+        key: 'allowedModules',
+        label: 'Allowed Modules',
+        type: 'multiselect',
+        alwaysVisible: true,
+        options: moduleAccessOptions,
+      },
       { key: 'pensionId', label: 'Pension Number' },
       { key: 'taxId', label: 'Tax ID Number' },
       { key: 'mobileMoneyNumber', label: 'Mobile Money Number' },
@@ -134,6 +169,8 @@ export const moduleUiData = {
       { key: 'assignedShift', label: 'Assigned Shift' },
       { key: 'position', label: 'Position' },
       { key: 'contractType', label: 'Contract Type' },
+      { key: 'role', label: 'User Role' },
+      { key: 'allowedModules', label: 'Allowed Modules' },
       { key: 'status', label: 'Status' },
       { key: 'employmentState', label: 'Employment Stage' },
       { key: 'email', label: 'Email' },
@@ -611,8 +648,8 @@ export const moduleUiData = {
     formFields: [
       { key: 'name', label: 'Role Name', required: true },
       { key: 'description', label: 'Description' },
-      { key: 'allowedModules', label: 'Allowed Modules (comma separated ids)' },
-      { key: 'status', label: 'Status' },
+      { key: 'allowedModules', label: 'Allowed Modules', type: 'multiselect', options: moduleAccessOptions },
+      { key: 'status', label: 'Status', type: 'select', options: ['Active', 'Inactive'] },
     ],
     columns: [
       { key: 'id', label: 'Role ID' },
@@ -708,9 +745,9 @@ export const moduleUiData = {
     formFields: [
       { key: 'username', label: 'Username', required: true },
       { key: 'fullName', label: 'Full Name' },
-      { key: 'role', label: 'Role' },
-      { key: 'allowedModules', label: 'Allowed Modules' },
-      { key: 'isActive', label: 'Active Status' },
+      { key: 'role', label: 'Role', type: 'select', options: userRoleOptions },
+      { key: 'allowedModules', label: 'Allowed Modules', type: 'multiselect', options: moduleAccessOptions },
+      { key: 'isActive', label: 'Active Status', type: 'select', options: ['Active', 'Inactive'] },
     ],
     columns: [
       { key: 'id', label: 'User ID' },
