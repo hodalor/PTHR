@@ -267,6 +267,7 @@ function UserManagementPage({ authToken, currentUser }) {
                 value={formValues.username}
                 onChange={(event) => handleChange('username', event.target.value)}
                 readOnly={Boolean(editingUser)}
+                disabled={Boolean(editingUser)}
               />
             </label>
             <label>
@@ -275,6 +276,7 @@ function UserManagementPage({ authToken, currentUser }) {
                 value={formValues.employeeId}
                 onChange={(event) => handleChange('employeeId', event.target.value)}
                 readOnly={Boolean(editingUser)}
+                disabled={Boolean(editingUser)}
               />
             </label>
             <label>
@@ -351,7 +353,9 @@ function UserManagementPage({ authToken, currentUser }) {
             </div>
           </form>
           <div style={{ marginTop: 10, fontSize: 12, color: '#58688f' }}>
-            Hold `Cmd` while clicking to choose multiple modules from the dropdown.
+            {editingUser
+              ? 'Username and Employee ID stay locked during edit to avoid account conflicts. Hold `Cmd` while clicking to choose multiple modules.'
+              : 'Hold `Cmd` while clicking to choose multiple modules from the dropdown.'}
           </div>
         </div>
         <div className="form-section">
