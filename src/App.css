@@ -894,6 +894,22 @@ tbody tr:hover {
   padding: 14px;
 }
 
+.dashboard-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #dde7fa;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: #607098;
+}
+
+.dashboard-detail-row strong {
+  color: #16346e;
+}
+
 .details-hero {
   display: flex;
   justify-content: space-between;

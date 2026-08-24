@@ -466,6 +466,14 @@ export default function AttendanceTimePage({
               </strong>
               <span>Total Minutes Late</span>
             </article>
+            <article className="attendance-stat">
+              <strong>
+                {toNumberValue(
+                  attendanceTodayRows.reduce((total, row) => total + toNumberValue(row.deductionAmount), 0)
+                ).toFixed(2)}
+              </strong>
+              <span>Total Deductions Today</span>
+            </article>
           </div>
           <div className="attendance-audit-table">
             <table>
@@ -478,6 +486,7 @@ export default function AttendanceTimePage({
                   <th>Clock Out</th>
                   <th>Status</th>
                   <th>Minutes Late</th>
+                  <th>Late Deduction</th>
                 </tr>
               </thead>
               <tbody>
@@ -523,11 +532,12 @@ export default function AttendanceTimePage({
                       <td>{row.checkOut || '—'}</td>
                       <td>{row.status}</td>
                       <td>{row.lateMinutes || 0}</td>
+                      <td>{toNumberValue(row.deductionAmount).toFixed(2)}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={7}>No attendance logs for today.</td>
+                    <td colSpan={8}>No attendance logs for today.</td>
                   </tr>
                 )}
               </tbody>

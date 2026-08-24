@@ -14,6 +14,7 @@ import AdminTrackingPage from './pages/AdminTrackingPage';
 import UserManagementPage from './pages/UserManagementPage';
 import TenantManagementPage from './pages/TenantManagementPage';
 import ManualPage from './pages/ManualPage';
+import DashboardPage from './pages/DashboardPage';
 import SubscriptionExtendModal from './components/SubscriptionExtendModal';
 import { filterEmployeesBySearch, findExactEmployeeBySearch, resolveEmployeeKey } from './utils/employeeSearch';
 import SidebarNav from './app/SidebarNav';
@@ -113,11 +114,11 @@ const allModuleLabelMap = allModuleOptions.reduce((accumulator, option) => {
   accumulator[option.value] = option.label;
   return accumulator;
 }, {});
-const defaultEmployeePortalModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const defaultEmployeePortalModules = ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
 const roleModulePresets = {
   employee: defaultEmployeePortalModules,
-  manager: ['employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'],
-  hr: ['employee-management', 'attendance-time', 'loan-records', 'leave-management', 'reports-analytics', 'user-management', 'manual'],
+  manager: ['dashboard', 'employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'],
+  hr: ['dashboard', 'employee-management', 'attendance-time', 'loan-records', 'leave-management', 'reports-analytics', 'user-management', 'manual'],
   admin: allModuleOptions.map((option) => option.value).filter((value) => value !== 'tenant-management'),
 };
 const inactiveEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
@@ -250,6 +251,7 @@ const getAllowedModuleSetForUser = (user) => {
   }
   const isAdminRole = normalizedRole === 'admin' || normalizedRole === 'tenant-admin' || normalizedRole === 'superadmin';
   const adminBaseline = [
+    'dashboard',
     'employee-management',
     'attendance-time',
     'loan-records',
@@ -282,9 +284,9 @@ const getAllowedModuleSetForUser = (user) => {
     return new Set(user.allowedModules.filter((moduleId) => moduleId !== 'tenant-management'));
   }
   if (normalizedRole === 'employee') {
-    return new Set(['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
+    return new Set(['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual']);
   }
-  return new Set(['employee-management', 'attendance-time', 'leave-management', 'manual']);
+  return new Set(['dashboard', 'employee-management', 'attendance-time', 'leave-management', 'manual']);
 };
 
 const getLatestAllowedEmployeeDob = () => `${new Date().getFullYear() - 11}-12-31`;
@@ -713,6 +715,11 @@ function App({ initialModuleId }) {
   const [mobileSettingsError, setMobileSettingsError] = useState('');
   const [mobileSettingsSaving, setMobileSettingsSaving] = useState(false);
   const [mobileSettingsSavedMessage, setMobileSettingsSavedMessage] = useState('');
+  const [dashboardDate, setDashboardDate] = useState(getTodayIsoDate());
+  const [dashboardRefreshCounter, setDashboardRefreshCounter] = useState(0);
+  const [dashboardSummary, setDashboardSummary] = useState(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState('');
   const [attendanceSettingsLoading, setAttendanceSettingsLoading] = useState(false);
   const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
   const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
@@ -816,7 +823,7 @@ function App({ initialModuleId }) {
       locationOffAlertEnabled: true,
     },
     mobileApp: {
-      enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
+      enabledModules: ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
       allowClockIn: true,
       allowClockOut: true,
       requireClockInPhoto: false,
@@ -849,6 +856,7 @@ function App({ initialModuleId }) {
 
   const isSettingsPage = activeModuleId === 'settings';
   const isManualPage = activeModuleId === 'manual';
+  const isDashboardPage = activeModuleId === 'dashboard';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
   const isGeneralSettingsTab = GENERAL_SETTINGS_TABS.has(settingsTab);
 
@@ -1716,6 +1724,124 @@ function App({ initialModuleId }) {
 
     fetchMobileSettings();
   }, [authHeaders, authToken]);
+
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'dashboard') {
+      return undefined;
+    }
+    let cancelled = false;
+    const fetchDashboardSummary = async () => {
+      try {
+        setDashboardLoading(true);
+        setDashboardError('');
+        // #region debug-point A:dashboard-fetch-start
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'dashboard-summary-load',
+            runId: 'post-fix',
+            hypothesisId: 'A',
+            location: 'frontend/src/App.js:1734',
+            msg: '[DEBUG] Dashboard summary request started',
+            data: {
+              date: dashboardDate,
+              activeModuleId,
+              hasAuthToken: Boolean(authToken),
+              hasAuthorizationHeader: Boolean(authHeaders?.Authorization),
+              userRole: String(currentUser?.role || '').trim().toLowerCase(),
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        const response = await fetch(
+          toApiUrl(`http://localhost:8000/api/dashboard/summary?date=${encodeURIComponent(dashboardDate)}`),
+          {
+            headers: authHeaders,
+          }
+        );
+        // #region debug-point C:dashboard-fetch-response
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'dashboard-summary-load',
+            runId: 'post-fix',
+            hypothesisId: response.ok ? 'D' : 'C',
+            location: 'frontend/src/App.js:1753',
+            msg: `[DEBUG] Dashboard summary response received (${response.status})`,
+            data: {
+              ok: response.ok,
+              status: response.status,
+              statusText: response.statusText,
+              contentType: response.headers.get('content-type') || '',
+              requestUrl: response.url || '',
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        if (!response.ok) {
+          throw new Error('Failed to load dashboard summary');
+        }
+        const data = await response.json();
+        // #region debug-point D:dashboard-fetch-payload
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'dashboard-summary-load',
+            runId: 'post-fix',
+            hypothesisId: 'D',
+            location: 'frontend/src/App.js:1771',
+            msg: '[DEBUG] Dashboard summary payload parsed',
+            data: {
+              view: String(data?.view || ''),
+              topLevelKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 12) : [],
+              hasAttendance: Boolean(data?.attendance),
+              hasMonthToDate: Boolean(data?.monthToDate),
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        if (!cancelled) {
+          setDashboardSummary(data || null);
+        }
+      } catch (error) {
+        // #region debug-point E:dashboard-fetch-error
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'dashboard-summary-load',
+            runId: 'post-fix',
+            hypothesisId: 'E',
+            location: 'frontend/src/App.js:1788',
+            msg: '[DEBUG] Dashboard summary request failed',
+            data: {
+              message: String(error?.message || ''),
+              name: String(error?.name || ''),
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        if (!cancelled) {
+          setDashboardError('Unable to load dashboard summary right now.');
+        }
+      } finally {
+        if (!cancelled) {
+          setDashboardLoading(false);
+        }
+      }
+    };
+    fetchDashboardSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeModuleId, authHeaders, authToken, currentUser, dashboardDate, dashboardRefreshCounter]);
 
   const handleSaveTrackingSettings = async () => {
     try {
@@ -2877,6 +3003,9 @@ function App({ initialModuleId }) {
     );
   };
   const renderTableCellValue = (columnKey, value) => {
+    if (columnKey === 'deductionAmount' || columnKey === 'lateDeduction' || columnKey === 'totalDeductions' || columnKey === 'netPayable') {
+      return toNumberValue(value).toFixed(2);
+    }
     if (columnKey === 'allowedModules') {
       const modules = normalizeModuleList(value);
       return modules.length > 0
@@ -3218,6 +3347,16 @@ function App({ initialModuleId }) {
     },
     [normalizeAttendanceClockings]
   );
+  const modalAttendanceClockings =
+    activeModuleId === 'attendance-time' && modalRow ? normalizeAttendanceClockings(modalRow) : [];
+  const modalClockInWithPhoto =
+    modalAttendanceClockings.find(
+      (clocking) => clocking.mode === 'clock-in' && String(clocking.photoDataUrl || '').trim()
+    ) || null;
+  const modalClockOutWithPhoto =
+    [...modalAttendanceClockings]
+      .reverse()
+      .find((clocking) => clocking.mode === 'clock-out' && String(clocking.photoDataUrl || '').trim()) || null;
   const doesAttendanceRowMatchEmployee = useCallback((row, employee) => {
     if (!row || !employee) {
       return false;
@@ -4251,6 +4390,7 @@ function App({ initialModuleId }) {
   const showMainModuleTable =
     !hideModuleTableForAttendanceEmployee &&
     (activeModuleId !== 'attendance-time' || attendanceViewTab === 'clock') &&
+    activeModuleId !== 'dashboard' &&
     activeModuleId !== 'leave-management' &&
     activeModuleId !== 'monitoring-tracking' &&
     activeModuleId !== 'user-management' &&
@@ -8653,6 +8793,18 @@ function App({ initialModuleId }) {
               </div>
               <ManualPage />
             </section>
+          ) : isDashboardPage ? (
+            <section className="panel table-panel">
+              <DashboardPage
+                summary={dashboardSummary}
+                loading={dashboardLoading}
+                error={dashboardError}
+                dashboardDate={dashboardDate}
+                onDateChange={setDashboardDate}
+                onRefresh={() => setDashboardRefreshCounter((prev) => prev + 1)}
+                currency={appSettings.defaultCurrency}
+              />
+            </section>
           ) : (
             <section className="panel table-panel">
               <div className="panel-title-row">
@@ -9418,6 +9570,78 @@ function App({ initialModuleId }) {
                             </div>
                           );
                         })}
+                      </div>
+                    ) : null}
+                    {activeModuleId === 'attendance-time' ? (
+                      <div className="details-media-grid">
+                        {[
+                          {
+                            key: 'clock-in-photo',
+                            label: 'Clock In Photo',
+                            clocking: modalClockInWithPhoto,
+                            fallbackMessage: 'No clock-in photo captured yet',
+                          },
+                          {
+                            key: 'clock-out-photo',
+                            label: 'Clock Out Photo',
+                            clocking: modalClockOutWithPhoto,
+                            fallbackMessage: 'No clock-out photo captured yet',
+                          },
+                        ].map((item) => (
+                          <div className="media-card" key={item.key}>
+                            <span className="media-label">{item.label}</span>
+                            {item.clocking?.photoDataUrl ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAttendancePhotoPreview({
+                                      open: true,
+                                      src: item.clocking.photoDataUrl,
+                                      title: `${modalRow.employee || modalRow.fullName || modalRow.id} • ${item.label}${
+                                        item.clocking.time ? ` ${item.clocking.time}` : ''
+                                      }`,
+                                    });
+                                    setAttendancePhotoPreviewZoom(1);
+                                  }}
+                                  style={{
+                                    padding: 0,
+                                    border: 'none',
+                                    background: 'transparent',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  <img
+                                    src={item.clocking.photoDataUrl}
+                                    alt={`${item.label} for ${modalRow.employee || modalRow.fullName || modalRow.id}`}
+                                    className="media-image"
+                                  />
+                                </button>
+                                <div className="media-actions">
+                                  <button
+                                    type="button"
+                                    className="media-action-btn"
+                                    onClick={() => {
+                                      setAttendancePhotoPreview({
+                                        open: true,
+                                        src: item.clocking.photoDataUrl,
+                                        title: `${modalRow.employee || modalRow.fullName || modalRow.id} • ${item.label}${
+                                          item.clocking.time ? ` ${item.clocking.time}` : ''
+                                        }`,
+                                      });
+                                      setAttendancePhotoPreviewZoom(1);
+                                    }}
+                                  >
+                                    Preview
+                                  </button>
+                                </div>
+                                <strong>{item.clocking.time || 'Time unavailable'}</strong>
+                              </>
+                            ) : (
+                              <strong>{item.fallbackMessage}</strong>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     ) : null}
                     {moduleAdapter && moduleAdapter.active && typeof moduleAdapter.renderDetailsExtras === 'function'

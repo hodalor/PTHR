@@ -2,6 +2,7 @@ export const sidebarSections = [
   {
     title: 'Core Operations',
     items: [
+      { id: 'dashboard', label: 'Dashboard' },
       { id: 'employee-management', label: 'Employee Management' },
       { id: 'attendance-time', label: 'Attendance & Time' },
       { id: 'loan-records', label: 'Loan Records' },
@@ -54,6 +55,15 @@ const userRoleOptions = [
 ];
 
 export const moduleUiData = {
+  dashboard: {
+    title: 'Dashboard',
+    entityLabel: 'Dashboard',
+    filterLabel: 'View',
+    filterField: 'view',
+    formFields: [],
+    columns: [],
+    rows: [],
+  },
   'employee-management': {
     title: 'Employee Management',
     entityLabel: 'Employee',
