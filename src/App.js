@@ -857,6 +857,7 @@ function App({ initialModuleId }) {
   const isSettingsPage = activeModuleId === 'settings';
   const isManualPage = activeModuleId === 'manual';
   const isDashboardPage = activeModuleId === 'dashboard';
+  const isBackendConnected = backendHealth.status === 'ok' && backendHealth.mongo === 'connected';
   const activeModuleConfig = isSettingsPage ? null : moduleUiData[activeModuleId];
   const isGeneralSettingsTab = GENERAL_SETTINGS_TABS.has(settingsTab);
 
@@ -6742,7 +6743,7 @@ function App({ initialModuleId }) {
             <button type="submit" className="primary-btn" disabled={loginLoading}>
               {loginLoading ? 'Signing In...' : 'Sign In'}
               </button>
-              {String(loginForm.tenantId || '').trim() ? (
+              {String(loginForm.tenantId || '').trim() && isBackendConnected ? (
                 <button
                   type="button"
                   className="neutral-btn"
@@ -6758,7 +6759,7 @@ function App({ initialModuleId }) {
                   Extend Days
                 </button>
               ) : null}
-              {backendHealth.status === 'error' ? (
+              {!isBackendConnected ? (
                 <div className="login-hint">
                   Backend or database is not connected. Check the server before logging in.
                 </div>
@@ -6862,7 +6863,7 @@ function App({ initialModuleId }) {
                   ? 'Connected'
                   : 'Not connected'}
               </span>
-              {currentUser.tenantId && currentUser.tenantId !== 'master' ? (
+              {isBackendConnected && currentUser.tenantId && currentUser.tenantId !== 'master' ? (
                 <>
                   <span
                     className="hero-status-chip"
