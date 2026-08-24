@@ -5,6 +5,7 @@ import { useTrackingController } from '../hooks/useTrackingController';
 import { StatCard } from '../components/StatCard';
 import { colors } from '../theme';
 import {
+  fetchEmployeeDashboardSummary,
   fetchEmployeeProfile,
   fetchEmployeeAttendanceRows,
   fetchEmployeeLeaveRows,
@@ -15,10 +16,16 @@ import {
   submitLeaveRequest,
   submitLoanRequest,
 } from '../services/mobileModules';
-import { AttendanceRecord, EmployeeProfile, LeaveRecord, LoanRecord, MobileSettings } from '../types/app';
+import { AttendanceRecord, EmployeeDashboardSummary, EmployeeProfile, LeaveRecord, LoanRecord, MobileSettings } from '../types/app';
 
 const formatCoordinate = (value: number | undefined) => (typeof value === 'number' ? value.toFixed(6) : '—');
+const formatMoney = (value: number | undefined, currency = 'USD') =>
+  `${currency ? `${currency} ` : ''}${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 const moduleLabels: Record<string, string> = {
+  dashboard: 'Dashboard',
   'attendance-time': 'Attendance',
   'loan-records': 'Loans',
   'leave-management': 'Leaves',
@@ -49,7 +56,8 @@ export const TrackingScreen = () => {
   const [attendanceRows, setAttendanceRows] = useState<AttendanceRecord[]>([]);
   const [loanRows, setLoanRows] = useState<LoanRecord[]>([]);
   const [leaveRows, setLeaveRows] = useState<LeaveRecord[]>([]);
-  const [selectedModule, setSelectedModule] = useState('monitoring-tracking');
+  const [dashboardSummary, setDashboardSummary] = useState<EmployeeDashboardSummary | null>(null);
+  const [selectedModule, setSelectedModule] = useState('dashboard');
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState('');
   const [clockLoadingMode, setClockLoadingMode] = useState<'clock-in' | 'clock-out' | ''>('');
@@ -93,16 +101,18 @@ export const TrackingScreen = () => {
     try {
       const settings = await fetchMobileSettings(apiBaseUrl, session);
       setMobileSettings(settings);
-      const [profileResult, attendanceResult, loanResult, leaveResult] = await Promise.allSettled([
+      const [profileResult, attendanceResult, loanResult, leaveResult, summaryResult] = await Promise.allSettled([
         fetchEmployeeProfile(apiBaseUrl, session),
         fetchEmployeeAttendanceRows(apiBaseUrl, session),
         fetchEmployeeLoanRows(apiBaseUrl, session),
         fetchEmployeeLeaveRows(apiBaseUrl, session),
+        fetchEmployeeDashboardSummary(apiBaseUrl, session),
       ]);
       setEmployeeProfile(profileResult.status === 'fulfilled' ? profileResult.value : null);
       setAttendanceRows(attendanceResult.status === 'fulfilled' ? attendanceResult.value : []);
       setLoanRows(loanResult.status === 'fulfilled' ? loanResult.value : []);
       setLeaveRows(leaveResult.status === 'fulfilled' ? leaveResult.value : []);
+      setDashboardSummary(summaryResult.status === 'fulfilled' ? summaryResult.value : null);
     } catch (error) {
       setDashboardError(error instanceof Error ? error.message : 'Unable to load employee modules');
     } finally {
@@ -125,15 +135,127 @@ export const TrackingScreen = () => {
     if (availableModules.length === 0) {
       return;
     }
-    const preferredModule = availableModules.includes('monitoring-tracking')
-      ? 'monitoring-tracking'
-      : availableModules.includes('attendance-time')
-        ? 'attendance-time'
-        : availableModules[0];
+    const preferredModule = availableModules.includes('dashboard')
+      ? 'dashboard'
+      : availableModules.includes('monitoring-tracking')
+        ? 'monitoring-tracking'
+        : availableModules.includes('attendance-time')
+          ? 'attendance-time'
+          : availableModules[0];
     if (!availableModules.includes(selectedModule)) {
       setSelectedModule(preferredModule);
     }
   }, [availableModules, selectedModule]);
+
+  const currencyCode = '';
+
+  const renderDashboardModule = () => (
+    <>
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Personal summary</Text>
+        <Text style={styles.detailText}>
+          Track your deductions, take-home pay, attendance, loans, and leave before month end.
+        </Text>
+        <View style={styles.buttonRow}>
+          <Pressable style={[styles.smallButton, styles.ghostButton]} onPress={refreshDashboard} disabled={dashboardLoading}>
+            <Text style={styles.ghostButtonText}>{dashboardLoading ? 'Refreshing...' : 'Refresh Summary'}</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.statsRow}>
+        <StatCard
+          label="Take Home"
+          value={formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}
+          tone="success"
+          helper={
+            <Text style={styles.cardHelperText}>
+              {dashboardSummary?.compensation?.payrollPeriod || 'Current estimate'}
+            </Text>
+          }
+        />
+        <StatCard
+          label="Total Deductions"
+          value={formatMoney(dashboardSummary?.compensation?.totalDeductions, currencyCode)}
+          tone="warning"
+          helper={<Text style={styles.cardHelperText}>Today {formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}</Text>}
+        />
+      </View>
+
+      <View style={styles.statsRow}>
+        <StatCard
+          label="Month Deductions"
+          value={formatMoney(dashboardSummary?.monthToDate?.deductionAmount, currencyCode)}
+          tone="danger"
+        />
+        <StatCard
+          label="Today Status"
+          value={dashboardSummary?.attendance?.status || todayAttendance?.status || 'No Record'}
+          tone={String(dashboardSummary?.attendance?.status || '').toLowerCase() === 'late' ? 'warning' : 'default'}
+        />
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Pay breakdown</Text>
+        <View style={styles.summaryList}>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Gross pay</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.grossPay, currencyCode)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Total deductions</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.totalDeductions, currencyCode)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Take-home pay</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Today deduction</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Month deduction</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.monthToDate?.deductionAmount, currencyCode)}</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Attendance, loans, and leave</Text>
+        <View style={styles.summaryList}>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Late minutes today</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.attendance?.lateMinutes || 0)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Late minutes this month</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.monthToDate?.lateMinutes || 0)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Active loans</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.loans?.activeCount || 0)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Outstanding loans</Text>
+            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.loans?.outstandingAmount, currencyCode)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Pending leaves</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.leaves?.pendingCount || 0)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Approved leaves</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.leaves?.approvedCount || 0)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.detailText}>Leave balance</Text>
+            <Text style={styles.summaryValue}>{String(dashboardSummary?.employee?.leaveBalanceDays || 0)} day(s)</Text>
+          </View>
+        </View>
+      </View>
+    </>
+  );
 
   const trackingTone =
     tracking.latestStatus === 'INSIDE'
@@ -602,11 +724,19 @@ export const TrackingScreen = () => {
 
       <View style={styles.statsRow}>
         <StatCard label="Today Status" value={todayAttendance?.status || 'PENDING'} tone={todayAttendance?.checkOut ? 'success' : tracking.enabled ? 'success' : 'warning'} />
-        <StatCard label="Loans" value={String(loanRows.length)} />
+        <StatCard
+          label="Today Deduction"
+          value={formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}
+          tone="warning"
+        />
       </View>
 
       <View style={styles.statsRow}>
-        <StatCard label="Leaves" value={String(leaveRows.length)} />
+        <StatCard
+          label="Month Take Home"
+          value={formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}
+          tone="success"
+        />
         <StatCard label="Tracking" value={tracking.enabled ? 'ARMED' : 'OFF'} tone={tracking.enabled ? 'success' : 'danger'} />
       </View>
 
@@ -625,10 +755,11 @@ export const TrackingScreen = () => {
       </View>
 
       {dashboardError ? <Text style={styles.error}>{dashboardError}</Text> : null}
+      {selectedModule === 'dashboard' ? renderDashboardModule() : null}
       {selectedModule === 'attendance-time' ? renderAttendanceModule() : null}
       {selectedModule === 'loan-records' ? renderLoanModule() : null}
       {selectedModule === 'leave-management' ? renderLeaveModule() : null}
-        {selectedModule === 'monitoring-tracking' ? renderTrackingModule() : null}
+      {selectedModule === 'monitoring-tracking' ? renderTrackingModule() : null}
       </ScrollView>
     </View>
   );
@@ -826,6 +957,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  cardHelperText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   mutedTiny: {
     color: colors.textMuted,
     fontSize: 12,
@@ -846,6 +982,26 @@ const styles = StyleSheet.create({
   },
   listWrap: {
     gap: 10,
+  },
+  summaryList: {
+    gap: 10,
+  },
+  summaryRow: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  summaryValue: {
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 14,
   },
   listRow: {
     borderRadius: 14,

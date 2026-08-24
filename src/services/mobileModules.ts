@@ -4,6 +4,7 @@ import {
   AttendanceClocking,
   AttendanceRecord,
   AuthSession,
+  EmployeeDashboardSummary,
   EmployeeProfile,
   LeaveRecord,
   LoanRecord,
@@ -18,7 +19,7 @@ import {
   transmitLocation,
 } from './tracking';
 
-const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'];
+const defaultEmployeeModules = ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'];
 
 const defaultMobileSettings: MobileSettings = {
   enabledModules: defaultEmployeeModules,
@@ -247,6 +248,12 @@ export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSess
     rows.find((row) => String(row.fullName || '').trim() === fullName) ||
     null
   );
+};
+
+export const fetchEmployeeDashboardSummary = async (apiBaseUrl: string, session: AuthSession, date = nowDate()) => {
+  return apiRequest<EmployeeDashboardSummary>(apiBaseUrl, `/api/dashboard/summary?date=${encodeURIComponent(date)}`, {
+    token: session.token,
+  });
 };
 
 export const getAvailableEmployeeModules = (session: AuthSession, settings: MobileSettings) => {

@@ -59,6 +59,44 @@ export type MobileSettings = {
   allowTrackingView: boolean;
 };
 
+export type EmployeeDashboardSummary = {
+  view: 'employee';
+  date: string;
+  employee: {
+    id: string;
+    fullName: string;
+    department?: string;
+    position?: string;
+    status?: string;
+    employmentState?: string;
+    leaveBalanceDays?: number;
+  };
+  attendance: {
+    status?: string;
+    lateMinutes?: number;
+    deductionAmount?: number;
+  };
+  monthToDate: {
+    lateMinutes?: number;
+    deductionAmount?: number;
+  };
+  loans: {
+    activeCount?: number;
+    outstandingAmount?: number;
+  };
+  leaves: {
+    pendingCount?: number;
+    approvedCount?: number;
+  };
+  compensation: {
+    source?: string;
+    grossPay?: number;
+    totalDeductions?: number;
+    takeHomePay?: number;
+    payrollPeriod?: string;
+  };
+};
+
 export type EmployeeProfile = {
   id: string;
   fullName: string;
