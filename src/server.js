@@ -1577,6 +1577,17 @@ function enrichAttendanceRecordWithContext(payload, context) {
         : existingStatus === 'On Leave'
           ? 'On Leave'
           : 'On Time';
+  const deductionRate = Number.isFinite(Number(source.deductionRatePerMinute)) && Number(source.deductionRatePerMinute) > 0
+    ? Number(source.deductionRatePerMinute)
+    : Number.isFinite(Number(settings.attendanceFixedDeductionPerMinute)) && Number(settings.attendanceFixedDeductionPerMinute) > 0
+      ? Number(settings.attendanceFixedDeductionPerMinute)
+      : 0;
+  const existingDeduction = Number(source.deductionAmount);
+  const computedDeduction = deductionRate > 0 && lateMinutes > 0 ? deductionRate * lateMinutes : 0;
+  const deductionAmount = Number.isFinite(existingDeduction) && existingDeduction > 0 ? existingDeduction : computedDeduction;
+  // #region debug-point A:attendance-enrich-summary
+  (()=>{const fs=require('fs'),p='.dbg/attendance-compliance-tabs.env';let u='http://192.168.1.176:7778/event',s='attendance-compliance-tabs';try{const e=fs.readFileSync(p,'utf8');u=e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u;s=e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s}catch{}fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:s,runId:'pre-fix',hypothesisId:'A',location:'backend/src/server.js:enrichAttendanceRecordWithContext',msg:'[DEBUG] Attendance enriched',data:{employeeId,employeeName,date:String(source.date||''),checkIn,checkOut,lateMinutes,rawLateMinutes:String(source.lateMinutes||''),rawDeductionAmount:String(source.deductionAmount||''),deductionRate,deductionAmount,clockingsCount:Array.isArray(clockings)?clockings.length:0,clockingPhotos:Array.isArray(clockings)?clockings.filter((c)=>Boolean(String(c?.photoDataUrl||'').trim())).length:0,fallbackClockingsUsed:!(Array.isArray(source?.clockings)&&source.clockings.length>0),shift:shiftConfig?.name||shiftName,status},ts:Date.now()})}).catch(()=>{})})();
+  // #endregion
   return {
     ...source,
     shift: shiftConfig?.name || shiftName,
@@ -1586,6 +1597,8 @@ function enrichAttendanceRecordWithContext(payload, context) {
     lateMinutes: String(lateMinutes),
     status,
     clockings,
+    deductionRatePerMinute: String(deductionRate),
+    deductionAmount: String(deductionAmount),
   };
 }
 
