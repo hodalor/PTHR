@@ -1007,6 +1007,16 @@ tbody tr:hover {
   text-decoration: none;
 }
 
+.media-action-btn {
+  color: #194ea9;
+  background: #e9f0ff;
+  border: 1px solid #cddcff;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+}
+
 .details-grid-table {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

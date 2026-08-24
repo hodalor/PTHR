@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pthr-pwa-v2';
+const CACHE_NAME = 'pthr-pwa-v3';
 const APP_SHELL = ['/', '/index.html', '/manifest.json', '/favicon.ico', '/logo192.png', '/logo512.png'];
 
 self.addEventListener('install', (event) => {
@@ -33,6 +33,10 @@ self.addEventListener('fetch', (event) => {
 
   const requestUrl = new URL(event.request.url);
   if (requestUrl.protocol !== 'http:' && requestUrl.protocol !== 'https:') {
+    return;
+  }
+  if (requestUrl.origin === self.location.origin && requestUrl.pathname.startsWith('/api/')) {
+    event.respondWith(fetch(event.request));
     return;
   }
 

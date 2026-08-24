@@ -146,6 +146,11 @@ const isInactiveEmployeeRecord = (record) => {
   const normalizedStage = String(record?.employmentState || '').trim().toLowerCase();
   return inactiveEmployeeStatusValues.has(normalizedStatus) || inactiveEmployeeStageValues.has(normalizedStage);
 };
+const getUsableEmployeeImageUrl = (record, key) => {
+  const files = Array.isArray(record?.[`${key}Files`]) ? record[`${key}Files`] : [];
+  const imageFile = files.find((file) => file?.isImage && String(file?.url || '').trim());
+  return imageFile?.url || String(record?.[`${key}Preview`] || '').trim() || '';
+};
 
 const getContractCountdown = (contractEndDate) => {
   if (!contractEndDate) {
@@ -1925,9 +1930,7 @@ function App({ initialModuleId }) {
     if (activeModuleId !== 'employee-management' || !modalRow) {
       return '';
     }
-    const files = Array.isArray(modalRow.passportPhotoFiles) ? modalRow.passportPhotoFiles : [];
-    const imageFile = files.find((file) => file.isImage);
-    return imageFile?.url || modalRow.passportPhotoPreview || '';
+    return getUsableEmployeeImageUrl(modalRow, 'passportPhoto');
   }, [activeModuleId, modalRow]);
   const modalBarcodeValue = useMemo(() => {
     if (activeModuleId !== 'employee-management' || !modalRow) {
@@ -6280,9 +6283,7 @@ function App({ initialModuleId }) {
       return;
     }
 
-    const photoFiles = Array.isArray(employeeRow.passportPhotoFiles) ? employeeRow.passportPhotoFiles : [];
-    const photoFile = photoFiles.find((file) => file.isImage);
-    const photoUrl = photoFile?.url || employeeRow.passportPhotoPreview || '';
+    const photoUrl = getUsableEmployeeImageUrl(employeeRow, 'passportPhoto');
     const expiryText = formatCardDate(employeeRow.contractEndDate);
     const barcodeValue = String(employeeRow.id || employeeRow.fullName || 'EMPLOYEE');
     const emergencyContact = `${employeeRow.emergencyContact1Name || 'N/A'} • ${
@@ -9373,26 +9374,45 @@ function App({ initialModuleId }) {
                       <div className="details-media-grid">
                         {employeeImageFields.map((key) => {
                           const imageFiles = Array.isArray(modalRow[`${key}Files`]) ? modalRow[`${key}Files`] : [];
-                          const imageFile = imageFiles.find((file) => file.isImage);
-                          const imageSource = imageFile?.url || modalRow[`${key}Preview`] || '';
+                          const imageFile = imageFiles.find((file) => file.isImage && String(file?.url || '').trim());
+                          const imageSource = getUsableEmployeeImageUrl(modalRow, key);
+                          const mediaUnavailable = Boolean(modalRow[`${key}MediaUnavailable`]);
+                          const fieldLabel =
+                            activeModuleConfig.formFields.find((field) => field.key === key)?.label || key;
                           return (
                             <div className="media-card" key={key}>
-                              <span className="media-label">
-                                {activeModuleConfig.formFields.find((field) => field.key === key)?.label || key}
-                              </span>
+                              <span className="media-label">{fieldLabel}</span>
                               {imageSource ? (
                                 <img src={imageSource} alt={key} className="media-image" />
+                              ) : mediaUnavailable ? (
+                                <strong>{`${modalRow[key] || fieldLabel} needs re-upload`}</strong>
                               ) : (
                                 <strong>{modalRow[key] || 'No file uploaded'}</strong>
                               )}
-                              {imageFile?.url ? (
+                              {imageFile?.url || mediaUnavailable ? (
                                 <div className="media-actions">
-                                  <a href={imageFile.url} target="_blank" rel="noreferrer">
-                                    Preview
-                                  </a>
-                                  <a href={imageFile.url} download={imageFile.name}>
-                                    Download
-                                  </a>
+                                  {imageFile?.url ? (
+                                    <>
+                                      <a href={imageFile.url} target="_blank" rel="noreferrer">
+                                        Preview
+                                      </a>
+                                      <a href={imageFile.url} download={imageFile.name}>
+                                        Download
+                                      </a>
+                                    </>
+                                  ) : null}
+                                  {mediaUnavailable ? (
+                                    <button
+                                      type="button"
+                                      className="media-action-btn"
+                                      onClick={() => {
+                                        startEdit(modalRow);
+                                        setShowEmployeeMoreFields(true);
+                                      }}
+                                    >
+                                      Re-upload
+                                    </button>
+                                  ) : null}
                                 </div>
                               ) : null}
                             </div>
