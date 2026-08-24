@@ -68,7 +68,24 @@ export default function AttendanceTimePage({
   getCurrentClockValue,
   currentUser,
   handleAssignEmployeeShift,
+  attendanceRows,
+  attendanceClockRangeStartDate,
+  setAttendanceClockRangeStartDate,
+  attendanceClockRangeEndDate,
+  setAttendanceClockRangeEndDate,
+  attendanceClockRangeSearchText,
+  setAttendanceClockRangeSearchText,
+  attendanceClockRangeRows,
+  exportAttendanceClockCsv,
+  exportAttendanceClockPdf,
+  exportAttendanceAuditCsv,
+  exportAttendanceAuditPdf,
 }) {
+  useEffect(() => {
+    // #region debug-point C:page-tabs-state
+    fetch("http://192.168.1.176:7778/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-compliance-tabs",runId:"pre-fix",hypothesisId:"C",location:"frontend/src/pages/AttendanceTimePage.js:render",msg:"[DEBUG] Attendance page render",data:{attendanceViewTab,todayIsoDate,attendanceAuditDate,attendanceTodayCount:Array.isArray(attendanceTodayRows)?attendanceTodayRows.length:0,attendanceRowCount:Array.isArray(attendanceRows)?attendanceRows.length:0,complianceCount:Array.isArray(attendanceComplianceFilteredRows)?attendanceComplianceFilteredRows.length:0,attendanceTodaySample:Array.isArray(attendanceTodayRows)?attendanceTodayRows.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),lateMinutes:Number(row?.lateMinutes||0),deductionAmount:String(row?.deductionAmount||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0,photo:Boolean(row?.clockings?.find?.((c)=>String(c?.photoDataUrl||"").trim()))})):[],complianceSample:Array.isArray(attendanceComplianceFilteredRows)?attendanceComplianceFilteredRows.slice(0,8).map((row)=>({employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0,hasCheckInPhoto:Boolean(String(row?.firstCheckInPhoto||"").trim()),hasCheckOutPhoto:Boolean(String(row?.lastCheckOutPhoto||"").trim())})):[]},ts:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [attendanceAuditDate, attendanceComplianceFilteredRows, attendanceTodayRows, attendanceRows, attendanceViewTab, todayIsoDate]);
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
@@ -439,49 +456,113 @@ export default function AttendanceTimePage({
         ) : null}
       </div>
       {attendanceViewTab === 'clock' ? (
-        <>
-          <div className="attendance-ops-actions" style={{ justifyContent: 'flex-end' }}>
+        <div className="attendance-audit-wrap">
+          <div className="attendance-ops-actions" style={{ justifyContent: 'flex-end', marginBottom: 12 }}>
             <button type="button" className="primary-btn" onClick={() => setIsClockModalOpen(true)}>
               Record Attendance
             </button>
           </div>
+          <div className="attendance-audit-head">
+            <h4>Attendance Clock</h4>
+            <div className="attendance-audit-filters">
+              <label>
+                <span>Start Date</span>
+                <input
+                  type="date"
+                  value={attendanceClockRangeStartDate}
+                  max={todayIsoDate}
+                  onChange={(event) => setAttendanceClockRangeStartDate(event.target.value || todayIsoDate)}
+                />
+              </label>
+              <label>
+                <span>End Date</span>
+                <input
+                  type="date"
+                  value={attendanceClockRangeEndDate}
+                  max={todayIsoDate}
+                  onChange={(event) => setAttendanceClockRangeEndDate(event.target.value || todayIsoDate)}
+                />
+              </label>
+              <label>
+                <span>Search</span>
+                <input
+                  placeholder="Name, ID or Department"
+                  value={attendanceClockRangeSearchText}
+                  onChange={(event) => setAttendanceClockRangeSearchText(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="attendance-audit-actions">
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() => {
+                  setAttendanceClockRangeStartDate(todayIsoDate);
+                  setAttendanceClockRangeEndDate(todayIsoDate);
+                  setAttendanceClockRangeSearchText('');
+                }}
+              >
+                Reset
+              </button>
+              <button type="button" className="neutral-btn" onClick={exportAttendanceClockCsv}>
+                Export CSV
+              </button>
+              <button type="button" className="neutral-btn" onClick={exportAttendanceClockPdf}>
+                Export PDF
+              </button>
+            </div>
+          </div>
           <div className="attendance-stats-grid">
             <article className="attendance-stat">
-              <strong>{attendanceTodayRows.length}</strong>
-              <span>Today Logs</span>
-            </article>
-            <article className="attendance-stat">
-              <strong>{attendanceLateCount}</strong>
-              <span>Late Today</span>
-            </article>
-            <article className="attendance-stat">
-              <strong>{Math.max(0, attendanceTodayRows.length - attendanceLateCount)}</strong>
-              <span>On Time Today</span>
+              <strong>{attendanceClockRangeRows.length}</strong>
+              <span>
+                {attendanceClockRangeStartDate === attendanceClockRangeEndDate
+                  ? `Logs (${attendanceClockRangeStartDate})`
+                  : `Logs (${attendanceClockRangeStartDate} to ${attendanceClockRangeEndDate})`}
+              </span>
             </article>
             <article className="attendance-stat">
               <strong>
-                {attendanceTodayRows
-                  .filter((row) => row.status === 'Late')
-                  .reduce((total, row) => total + (row.minutesLate || 0), 0)}
+                {attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length}
+              </strong>
+              <span>Late</span>
+            </article>
+            <article className="attendance-stat">
+              <strong>
+                {Math.max(
+                  0,
+                  attendanceClockRangeRows.length -
+                    attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length
+                )}
+              </strong>
+              <span>On Time</span>
+            </article>
+            <article className="attendance-stat">
+              <strong>
+                {attendanceClockRangeRows.reduce(
+                  (total, row) => total + Math.max(0, Number(row.lateMinutes || row.minutesLate || 0)),
+                  0
+                )}
               </strong>
               <span>Total Minutes Late</span>
             </article>
             <article className="attendance-stat">
               <strong>
                 {toNumberValue(
-                  attendanceTodayRows.reduce((total, row) => total + toNumberValue(row.deductionAmount), 0)
+                  attendanceClockRangeRows.reduce((total, row) => total + toNumberValue(row.deductionAmount), 0)
                 ).toFixed(2)}
               </strong>
-              <span>Total Deductions Today</span>
+              <span>Total Deductions</span>
             </article>
           </div>
           <div className="attendance-audit-table">
             <table>
               <thead>
                 <tr>
+                  <th>Date</th>
                   <th>Employee</th>
                   <th>Shift</th>
-                  <th>Photo</th>
+                  <th>Photos</th>
                   <th>Clock In</th>
                   <th>Clock Out</th>
                   <th>Status</th>
@@ -490,60 +571,151 @@ export default function AttendanceTimePage({
                 </tr>
               </thead>
               <tbody>
-                {attendanceTodayRows.length > 0 ? (
-                  attendanceTodayRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>
-                        {row.employee} ({row.employeeId})
-                      </td>
-                      <td>{row.shift}</td>
-                      <td>
-                        {getAttendanceRowPhoto(row) ? (
-                          <button
-                            type="button"
-                            className="neutral-btn"
-                            style={{ padding: 0, border: 'none', background: 'transparent' }}
-                            onClick={() => {
-                              setAttendancePhotoModal({
-                                open: true,
-                                src: getAttendanceRowPhoto(row),
-                                title: `${row.employee} (${row.employeeId})`,
-                              });
-                              setAttendancePhotoZoom(1);
-                            }}
-                          >
-                            <img
-                              src={getAttendanceRowPhoto(row)}
-                              alt={`${row.employee} attendance proof`}
+                {attendanceClockRangeRows.length > 0 ? (
+                  attendanceClockRangeRows.map((row, idx) => {
+                    const rowClockings = Array.isArray(row.clockings) ? row.clockings : [];
+                    const firstCheckIn = rowClockings.find((item) => item.mode === 'clock-in') || null;
+                    const lastCheckOut = [...rowClockings].reverse().find((item) => item.mode === 'clock-out') || null;
+                    const checkInPhoto = String(firstCheckIn?.photoDataUrl || '').trim();
+                    const checkOutPhoto = String(lastCheckOut?.photoDataUrl || '').trim();
+                    const fallbackPhoto = getAttendanceRowPhoto(row);
+                    return (
+                      <tr key={String(row.id || `${row.date}-${row.employeeId || row.employee || idx}`)}>
+                        <td>{row.date || '—'}</td>
+                        <td>
+                          {row.employee || '—'} ({row.employeeId || '—'})
+                        </td>
+                        <td>{row.shift || '—'}</td>
+                        <td>
+                          {checkInPhoto || checkOutPhoto || fallbackPhoto ? (
+                            <div
                               style={{
-                                width: 48,
-                                height: 48,
-                                objectFit: 'cover',
-                                borderRadius: 10,
-                                border: '1px solid rgba(15, 23, 42, 0.12)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                flexWrap: 'wrap',
                               }}
-                            />
-                          </button>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td>{row.checkIn || '—'}</td>
-                      <td>{row.checkOut || '—'}</td>
-                      <td>{row.status}</td>
-                      <td>{row.lateMinutes || 0}</td>
-                      <td>{toNumberValue(row.deductionAmount).toFixed(2)}</td>
-                    </tr>
-                  ))
+                            >
+                              {checkInPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  title={`Clock In Photo${firstCheckIn?.time ? ` • ${firstCheckIn.time}` : ''}`}
+                                  style={{
+                                    padding: 0,
+                                    border: 'none',
+                                    background: 'transparent',
+                                  }}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: checkInPhoto,
+                                      title: `${row.employee || row.employeeId} - Clock In`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={checkInPhoto}
+                                    alt={`${row.employee} clock-in proof`}
+                                    style={{
+                                      width: 44,
+                                      height: 44,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                              {checkOutPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  title={`Clock Out Photo${lastCheckOut?.time ? ` • ${lastCheckOut.time}` : ''}`}
+                                  style={{
+                                    padding: 0,
+                                    border: 'none',
+                                    background: 'transparent',
+                                  }}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: checkOutPhoto,
+                                      title: `${row.employee || row.employeeId} - Clock Out`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={checkOutPhoto}
+                                    alt={`${row.employee} clock-out proof`}
+                                    style={{
+                                      width: 44,
+                                      height: 44,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                              {!checkInPhoto && !checkOutPhoto && fallbackPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  style={{ padding: 0, border: 'none', background: 'transparent' }}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: fallbackPhoto,
+                                      title: `${row.employee || row.employeeId}`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={fallbackPhoto}
+                                    alt={`${row.employee} attendance proof`}
+                                    style={{
+                                      width: 44,
+                                      height: 44,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td>{row.checkIn || '—'}</td>
+                        <td>{row.checkOut || '—'}</td>
+                        <td>{row.status || '—'}</td>
+                        <td>{Math.max(0, Number(row.lateMinutes || row.minutesLate || 0))}</td>
+                        <td>{toNumberValue(row.deductionAmount).toFixed(2)}</td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
-                    <td colSpan={8}>No attendance logs for today.</td>
+                    <td colSpan={9}>
+                      {attendanceClockRangeStartDate === attendanceClockRangeEndDate
+                        ? `No attendance logs for ${attendanceClockRangeStartDate}.`
+                        : `No attendance logs between ${attendanceClockRangeStartDate} and ${attendanceClockRangeEndDate}.`}
+                    </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-        </>
+        </div>
       ) : null}
       {attendanceViewTab === 'compliance' ? (
         <div className="attendance-audit-wrap">
@@ -588,10 +760,10 @@ export default function AttendanceTimePage({
               </label>
             </div>
             <div className="attendance-audit-actions">
-              <button type="button" className="neutral-btn" onClick={() => downloadCsv('attendance-audit')}>
+              <button type="button" className="neutral-btn" onClick={exportAttendanceAuditCsv}>
                 Download CSV
               </button>
-              <button type="button" className="neutral-btn" onClick={() => downloadPdf('attendance-audit')}>
+              <button type="button" className="neutral-btn" onClick={exportAttendanceAuditPdf}>
                 Download PDF
               </button>
             </div>
@@ -610,7 +782,7 @@ export default function AttendanceTimePage({
                       Shift{sortArrow(complianceSort, 'shift')}
                     </button>
                   </th>
-                  <th>Photo</th>
+                  <th>Photos</th>
                   <th>
                     <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'checkIn')}>
                       Clock In{sortArrow(complianceSort, 'checkIn')}
@@ -627,65 +799,137 @@ export default function AttendanceTimePage({
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'lateFlag')}>
-                      Minutes Late{sortArrow(complianceSort, 'lateFlag')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'lateMinutes')}>
+                      Minutes Late{sortArrow(complianceSort, 'lateMinutes')}
                     </button>
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {sortedComplianceRows.length > 0 ? (
-                  sortedComplianceRows.map((row) => (
-                    <tr
-                      key={`${row.employeeId}-${row.date}`}
-                      className={selectedComplianceKey === `${row.employeeId}-${row.date}` ? 'selected-row' : ''}
-                      onClick={() => {
-                        const detailKey = `${row.employeeId}-${row.date}`;
-                        setSelectedComplianceKey(detailKey);
-                        setAttendanceDetailModal({ type: 'compliance', key: detailKey });
-                      }}
-                    >
-                      <td>
-                        {row.employee} ({row.employeeId})
-                      </td>
-                      <td>{row.shift}</td>
-                      <td>
-                        {getAttendanceRowPhoto(row) ? (
-                          <button
-                            type="button"
-                            className="neutral-btn"
-                            style={{ padding: 0, border: 'none', background: 'transparent' }}
-                            onClick={() => {
-                              setAttendancePhotoModal({
-                                open: true,
-                                src: getAttendanceRowPhoto(row),
-                                title: `${row.employee} (${row.employeeId})`,
-                              });
-                              setAttendancePhotoZoom(1);
-                            }}
-                          >
-                            <img
-                              src={getAttendanceRowPhoto(row)}
-                              alt={`${row.employee} compliance proof`}
+                  sortedComplianceRows.map((row) => {
+                    const checkInPhoto = String(row.firstCheckInPhoto || '').trim();
+                    const checkOutPhoto = String(row.lastCheckOutPhoto || '').trim();
+                    const fallbackPhoto = getAttendanceRowPhoto(row);
+                    return (
+                      <tr
+                        key={`${row.employeeId}-${row.date}`}
+                        className={selectedComplianceKey === `${row.employeeId}-${row.date}` ? 'selected-row' : ''}
+                        onClick={() => {
+                          const detailKey = `${row.employeeId}-${row.date}`;
+                          setSelectedComplianceKey(detailKey);
+                          setAttendanceDetailModal({ type: 'compliance', key: detailKey });
+                        }}
+                      >
+                        <td>
+                          {row.employee} ({row.employeeId})
+                        </td>
+                        <td>{row.shift}</td>
+                        <td onClick={(event) => event.stopPropagation()}>
+                          {checkInPhoto || checkOutPhoto || fallbackPhoto ? (
+                            <div
                               style={{
-                                width: 44,
-                                height: 44,
-                                objectFit: 'cover',
-                                borderRadius: 10,
-                                border: '1px solid rgba(15, 23, 42, 0.12)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                flexWrap: 'wrap',
                               }}
-                            />
-                          </button>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td>{row.checkIn || '—'}</td>
-                      <td>{row.checkOut || '—'}</td>
-                      <td>{row.dailyStatus}</td>
-                      <td>{row.isLate ? '1' : '0'}</td>
-                    </tr>
-                  ))
+                            >
+                              {checkInPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  title={`Clock In Photo${row.checkIn ? ` • ${row.checkIn}` : ''}`}
+                                  style={{ padding: 0, border: 'none', background: 'transparent' }}
+                                  onClick={() => {
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: checkInPhoto,
+                                      title: `${row.employee} - Clock In`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={checkInPhoto}
+                                    alt={`${row.employee} clock-in proof`}
+                                    style={{
+                                      width: 40,
+                                      height: 40,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                              {checkOutPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  title={`Clock Out Photo${row.checkOut ? ` • ${row.checkOut}` : ''}`}
+                                  style={{ padding: 0, border: 'none', background: 'transparent' }}
+                                  onClick={() => {
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: checkOutPhoto,
+                                      title: `${row.employee} - Clock Out`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={checkOutPhoto}
+                                    alt={`${row.employee} clock-out proof`}
+                                    style={{
+                                      width: 40,
+                                      height: 40,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                              {!checkInPhoto && !checkOutPhoto && fallbackPhoto ? (
+                                <button
+                                  type="button"
+                                  className="neutral-btn"
+                                  style={{ padding: 0, border: 'none', background: 'transparent' }}
+                                  onClick={() => {
+                                    setAttendancePhotoModal({
+                                      open: true,
+                                      src: fallbackPhoto,
+                                      title: `${row.employee}`,
+                                    });
+                                    setAttendancePhotoZoom(1);
+                                  }}
+                                >
+                                  <img
+                                    src={fallbackPhoto}
+                                    alt={`${row.employee} compliance proof`}
+                                    style={{
+                                      width: 40,
+                                      height: 40,
+                                      objectFit: 'cover',
+                                      borderRadius: 10,
+                                      border: '1px solid rgba(15, 23, 42, 0.12)',
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td>{row.checkIn || '—'}</td>
+                        <td>{row.checkOut || '—'}</td>
+                        <td>{row.dailyStatus}</td>
+                        <td>{Math.max(0, Number(row.lateMinutes || row.isLate ? 1 : 0))}</td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
                     <td colSpan={7}>

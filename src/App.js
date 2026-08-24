@@ -640,6 +640,9 @@ function App({ initialModuleId }) {
   });
   const [attendanceSearchText, setAttendanceSearchText] = useState('');
   const [attendanceViewTab, setAttendanceViewTab] = useState('clock');
+  const [attendanceClockRangeStartDate, setAttendanceClockRangeStartDate] = useState(getTodayIsoDate());
+  const [attendanceClockRangeEndDate, setAttendanceClockRangeEndDate] = useState(getTodayIsoDate());
+  const [attendanceClockRangeSearchText, setAttendanceClockRangeSearchText] = useState('');
   const [attendanceAuditDate, setAttendanceAuditDate] = useState(getTodayIsoDate());
   const [attendanceAuditFilter, setAttendanceAuditFilter] = useState('All');
   const [attendanceAuditSearchText, setAttendanceAuditSearchText] = useState('');
@@ -3425,6 +3428,136 @@ function App({ initialModuleId }) {
     },
     [getAttendanceClockSummary, normalizeAttendanceClockings]
   );
+  const getAttendanceDeductionContextForRow = useCallback(
+    ({ employee, attendanceRow, checkInMinutes, lateMinutesOverride }) => {
+      const shiftName =
+        String(attendanceRow?.shift || '').trim() ||
+        String(employee?.assignedShift || '').trim() ||
+        attendanceShiftOptions[0]?.name ||
+        'Default';
+      const shiftConfig = resolveShiftConfig(shiftName);
+      const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || appSettings.attendanceReportTime) ?? 0;
+      const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
+      const effectiveLateMinutes =
+        typeof lateMinutesOverride === 'number'
+          ? lateMinutesOverride
+          : Number.isFinite(checkInMinutes) && lateAfterMinutes !== null
+            ? Math.max(0, checkInMinutes - lateAfterMinutes)
+            : 0;
+      const payrollProfile = getEmployeePayrollProfile({
+        moduleRowsState,
+        employeeBaseRows,
+        employeeId: employee?.id,
+        employeeName: employee?.fullName,
+      });
+      const basicPay = toNumberValue(payrollProfile?.basicPay);
+      const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
+      const shiftStart = shiftConfig?.reportTime || appSettings.attendanceReportTime;
+      const shiftEnd = shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd;
+      const scheduledMinutes = Math.max(1, getMinutesBetweenClocks(shiftStart, shiftEnd) || 1);
+      const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
+      const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
+      const fixedScope = String(appSettings.attendanceFixedScope || 'all');
+      const fixedApplies =
+        fixedScope === 'all' ||
+        (fixedScope === 'department' &&
+          String(employee?.department || '') === String(appSettings.attendanceFixedDepartment || '')) ||
+        (fixedScope === 'individual' &&
+          String(employee?.id || '') === String(appSettings.attendanceFixedEmployeeId || ''));
+      const deductionRatePerMinute =
+        appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
+      const deductionAmount = effectiveLateMinutes * deductionRatePerMinute;
+      return {
+        shiftName,
+        lateMinutes: effectiveLateMinutes,
+        deductionRatePerMinute,
+        deductionAmount,
+      };
+    },
+    [
+      appSettings.attendanceReportTime,
+      appSettings.attendanceShiftEnd,
+      appSettings.attendanceFixedDeductionPerMinute,
+      appSettings.attendanceCalculationMode,
+      appSettings.attendanceFixedScope,
+      appSettings.attendanceFixedDepartment,
+      appSettings.attendanceFixedEmployeeId,
+      appSettings.payrollWorkingDays,
+      attendanceShiftOptions,
+      employeeBaseRows,
+      moduleRowsState,
+      resolveShiftConfig,
+    ]
+  );
+  const enrichMergedAttendanceRow = useCallback(
+    ({ baseRow, matchedEmployee, fallbackDate }) => {
+      const summary = getAttendanceClockSummary(baseRow);
+      const employee = matchedEmployee
+        ? matchedEmployee
+        : employeeBaseRows.find((emp) => doesAttendanceRowMatchEmployee(baseRow, emp)) || null;
+      const dateValue = String(baseRow?.date || fallbackDate || todayIsoDate).trim();
+      const checkInMinutes = toMinutesFromClock(summary.checkIn);
+      const rowLateMinutes = Number(baseRow?.lateMinutes || 0);
+      const deductionContext = getAttendanceDeductionContextForRow({
+        employee,
+        attendanceRow: baseRow,
+        checkInMinutes,
+        lateMinutesOverride: Number.isFinite(rowLateMinutes) && rowLateMinutes > 0 ? rowLateMinutes : undefined,
+      });
+      const summaryStatus = String(baseRow?.status || summary.status || '').trim();
+      const status =
+        summaryStatus ||
+        (deductionContext.lateMinutes > 0 ? 'Late' : summary.checkIn ? 'On Time' : baseRow?.status || 'Pending Clock In');
+      return {
+        ...baseRow,
+        date: dateValue,
+        employeeId:
+          String(baseRow?.employeeId || '').trim() ||
+          String(employee?.id || employee?.employeeId || '').trim() ||
+          '',
+        employee:
+          String(baseRow?.employee || '').trim() ||
+          String(employee?.fullName || '').trim() ||
+          '',
+        department:
+          String(baseRow?.department || employee?.department || '').trim() || 'Unassigned',
+        shift: deductionContext.shiftName,
+        checkIn: summary.checkIn || String(baseRow?.checkIn || '').trim(),
+        checkOut: summary.checkOut || String(baseRow?.checkOut || '').trim(),
+        clockings: summary.clockings,
+        checkInLat:
+          typeof summary.checkInLat === 'number'
+            ? summary.checkInLat
+            : typeof baseRow?.checkInLat === 'number'
+              ? baseRow.checkInLat
+              : undefined,
+        checkInLng:
+          typeof summary.checkInLng === 'number'
+            ? summary.checkInLng
+            : typeof baseRow?.checkInLng === 'number'
+              ? baseRow.checkInLng
+              : undefined,
+        checkOutLat:
+          typeof summary.checkOutLat === 'number'
+            ? summary.checkOutLat
+            : typeof baseRow?.checkOutLat === 'number'
+              ? baseRow.checkOutLat
+              : undefined,
+        checkOutLng:
+          typeof summary.checkOutLng === 'number'
+            ? summary.checkOutLng
+            : typeof baseRow?.checkOutLng === 'number'
+              ? baseRow.checkOutLng
+              : undefined,
+        lateMinutes: deductionContext.lateMinutes,
+        minutesLate: deductionContext.lateMinutes,
+        deductionRatePerMinute: Number(deductionContext.deductionRatePerMinute),
+        deductionAmount: Number(deductionContext.deductionAmount),
+        status,
+      };
+    },
+    [doesAttendanceRowMatchEmployee, employeeBaseRows, getAttendanceClockSummary, getAttendanceDeductionContextForRow, todayIsoDate]
+  );
   const getMergedAttendanceRowsForDate = useCallback(
     (targetDate) => {
       const scopedRows = attendanceRows.filter((row) => {
@@ -3447,6 +3580,7 @@ function App({ initialModuleId }) {
         return true;
       });
       const groupedRows = new Map();
+      const groupEmployees = new Map();
       scopedRows.forEach((row) => {
         const matchedEmployee =
           employeeBaseRows.find((employee) => doesAttendanceRowMatchEmployee(row, employee)) || null;
@@ -3455,23 +3589,43 @@ function App({ initialModuleId }) {
           : `${String(row.employeeId || '').trim().toLowerCase()}|${String(row.employee || '').trim().toLowerCase()}`;
         if (!groupedRows.has(groupingKey)) {
           groupedRows.set(groupingKey, []);
+          groupEmployees.set(groupingKey, matchedEmployee);
         }
         groupedRows.get(groupingKey).push(row);
       });
-      return Array.from(groupedRows.values())
-        .map((rows) => mergeMatchingAttendanceRows(rows))
+      return Array.from(groupedRows.entries())
+        .map(([groupingKey, rows]) => {
+          const merged = mergeMatchingAttendanceRows(rows);
+          if (!merged) {
+            return null;
+          }
+          return enrichMergedAttendanceRow({
+            baseRow: merged,
+            matchedEmployee: groupEmployees.get(groupingKey) || null,
+            fallbackDate: targetDate,
+          });
+        })
         .filter(Boolean);
     },
-    [attendanceRows, currentUser, doesAttendanceRowMatchEmployee, employeeBaseRows, mergeMatchingAttendanceRows]
+    [attendanceRows, currentUser, doesAttendanceRowMatchEmployee, employeeBaseRows, enrichMergedAttendanceRow, mergeMatchingAttendanceRows]
   );
   const findAttendanceRowForEmployeeOnDate = useCallback(
-    (employee, targetDate) =>
-      mergeMatchingAttendanceRows(
-        attendanceRows.filter(
-          (row) => String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
-        )
-      ),
-    [attendanceRows, doesAttendanceRowMatchEmployee, mergeMatchingAttendanceRows]
+    (employee, targetDate) => {
+      const matchingRawRows = attendanceRows.filter(
+        (row) =>
+          String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
+      );
+      const merged = mergeMatchingAttendanceRows(matchingRawRows);
+      if (!merged) {
+        return null;
+      }
+      return enrichMergedAttendanceRow({
+        baseRow: merged,
+        matchedEmployee: employee,
+        fallbackDate: targetDate,
+      });
+    },
+    [attendanceRows, doesAttendanceRowMatchEmployee, enrichMergedAttendanceRow, mergeMatchingAttendanceRows]
   );
   const attendanceTodayRows = useMemo(() => {
     return getMergedAttendanceRowsForDate(todayIsoDate).sort((a, b) => {
@@ -3712,6 +3866,12 @@ function App({ initialModuleId }) {
       if (dailyStatus === 'On Time' && leftEarly) {
         dailyStatus = 'Left Early';
       }
+      const matchedClockings = Array.isArray(attendanceSummary.clockings) ? attendanceSummary.clockings : [];
+      const firstCheckIn = matchedClockings.find((item) => item.mode === 'clock-in') || null;
+      const lastCheckOut = [...matchedClockings].reverse().find((item) => item.mode === 'clock-out') || null;
+      // #region debug-point B:compliance-row-build
+      fetch("http://192.168.1.176:7778/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-compliance-tabs",runId:"pre-fix",hypothesisId:"B",location:"frontend/src/App.js:buildComplianceRow",msg:"[DEBUG] Compliance row built",data:{targetDate,employeeId:employee.id,employeeName:employee.fullName,matchedAttendanceRowId:String(matchedAttendanceRow?.id||""),attendanceDate:String(matchedAttendanceRow?.date||""),summaryCheckIn:attendanceSummary.checkIn,summaryCheckOut:attendanceSummary.checkOut,rowCheckIn:matchedAttendanceRow?.checkIn||"",rowCheckOut:matchedAttendanceRow?.checkOut||"",rowDeductionAmount:String(matchedAttendanceRow?.deductionAmount||""),rowLateMinutes:String(matchedAttendanceRow?.lateMinutes||""),clockingsCount:matchedClockings.length,hasCheckInPhoto:Boolean(firstCheckIn?.photoDataUrl),hasCheckOutPhoto:Boolean(lastCheckOut?.photoDataUrl),shift:shiftSchedule.shiftName,dailyStatus},ts:Date.now()})}).catch(()=>{});
+      // #endregion
       return {
         date: targetDate,
         employeeId: employee.id,
@@ -3721,6 +3881,10 @@ function App({ initialModuleId }) {
         checkIn: attendanceSummary.checkIn,
         checkOut: attendanceSummary.checkOut,
         clockings: attendanceSummary.clockings,
+        firstCheckInPhoto: String(firstCheckIn?.photoDataUrl || ''),
+        lastCheckOutPhoto: String(lastCheckOut?.photoDataUrl || ''),
+        deductionAmount: toNumberValue(matchedAttendanceRow?.deductionAmount),
+        lateMinutes: Number(matchedAttendanceRow?.lateMinutes || 0),
         dailyWage,
         dailyStatus,
         isLate,
@@ -3732,32 +3896,116 @@ function App({ initialModuleId }) {
     };
     const attendanceRowsForDate = getMergedAttendanceRowsForDate(targetDate);
     const usedEmployeeIds = new Set();
-    const rowsFromAttendance = attendanceRowsForDate
-      .map((attendanceRow) => {
-        const matchedEmployee =
-          scopedEmployees.find((employee) => doesAttendanceRowMatchEmployee(attendanceRow, employee)) || null;
-        if (!matchedEmployee) {
-          return null;
-        }
-        usedEmployeeIds.add(String(matchedEmployee.id || '').trim());
-        return buildComplianceRow(matchedEmployee, attendanceRow);
-      })
-      .filter(Boolean);
+    const rowsFromAttendance = [];
+    attendanceRowsForDate.forEach((attendanceRow) => {
+      const matchedEmployee =
+        scopedEmployees.find((employee) => doesAttendanceRowMatchEmployee(attendanceRow, employee)) || null;
+      if (!matchedEmployee) {
+        return;
+      }
+      usedEmployeeIds.add(String(matchedEmployee.id || '').trim());
+      rowsFromAttendance.push(buildComplianceRow(matchedEmployee, attendanceRow));
+    });
     const missingEmployeeRows = scopedEmployees
       .filter((employee) => !usedEmployeeIds.has(String(employee.id || '').trim()))
-      .map((employee) => buildComplianceRow(employee, null));
+      .map((employee) => buildComplianceRow(employee, findAttendanceRowForEmployeeOnDate(employee, targetDate)));
+    // #region debug-point E:compliance-join
+    fetch("http://192.168.1.176:7778/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-compliance-tabs",runId:"pre-fix",hypothesisId:"E",location:"frontend/src/App.js:attendanceComplianceRows",msg:"[DEBUG] Compliance rows merge summary",data:{targetDate,attendanceRowsForDateCount:attendanceRowsForDate.length,rowsFromAttendanceCount:rowsFromAttendance.length,missingEmployeeRowsCount:missingEmployeeRows.length,usedEmployeeIds:Array.from(usedEmployeeIds),attendanceRowEmployees:attendanceRowsForDate.map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),lateMinutes:Number(row?.lateMinutes||0),deductionAmount:Number(row?.deductionAmount||0),clockings:Array.isArray(row?.clockings)?row.clockings.length:0})),missingMatches:missingEmployeeRows.map((row)=>({employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),lateMinutes:Number(row?.lateMinutes||0),deductionAmount:Number(row?.deductionAmount||0),clockings:Array.isArray(row?.clockings)?row.clockings.length:0})),attendanceRowMismatchIds:attendanceRowsForDate.filter((row)=>{const rowEmployeeId=String(row?.employeeId||"").trim();return !rowEmployeeId||!Array.from(usedEmployeeIds).includes(rowEmployeeId);}).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||"")}))},ts:Date.now()})}).catch(()=>{});
+    // #endregion
     return [...rowsFromAttendance, ...missingEmployeeRows];
   }, [
     currentUser,
     attendanceAuditDate,
     doesAttendanceRowMatchEmployee,
     employeeBaseRows,
+    findAttendanceRowForEmployeeOnDate,
     getMergedAttendanceRowsForDate,
     getShiftScheduleForAttendance,
     getAttendanceClockSummary,
     leaveRows,
     moduleRowsState,
     todayIsoDate,
+  ]);
+  const getAttendanceClockExportRows = useCallback((rows) =>
+      rows.map((row) => ({
+        Date: String(row.date || ''),
+        'Employee ID': String(row.employeeId || ''),
+        Employee: String(row.employee || ''),
+        Department: String(row.department || ''),
+        Shift: String(row.shift || ''),
+        'Clock In': String(row.checkIn || ''),
+        'Clock Out': String(row.checkOut || ''),
+        Status: String(row.status || ''),
+        'Minutes Late': Number(row.lateMinutes || row.minutesLate || 0),
+        'Late Deduction': toNumberValue(row.deductionAmount).toFixed(2),
+      })),
+    []
+  );
+  const getAttendanceComplianceExportRows = useCallback((rows) =>
+      rows.map((row) => ({
+        Date: String(row.date || ''),
+        'Employee ID': String(row.employeeId || ''),
+        Employee: String(row.employee || ''),
+        Department: String(row.department || ''),
+        Shift: String(row.shift || ''),
+        'Clock In': String(row.checkIn || ''),
+        'Clock Out': String(row.checkOut || ''),
+        Status: String(row.dailyStatus || ''),
+        'Minutes Late': Number(row.lateMinutes || 0),
+        'Late Deduction': toNumberValue(row.deductionAmount).toFixed(2),
+      })),
+    []
+  );
+  const attendanceClockRangeRows = useMemo(() => {
+    const startDate = String(attendanceClockRangeStartDate || '').trim();
+    const endDate = String(attendanceClockRangeEndDate || '').trim();
+    const query = attendanceClockRangeSearchText.trim().toLowerCase();
+    const mergedRangedRows = [];
+    if (startDate && endDate && endDate >= startDate) {
+      for (let cursor = parseIsoDateValue(startDate); cursor && cursor <= parseIsoDateValue(endDate); ) {
+        const dateKey = cursor.toISOString().slice(0, 10);
+        mergedRangedRows.push(...getMergedAttendanceRowsForDate(dateKey));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+    mergedRangedRows.sort((a, b) => {
+      const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+      if (dateCompare !== 0) {
+        return dateCompare;
+      }
+      return String(a.employee || '').localeCompare(String(b.employee || ''));
+    });
+    const scopedRangedRows = currentUser && currentUser.role === 'employee'
+      ? mergedRangedRows.filter((row) => {
+          const employeeId = String(currentUser.employeeId || '').trim();
+          const employeeName = String(currentUser.fullName || '').trim().toLowerCase();
+          const rowEmployeeId = String(row.employeeId || '').trim();
+          const rowEmployeeName = String(row.employee || '').trim().toLowerCase();
+          if (employeeId) {
+            return rowEmployeeId === employeeId;
+          }
+          if (employeeName) {
+            return rowEmployeeName === employeeName;
+          }
+          return false;
+        })
+      : mergedRangedRows;
+    const filtered = query
+      ? scopedRangedRows.filter((row) => {
+          return (
+            String(row.employee || '').toLowerCase().includes(query) ||
+            String(row.employeeId || '').toLowerCase().includes(query) ||
+            String(row.department || '').toLowerCase().includes(query)
+          );
+        })
+      : scopedRangedRows;
+    return filtered;
+  }, [
+    attendanceClockRangeEndDate,
+    attendanceClockRangeSearchText,
+    attendanceClockRangeStartDate,
+    currentUser,
+    getMergedAttendanceRowsForDate,
   ]);
   const attendanceComplianceFilteredRows = useMemo(() => {
     const query = attendanceAuditSearchText.trim().toLowerCase();
@@ -3771,6 +4019,124 @@ function App({ initialModuleId }) {
       return matchesFilter && matchesSearch;
     });
   }, [attendanceAuditFilter, attendanceAuditSearchText, attendanceComplianceRows]);
+  const downloadCsv = (fileName, headers, rowsToExport) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+    const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines = [headers.map((header) => escape(header.label)).join(',')];
+    rowsToExport.forEach((row) => {
+      lines.push(headers.map((header) => escape(row[header.key])).join(','));
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  const downloadPdf = (title, headers, rowsToExport) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const safeCell = (value) =>
+      String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    const tableHead = headers.map((header) => `<th>${safeCell(header.label)}</th>`).join('');
+    const tableRows = rowsToExport
+      .map((row) => `<tr>${headers.map((header) => `<td>${safeCell(row[header.key])}</td>`).join('')}</tr>`)
+      .join('');
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      return;
+    }
+    printWindow.document.write(
+      `<html><head><title>${safeCell(title)}</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:16px}h2{margin:0 0 12px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d5dff2;padding:8px;font-size:12px;text-align:left}</style></head><body><h2>${safeCell(
+        title
+      )}</h2><table><thead><tr>${tableHead}</tr></thead><tbody>${tableRows}</tbody></table></body></html>`
+    );
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+  const exportAttendanceClockCsv = useCallback(() => {
+    const headers = [
+      { key: 'Date', label: 'Date' },
+      { key: 'Employee ID', label: 'Employee ID' },
+      { key: 'Employee', label: 'Employee' },
+      { key: 'Department', label: 'Department' },
+      { key: 'Shift', label: 'Shift' },
+      { key: 'Clock In', label: 'Clock In' },
+      { key: 'Clock Out', label: 'Clock Out' },
+      { key: 'Status', label: 'Status' },
+      { key: 'Minutes Late', label: 'Minutes Late' },
+      { key: 'Late Deduction', label: 'Late Deduction' },
+    ];
+    downloadCsv(
+      `attendance-clock-${attendanceClockRangeStartDate}-to-${attendanceClockRangeEndDate}.csv`,
+      headers,
+      getAttendanceClockExportRows(attendanceClockRangeRows)
+    );
+  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, attendanceClockRangeRows, getAttendanceClockExportRows]);
+  const exportAttendanceClockPdf = useCallback(() => {
+    const headers = [
+      { key: 'Date', label: 'Date' },
+      { key: 'Employee ID', label: 'Employee ID' },
+      { key: 'Employee', label: 'Employee' },
+      { key: 'Department', label: 'Department' },
+      { key: 'Shift', label: 'Shift' },
+      { key: 'Clock In', label: 'Clock In' },
+      { key: 'Clock Out', label: 'Clock Out' },
+      { key: 'Status', label: 'Status' },
+      { key: 'Minutes Late', label: 'Minutes Late' },
+      { key: 'Late Deduction', label: 'Late Deduction' },
+    ];
+    downloadPdf(
+      `Attendance Clock - ${attendanceClockRangeStartDate} to ${attendanceClockRangeEndDate}`,
+      headers,
+      getAttendanceClockExportRows(attendanceClockRangeRows)
+    );
+  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, attendanceClockRangeRows, getAttendanceClockExportRows]);
+  const exportAttendanceAuditCsv = useCallback(() => {
+    const headers = [
+      { key: 'Date', label: 'Date' },
+      { key: 'Employee ID', label: 'Employee ID' },
+      { key: 'Employee', label: 'Employee' },
+      { key: 'Department', label: 'Department' },
+      { key: 'Shift', label: 'Shift' },
+      { key: 'Clock In', label: 'Clock In' },
+      { key: 'Clock Out', label: 'Clock Out' },
+      { key: 'Status', label: 'Status' },
+      { key: 'Minutes Late', label: 'Minutes Late' },
+      { key: 'Late Deduction', label: 'Late Deduction' },
+    ];
+    downloadCsv(
+      `attendance-compliance-${attendanceAuditDate}.csv`,
+      headers,
+      getAttendanceComplianceExportRows(attendanceComplianceFilteredRows)
+    );
+  }, [attendanceAuditDate, attendanceComplianceFilteredRows, getAttendanceComplianceExportRows]);
+  const exportAttendanceAuditPdf = useCallback(() => {
+    const headers = [
+      { key: 'Date', label: 'Date' },
+      { key: 'Employee ID', label: 'Employee ID' },
+      { key: 'Employee', label: 'Employee' },
+      { key: 'Department', label: 'Department' },
+      { key: 'Shift', label: 'Shift' },
+      { key: 'Clock In', label: 'Clock In' },
+      { key: 'Clock Out', label: 'Clock Out' },
+      { key: 'Status', label: 'Status' },
+      { key: 'Minutes Late', label: 'Minutes Late' },
+      { key: 'Late Deduction', label: 'Late Deduction' },
+    ];
+    downloadPdf(
+      `Daily Compliance - ${attendanceAuditDate}`,
+      headers,
+      getAttendanceComplianceExportRows(attendanceComplianceFilteredRows)
+    );
+  }, [attendanceAuditDate, attendanceComplianceFilteredRows, getAttendanceComplianceExportRows]);
   const attendancePenaltyLedgerRows = useMemo(() => {
     const scopedComplianceRows = attendanceComplianceRows.filter((row) => {
       if (currentUser && currentUser.role === 'employee') {
@@ -4344,48 +4710,6 @@ function App({ initialModuleId }) {
       )
       .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   }, [attendanceRows, selectedPerformanceRow]);
-  const downloadCsv = (fileName, headers, rowsToExport) => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      return;
-    }
-    const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-    const lines = [headers.map((header) => escape(header.label)).join(',')];
-    rowsToExport.forEach((row) => {
-      lines.push(headers.map((header) => escape(row[header.key])).join(','));
-    });
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = fileName;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  };
-  const downloadPdf = (title, headers, rowsToExport) => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const safeCell = (value) =>
-      String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;');
-    const tableHead = headers.map((header) => `<th>${safeCell(header.label)}</th>`).join('');
-    const tableRows = rowsToExport
-      .map((row) => `<tr>${headers.map((header) => `<td>${safeCell(row[header.key])}</td>`).join('')}</tr>`)
-      .join('');
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      return;
-    }
-    printWindow.document.write(
-      `<html><head><title>${safeCell(title)}</title><style>body{font-family:Segoe UI,Arial,sans-serif;padding:16px}h2{margin:0 0 12px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d5dff2;padding:8px;font-size:12px;text-align:left}</style></head><body><h2>${safeCell(
-        title
-      )}</h2><table><thead><tr>${tableHead}</tr></thead><tbody>${tableRows}</tbody></table></body></html>`
-    );
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
-  };
   const hideModuleTableForAttendanceEmployee =
     activeModuleId === 'attendance-time' && currentUser && currentUser.role === 'employee';
   const showMainModuleTable =
@@ -8889,6 +9213,18 @@ function App({ initialModuleId }) {
                   getCurrentClockValue={getCurrentClockValue}
                   currentUser={currentUser}
                   handleAssignEmployeeShift={handleAssignEmployeeShift}
+                  attendanceRows={attendanceRows}
+                  attendanceClockRangeStartDate={attendanceClockRangeStartDate}
+                  setAttendanceClockRangeStartDate={setAttendanceClockRangeStartDate}
+                  attendanceClockRangeEndDate={attendanceClockRangeEndDate}
+                  setAttendanceClockRangeEndDate={setAttendanceClockRangeEndDate}
+                  attendanceClockRangeSearchText={attendanceClockRangeSearchText}
+                  setAttendanceClockRangeSearchText={setAttendanceClockRangeSearchText}
+                  attendanceClockRangeRows={attendanceClockRangeRows}
+                  exportAttendanceClockCsv={exportAttendanceClockCsv}
+                  exportAttendanceClockPdf={exportAttendanceClockPdf}
+                  exportAttendanceAuditCsv={exportAttendanceAuditCsv}
+                  exportAttendanceAuditPdf={exportAttendanceAuditPdf}
                 />
               ) : null}
               {activeModuleId === 'monitoring-tracking' ? <AdminTrackingPage /> : null}
