@@ -32,9 +32,31 @@ root.render(
   </React.StrictMode>
 );
 
+const isLocalhost =
+  typeof window !== 'undefined' &&
+  ['localhost', '127.0.0.1'].includes(String(window.location?.hostname || '').trim().toLowerCase());
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register(`${process.env.PUBLIC_URL || ''}/sw.js`).catch(() => {});
+    if (process.env.NODE_ENV === 'production' && !isLocalhost) {
+      navigator.serviceWorker.register(`${process.env.PUBLIC_URL || ''}/sw.js`).catch(() => {});
+      return;
+    }
+
+    // Dev localhost should not keep an old service worker around because it can
+    // intercept CRA hot-reload requests and make the page look like it is stuck refreshing.
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      registrations.forEach((registration) => {
+        registration.unregister().catch(() => {});
+      });
+    });
+    if ('caches' in window) {
+      caches.keys().then((keys) => {
+        keys.forEach((key) => {
+          caches.delete(key).catch(() => {});
+        });
+      });
+    }
   });
 }
 

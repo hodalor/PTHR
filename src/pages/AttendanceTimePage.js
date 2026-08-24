@@ -81,11 +81,7 @@ export default function AttendanceTimePage({
   exportAttendanceAuditCsv,
   exportAttendanceAuditPdf,
 }) {
-  useEffect(() => {
-    // #region debug-point C:page-tabs-state
-    fetch("http://192.168.1.176:7778/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-compliance-tabs",runId:"pre-fix",hypothesisId:"C",location:"frontend/src/pages/AttendanceTimePage.js:render",msg:"[DEBUG] Attendance page render",data:{attendanceViewTab,todayIsoDate,attendanceAuditDate,attendanceTodayCount:Array.isArray(attendanceTodayRows)?attendanceTodayRows.length:0,attendanceRowCount:Array.isArray(attendanceRows)?attendanceRows.length:0,complianceCount:Array.isArray(attendanceComplianceFilteredRows)?attendanceComplianceFilteredRows.length:0,attendanceTodaySample:Array.isArray(attendanceTodayRows)?attendanceTodayRows.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),lateMinutes:Number(row?.lateMinutes||0),deductionAmount:String(row?.deductionAmount||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0,photo:Boolean(row?.clockings?.find?.((c)=>String(c?.photoDataUrl||"").trim()))})):[],complianceSample:Array.isArray(attendanceComplianceFilteredRows)?attendanceComplianceFilteredRows.slice(0,8).map((row)=>({employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0,hasCheckInPhoto:Boolean(String(row?.firstCheckInPhoto||"").trim()),hasCheckOutPhoto:Boolean(String(row?.lastCheckOutPhoto||"").trim())})):[]},ts:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [attendanceAuditDate, attendanceComplianceFilteredRows, attendanceTodayRows, attendanceRows, attendanceViewTab, todayIsoDate]);
+  useEffect(() => {}, []);
   const [trackingEmployees, setTrackingEmployees] = useState([]);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState('');
@@ -107,6 +103,157 @@ export default function AttendanceTimePage({
   const [shiftAssignmentShiftFilter, setShiftAssignmentShiftFilter] = useState('All');
   const [shiftAssignmentSearchText, setShiftAssignmentSearchText] = useState('');
   const [shiftAssignmentSavingId, setShiftAssignmentSavingId] = useState('');
+  const [clockPage, setClockPage] = useState(1);
+  const [clockPageSize, setClockPageSize] = useState(25);
+  const [compliancePage, setCompliancePage] = useState(1);
+  const [compliancePageSize, setCompliancePageSize] = useState(25);
+  const [penaltyPage, setPenaltyPage] = useState(1);
+  const [penaltyPageSize, setPenaltyPageSize] = useState(25);
+  const [performancePage, setPerformancePage] = useState(1);
+  const [performancePageSize, setPerformancePageSize] = useState(25);
+  const [shiftAssignmentPage, setShiftAssignmentPage] = useState(1);
+  const [shiftAssignmentPageSize, setShiftAssignmentPageSize] = useState(25);
+  const buildPaginationState = (rows, page, pageSize) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const safeSize = Math.max(1, Number(pageSize) || 25);
+    const totalPages = Math.max(1, Math.ceil(safeRows.length / safeSize));
+    const safePage = Math.min(totalPages, Math.max(1, Number(page) || 1));
+    const start = (safePage - 1) * safeSize;
+    return {
+      rows: safeRows.slice(start, start + safeSize),
+      totalRows: safeRows.length,
+      totalPages,
+      page: safePage,
+      pageSize: safeSize,
+    };
+  };
+  const PaginationControls = ({
+    state,
+    setPage,
+    setPageSize,
+    colSpan,
+    label = 'records',
+  }) => {
+    if (!state || state.totalRows <= state.pageSize) {
+      return colSpan ? null : null;
+    }
+    const { totalRows, totalPages, page, pageSize } = state;
+    const rangeStart = Math.min(totalRows, (page - 1) * pageSize + 1);
+    const rangeEnd = Math.min(totalRows, page * pageSize);
+    const toolbar = (
+      <div className="toolbar pagination-toolbar" style={{ paddingTop: 12 }}>
+        <div className="pagination-info">
+          Showing {rangeStart} – {rangeEnd} of {totalRows} {label}
+        </div>
+        <div className="row-actions">
+          <select
+            className="filter-select"
+            value={pageSize}
+            onChange={(event) => {
+              setPageSize(Number(event.target.value) || 25);
+              setPage(1);
+            }}
+          >
+            {[10, 25, 50, 100, 250].map((size) => (
+              <option key={size} value={size}>
+                {size} / page
+              </option>
+            ))}
+          </select>
+          <button type="button" className="mini-btn" onClick={() => setPage(1)} disabled={page <= 1}>
+            « First
+          </button>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+          >
+            ‹ Prev
+          </button>
+          <div className="pagination-info">
+            Page {page} / {totalPages}
+          </div>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+          >
+            Next ›
+          </button>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setPage(totalPages)}
+            disabled={page >= totalPages}
+          >
+            Last »
+          </button>
+        </div>
+      </div>
+    );
+    if (colSpan) {
+      return (
+        <tr>
+          <td colSpan={colSpan}>{toolbar}</td>
+        </tr>
+      );
+    }
+    return toolbar;
+  };
+  const handleImageBroken = useCallback((event) => {
+    if (!event?.target || event.target.__photoBroken) return;
+    event.target.__photoBroken = true;
+    event.target.style.visibility = 'hidden';
+    const wrapper = event.target.closest?.('div') || event.target.parentElement;
+    if (wrapper) {
+      const placeholder = document.createElement('div');
+      placeholder.style.cssText =
+        'display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#64748b;background:#e2e8f0;border-radius:10px;border:1px solid rgba(15,23,42,0.12);';
+      placeholder.style.width = `${event.target.style.width || '44px'}`;
+      placeholder.style.height = `${event.target.style.height || '44px'}`;
+      placeholder.textContent = 'N/A';
+      if (event.target.parentNode) {
+        event.target.parentNode.insertBefore(placeholder, event.target);
+      }
+    }
+  }, []);
+  const resolvePhotoSrc = useCallback((candidateSrc) => {
+    const raw = String(candidateSrc || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('data:') || raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/')) {
+      return raw;
+    }
+    try {
+      return toApiUrl(`/api/photos/${encodeURIComponent(raw)}`);
+    } catch (_err) {
+      return raw;
+    }
+  }, []);
+  useEffect(() => {
+    setClockPage(1);
+  }, [attendanceClockRangeStartDate, attendanceClockRangeEndDate, attendanceClockRangeSearchText]);
+  useEffect(() => {
+    setCompliancePage(1);
+  }, [attendanceAuditDate, attendanceAuditFilter, attendanceAuditSearchText, complianceSort]);
+  useEffect(() => {
+    setPenaltyPage(1);
+  }, [attendancePenaltyStatusFilter, penaltySort]);
+  useEffect(() => {
+    setPerformancePage(1);
+  }, [
+    attendancePerformancePeriod,
+    attendancePerformanceStartDate,
+    attendancePerformanceEndDate,
+    attendancePerformanceRankMetric,
+    attendancePerformanceDepartmentFilter,
+    attendancePerformanceSearchText,
+    performanceSort,
+  ]);
+  useEffect(() => {
+    setShiftAssignmentPage(1);
+  }, [shiftAssignmentDepartmentFilter, shiftAssignmentShiftFilter, shiftAssignmentSearchText, shiftAssignmentSort]);
   const shiftOptions = useMemo(
     () =>
       Array.isArray(appSettings.shifts) && appSettings.shifts.length > 0
@@ -205,6 +352,12 @@ export default function AttendanceTimePage({
     shiftAssignmentSort,
     shiftOptions,
   ]);
+
+  const paginatedClockRows = buildPaginationState(attendanceClockRangeRows, clockPage, clockPageSize);
+  const paginatedComplianceRows = buildPaginationState(sortedComplianceRows, compliancePage, compliancePageSize);
+  const paginatedPenaltyRows = buildPaginationState(sortedPenaltyRows, penaltyPage, penaltyPageSize);
+  const paginatedPerformanceRows = buildPaginationState(sortedPerformanceRows, performancePage, performancePageSize);
+  const paginatedShiftAssignmentRows = buildPaginationState(shiftAssignmentRows, shiftAssignmentPage, shiftAssignmentPageSize);
 
   const stopClockCamera = useCallback(() => {
     if (streamRef.current) {
@@ -571,14 +724,17 @@ export default function AttendanceTimePage({
                 </tr>
               </thead>
               <tbody>
-                {attendanceClockRangeRows.length > 0 ? (
-                  attendanceClockRangeRows.map((row, idx) => {
+                {paginatedClockRows.rows.length > 0 ? (
+                  paginatedClockRows.rows.map((row, idx) => {
                     const rowClockings = Array.isArray(row.clockings) ? row.clockings : [];
                     const firstCheckIn = rowClockings.find((item) => item.mode === 'clock-in') || null;
                     const lastCheckOut = [...rowClockings].reverse().find((item) => item.mode === 'clock-out') || null;
-                    const checkInPhoto = String(firstCheckIn?.photoDataUrl || '').trim();
-                    const checkOutPhoto = String(lastCheckOut?.photoDataUrl || '').trim();
-                    const fallbackPhoto = getAttendanceRowPhoto(row);
+                    const rawCheckInPhoto = String(firstCheckIn?.photoDataUrl || '').trim();
+                    const rawCheckOutPhoto = String(lastCheckOut?.photoDataUrl || '').trim();
+                    const rawFallbackPhoto = getAttendanceRowPhoto(row);
+                    const checkInPhoto = resolvePhotoSrc(rawCheckInPhoto);
+                    const checkOutPhoto = resolvePhotoSrc(rawCheckOutPhoto);
+                    const fallbackPhoto = resolvePhotoSrc(rawFallbackPhoto);
                     return (
                       <tr key={String(row.id || `${row.date}-${row.employeeId || row.employee || idx}`)}>
                         <td>{row.date || '—'}</td>
@@ -619,6 +775,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={checkInPhoto}
                                     alt={`${row.employee} clock-in proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 44,
                                       height: 44,
@@ -652,6 +809,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={checkOutPhoto}
                                     alt={`${row.employee} clock-out proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 44,
                                       height: 44,
@@ -680,6 +838,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={fallbackPhoto}
                                     alt={`${row.employee} attendance proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 44,
                                       height: 44,
@@ -712,6 +871,13 @@ export default function AttendanceTimePage({
                     </td>
                   </tr>
                 )}
+                <PaginationControls
+                  state={paginatedClockRows}
+                  setPage={setClockPage}
+                  setPageSize={setClockPageSize}
+                  colSpan={9}
+                  label="logs"
+                />
               </tbody>
             </table>
           </div>
@@ -773,6 +939,11 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'date')}>
+                      Date{sortArrow(complianceSort, 'date')}
+                    </button>
+                  </th>
+                  <th>
                     <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'employee')}>
                       Employee{sortArrow(complianceSort, 'employee')}
                     </button>
@@ -803,14 +974,26 @@ export default function AttendanceTimePage({
                       Minutes Late{sortArrow(complianceSort, 'lateMinutes')}
                     </button>
                   </th>
+                  <th>
+                    <button
+                      type="button"
+                      className="neutral-btn"
+                      onClick={() => toggleSort(setComplianceSort, 'deductionAmount')}
+                    >
+                      Late Deduction{sortArrow(complianceSort, 'deductionAmount')}
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {sortedComplianceRows.length > 0 ? (
-                  sortedComplianceRows.map((row) => {
-                    const checkInPhoto = String(row.firstCheckInPhoto || '').trim();
-                    const checkOutPhoto = String(row.lastCheckOutPhoto || '').trim();
-                    const fallbackPhoto = getAttendanceRowPhoto(row);
+                {paginatedComplianceRows.rows.length > 0 ? (
+                  paginatedComplianceRows.rows.map((row) => {
+                    const rawCheckInPhoto = String(row.firstCheckInPhoto || '').trim();
+                    const rawCheckOutPhoto = String(row.lastCheckOutPhoto || '').trim();
+                    const rawFallbackPhoto = getAttendanceRowPhoto(row);
+                    const checkInPhoto = resolvePhotoSrc(rawCheckInPhoto);
+                    const checkOutPhoto = resolvePhotoSrc(rawCheckOutPhoto);
+                    const fallbackPhoto = resolvePhotoSrc(rawFallbackPhoto);
                     return (
                       <tr
                         key={`${row.employeeId}-${row.date}`}
@@ -821,6 +1004,7 @@ export default function AttendanceTimePage({
                           setAttendanceDetailModal({ type: 'compliance', key: detailKey });
                         }}
                       >
+                        <td>{row.date || '—'}</td>
                         <td>
                           {row.employee} ({row.employeeId})
                         </td>
@@ -853,6 +1037,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={checkInPhoto}
                                     alt={`${row.employee} clock-in proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 40,
                                       height: 40,
@@ -881,6 +1066,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={checkOutPhoto}
                                     alt={`${row.employee} clock-out proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 40,
                                       height: 40,
@@ -908,6 +1094,7 @@ export default function AttendanceTimePage({
                                   <img
                                     src={fallbackPhoto}
                                     alt={`${row.employee} compliance proof`}
+                                    onError={handleImageBroken}
                                     style={{
                                       width: 40,
                                       height: 40,
@@ -926,13 +1113,14 @@ export default function AttendanceTimePage({
                         <td>{row.checkIn || '—'}</td>
                         <td>{row.checkOut || '—'}</td>
                         <td>{row.dailyStatus}</td>
-                        <td>{Math.max(0, Number(row.lateMinutes || row.isLate ? 1 : 0))}</td>
+                        <td>{Math.max(0, Number(row.lateMinutes || 0))}</td>
+                        <td>{toNumberValue(row.deductionAmount).toFixed(2)}</td>
                       </tr>
                     );
                   })
                 ) : (
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={9}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                         <span>
                           {attendanceAuditFilter !== 'All' || attendanceAuditSearchText.trim()
@@ -955,6 +1143,13 @@ export default function AttendanceTimePage({
                     </td>
                   </tr>
                 )}
+                <PaginationControls
+                  state={paginatedComplianceRows}
+                  setPage={setCompliancePage}
+                  setPageSize={setCompliancePageSize}
+                  colSpan={9}
+                  label="records"
+                />
               </tbody>
             </table>
           </div>
@@ -1016,8 +1211,8 @@ export default function AttendanceTimePage({
                 </tr>
               </thead>
               <tbody>
-                {sortedPenaltyRows.length > 0 ? (
-                  sortedPenaltyRows.map((row) => (
+                {paginatedPenaltyRows.rows.length > 0 ? (
+                  paginatedPenaltyRows.rows.map((row) => (
                     <tr
                       key={row.key}
                       className={selectedPenaltyKey === row.key ? 'selected-row' : ''}
@@ -1055,6 +1250,13 @@ export default function AttendanceTimePage({
                     <td colSpan={6}>No penalties for the selected filters.</td>
                   </tr>
                 )}
+                <PaginationControls
+                  state={paginatedPenaltyRows}
+                  setPage={setPenaltyPage}
+                  setPageSize={setPenaltyPageSize}
+                  colSpan={6}
+                  label="penalties"
+                />
               </tbody>
             </table>
           </div>
@@ -1276,14 +1478,14 @@ export default function AttendanceTimePage({
                 </tr>
               </thead>
               <tbody>
-                {sortedPerformanceRows.length > 0 ? (
-                  sortedPerformanceRows.map((row, index) => (
+                {paginatedPerformanceRows.rows.length > 0 ? (
+                  paginatedPerformanceRows.rows.map((row, index) => (
                     <tr
                       key={row.employeeId}
                       className={selectedPerformanceEmployeeId === row.employeeId ? 'selected-row' : ''}
                       onClick={() => setSelectedPerformanceEmployeeId(row.employeeId)}
                     >
-                      <td>{index + 1}</td>
+                      <td>{(paginatedPerformanceRows.page - 1) * paginatedPerformanceRows.pageSize + index + 1}</td>
                       <td>
                         {row.employee} ({row.employeeId})
                       </td>
@@ -1299,6 +1501,13 @@ export default function AttendanceTimePage({
                     <td colSpan={7}>No performance records for the selected filters.</td>
                   </tr>
                 )}
+                <PaginationControls
+                  state={paginatedPerformanceRows}
+                  setPage={setPerformancePage}
+                  setPageSize={setPerformancePageSize}
+                  colSpan={7}
+                  label="employees"
+                />
               </tbody>
             </table>
           </div>
@@ -1383,8 +1592,8 @@ export default function AttendanceTimePage({
                 </tr>
               </thead>
               <tbody>
-                {shiftAssignmentRows.length > 0 ? (
-                  shiftAssignmentRows.map((row) => (
+                {paginatedShiftAssignmentRows.rows.length > 0 ? (
+                  paginatedShiftAssignmentRows.rows.map((row) => (
                     <tr key={row.id}>
                       <td>
                         {row.fullName} ({row.id})
@@ -1423,6 +1632,13 @@ export default function AttendanceTimePage({
                     <td colSpan={4}>No employees found for selected filters.</td>
                   </tr>
                 )}
+                <PaginationControls
+                  state={paginatedShiftAssignmentRows}
+                  setPage={setShiftAssignmentPage}
+                  setPageSize={setShiftAssignmentPageSize}
+                  colSpan={4}
+                  label="employees"
+                />
               </tbody>
             </table>
           </div>

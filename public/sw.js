@@ -35,6 +35,13 @@ self.addEventListener('fetch', (event) => {
   if (requestUrl.protocol !== 'http:' && requestUrl.protocol !== 'https:') {
     return;
   }
+  if (
+    requestUrl.pathname.startsWith('/sockjs-node') ||
+    requestUrl.pathname.includes('hot-update') ||
+    requestUrl.pathname.startsWith('/static/js/bundle.js.map')
+  ) {
+    return;
+  }
   if (requestUrl.origin === self.location.origin && requestUrl.pathname.startsWith('/api/')) {
     event.respondWith(fetch(event.request));
     return;
