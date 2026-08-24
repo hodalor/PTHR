@@ -1,4 +1,5 @@
 const allModules = [
+  'dashboard',
   'employee-management',
   'attendance-time',
   'loan-records',
@@ -20,12 +21,13 @@ const allModules = [
 
 const packageDefaults = {
   basic: {
-    modules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual', 'settings'],
+    modules: ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual', 'settings'],
     employeeLimit: 25,
     concurrentLoginLimit: 8,
   },
   pro: {
     modules: [
+      'dashboard',
       'employee-management',
       'attendance-time',
       'loan-records',
@@ -75,10 +77,11 @@ function resolveRoleDefaultModules(role, defaultEmployeeModules = []) {
     return Array.isArray(defaultEmployeeModules) ? [...defaultEmployeeModules] : [];
   }
   if (normalizedRole === 'manager') {
-    return ['employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'];
+    return ['dashboard', 'employee-management', 'attendance-time', 'leave-management', 'monitoring-tracking', 'manual'];
   }
   if (normalizedRole === 'hr') {
     return [
+      'dashboard',
       'employee-management',
       'attendance-time',
       'loan-records',

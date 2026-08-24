@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 
 const defaultMobileSettings = {
-  enabledModules: ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
+  enabledModules: ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking'],
   allowClockIn: true,
   allowClockOut: true,
   requireClockInPhoto: false,

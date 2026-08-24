@@ -36,7 +36,7 @@ const GCS_PROJECT_ID = String(process.env.GCS_PROJECT_ID || '').trim();
 const GCS_CLIENT_EMAIL = String(process.env.GCS_CLIENT_EMAIL || '').trim();
 const GCS_PRIVATE_KEY_ID = String(process.env.GCS_PRIVATE_KEY_ID || '').trim();
 const GCS_PRIVATE_KEY = String(process.env.GCS_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-const defaultEmployeeModules = ['attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
+const defaultEmployeeModules = ['dashboard', 'attendance-time', 'loan-records', 'leave-management', 'monitoring-tracking', 'manual'];
 const allowedUserRoles = new Set(['employee', 'manager', 'hr', 'admin', 'tenant-admin', 'superadmin']);
 const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
 const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
@@ -164,6 +164,88 @@ function getEmployeeAccessBlockReason(employee) {
     return `Employment stage is ${String(employee.employmentState || 'inactive').trim()}`;
   }
   return '';
+}
+
+function getTodayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeIsoDateInput(value, fallback = getTodayIsoDate()) {
+  const normalized = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : fallback;
+}
+
+function getMonthStartIsoDate(value) {
+  return `${normalizeIsoDateInput(value).slice(0, 7)}-01`;
+}
+
+function toNumberValue(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function hasAttendanceClockIn(record) {
+  if (!record) {
+    return false;
+  }
+  if (Array.isArray(record.clockings)) {
+    return record.clockings.some((clocking) => String(clocking?.mode || '').trim().toLowerCase() === 'clock-in');
+  }
+  return Boolean(String(record.checkIn || '').trim());
+}
+
+function isLeaveRejectedRecord(record) {
+  const departmentApproval = String(record?.departmentApproval || record?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(record?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(record?.managerApproval || record?.finalManagerApproval || record?.branchManagerApproval || '')
+    .trim()
+    .toLowerCase();
+  const status = String(record?.status || '').trim().toLowerCase();
+  return departmentApproval === 'rejected' || hrApproval === 'rejected' || managerApproval === 'rejected' || status === 'rejected';
+}
+
+function isLeaveFullyApprovedRecord(record) {
+  if (!record || isLeaveRejectedRecord(record)) {
+    return false;
+  }
+  const departmentApproval = String(record?.departmentApproval || record?.supervisorApproval || '').trim().toLowerCase();
+  const hrApproval = String(record?.hrApproval || '').trim().toLowerCase();
+  const managerApproval = String(record?.managerApproval || record?.finalManagerApproval || record?.branchManagerApproval || '')
+    .trim()
+    .toLowerCase();
+  return departmentApproval === 'approved' && hrApproval === 'approved' && managerApproval === 'approved';
+}
+
+function isLoanCountableRecord(record) {
+  const status = String(record?.status || '').trim().toLowerCase();
+  return status === 'active' || status === 'approved';
+}
+
+function summarizeAttendanceByEmployee(records = []) {
+  const summaryByEmployee = new Map();
+  records.forEach((record) => {
+    const employeeKey = String(record?.employeeId || record?.employee || '').trim();
+    if (!employeeKey) {
+      return;
+    }
+    const current = summaryByEmployee.get(employeeKey) || {
+      employeeId: String(record?.employeeId || '').trim(),
+      employee: String(record?.employee || '').trim(),
+      lateMinutes: 0,
+      deductionAmount: 0,
+      hasClockIn: false,
+      isLate: false,
+    };
+    current.lateMinutes = Math.max(current.lateMinutes, Math.max(0, toNumberValue(record?.lateMinutes)));
+    current.deductionAmount += Math.max(0, toNumberValue(record?.deductionAmount));
+    current.hasClockIn = current.hasClockIn || hasAttendanceClockIn(record);
+    current.isLate =
+      current.isLate ||
+      String(record?.status || '').trim().toLowerCase() === 'late' ||
+      Math.max(0, toNumberValue(record?.lateMinutes)) > 0;
+    summaryByEmployee.set(employeeKey, current);
+  });
+  return Array.from(summaryByEmployee.values());
 }
 
 function sanitizePathSegment(value, fallback = 'file') {
@@ -1978,6 +2060,323 @@ app.post('/api/settings/general', async (req, res) => {
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save general settings' });
+  }
+});
+
+app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req, res) => {
+  try {
+    const authUser = req.authUser;
+    const normalizedRole = String(authUser?.role || '').trim().toLowerCase();
+    const isMasterSuperAdmin = normalizedRole === 'superadmin' && req.tenantId === 'master';
+    const allowedModules = isMasterSuperAdmin
+      ? allModules
+      : resolveUserAllowedModulesForTenant({
+          user: authUser,
+          tenant: req.tenant,
+          tenantId: req.tenantId,
+          defaultEmployeeModules,
+        });
+    // #region debug-point B:dashboard-route-entry
+    (() => {
+      try {
+        const payload = JSON.stringify({
+          sessionId: 'dashboard-summary-load',
+          runId: 'post-fix',
+          hypothesisId: 'B',
+          location: 'backend/src/server.js:2079',
+          msg: '[DEBUG] Dashboard summary route entered',
+          data: {
+            tenantId: String(req.tenantId || ''),
+            role: normalizedRole,
+            selectedDate: String(req.query?.date || ''),
+            hasDashboardModule: allowedModules.includes('dashboard'),
+            employeeId: String(authUser?.employeeId || ''),
+          },
+          ts: Date.now(),
+        });
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        }).catch(() => {});
+      } catch (_) {}
+    })();
+    // #endregion
+    if (!allowedModules.includes('dashboard')) {
+      res.status(403).json({ error: 'Forbidden: dashboard not enabled for this tenant/user' });
+      return;
+    }
+
+    const selectedDate = normalizeIsoDateInput(req.query?.date);
+    const monthStartDate = getMonthStartIsoDate(selectedDate);
+    const employeeId = String(authUser?.employeeId || '').trim();
+    const employeeName = String(authUser?.fullName || '').trim();
+    const employeeMatchQuery =
+      employeeId || employeeName
+        ? {
+            $or: [
+              ...(employeeId ? [{ employeeId }] : []),
+              ...(employeeName ? [{ employee: employeeName }] : []),
+            ],
+          }
+        : null;
+
+    if (normalizedRole === 'employee' && employeeMatchQuery) {
+      const [employeeRecord, dayAttendanceRows, monthAttendanceRows, employeeLoanRows, employeeLeaveRows, latestPayrollRow] =
+        await Promise.all([
+          req.db.collection('employees').findOne(
+            { id: employeeId },
+            {
+              projection: {
+                id: 1,
+                fullName: 1,
+                department: 1,
+                position: 1,
+                status: 1,
+                employmentState: 1,
+                leaveBalanceDays: 1,
+                basicPay: 1,
+                monthlyBonuses: 1,
+                transportAllowance: 1,
+                housingAllowance: 1,
+                foodAllowance: 1,
+              },
+            }
+          ),
+          req.db.collection('attendanceTime').find({ ...employeeMatchQuery, date: selectedDate }).toArray(),
+          req.db
+            .collection('attendanceTime')
+            .find({ ...employeeMatchQuery, date: { $gte: monthStartDate, $lte: selectedDate } })
+            .toArray(),
+          req.db.collection('loanRecords').find(employeeMatchQuery).toArray(),
+          req.db.collection('leaveRequests').find(employeeMatchQuery).toArray(),
+          req.db
+            .collection('payrollRecords')
+            .find(employeeMatchQuery)
+            .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
+            .limit(1)
+            .next(),
+        ]);
+
+      const dayAttendance = summarizeAttendanceByEmployee(dayAttendanceRows)[0] || {
+        lateMinutes: 0,
+        deductionAmount: 0,
+        hasClockIn: false,
+        isLate: false,
+      };
+      const monthToDateLateMinutes = monthAttendanceRows.reduce(
+        (total, row) => total + Math.max(0, toNumberValue(row?.lateMinutes)),
+        0
+      );
+      const monthToDateDeductionAmount = monthAttendanceRows.reduce(
+        (total, row) => total + Math.max(0, toNumberValue(row?.deductionAmount)),
+        0
+      );
+      const activeLoanRows = employeeLoanRows.filter(isLoanCountableRecord);
+      const activeLoanBalance = activeLoanRows.reduce(
+        (total, row) => total + Math.max(0, toNumberValue(row?.balance || row?.amount)),
+        0
+      );
+      const approvedLeaveCount = employeeLeaveRows.filter(isLeaveFullyApprovedRecord).length;
+      const pendingLeaveCount = employeeLeaveRows.filter(
+        (row) => !isLeaveRejectedRecord(row) && !isLeaveFullyApprovedRecord(row)
+      ).length;
+      const grossPayEstimate =
+        toNumberValue(employeeRecord?.basicPay) +
+        toNumberValue(employeeRecord?.monthlyBonuses) +
+        toNumberValue(employeeRecord?.transportAllowance) +
+        toNumberValue(employeeRecord?.housingAllowance) +
+        toNumberValue(employeeRecord?.foodAllowance);
+      const totalDeductions = latestPayrollRow
+        ? Math.max(0, toNumberValue(latestPayrollRow?.totalDeductions))
+        : monthToDateDeductionAmount;
+      const takeHomePay = latestPayrollRow
+        ? Math.max(0, toNumberValue(latestPayrollRow?.netPayable))
+        : Math.max(0, grossPayEstimate - monthToDateDeductionAmount);
+      // #region debug-point D:dashboard-employee-success
+      (() => {
+        try {
+          const payload = JSON.stringify({
+            sessionId: 'dashboard-summary-load',
+            runId: 'post-fix',
+            hypothesisId: 'D',
+            location: 'backend/src/server.js:2167',
+            msg: '[DEBUG] Dashboard summary employee payload ready',
+            data: {
+              employeeFound: Boolean(employeeRecord),
+              attendanceRows: dayAttendanceRows.length,
+              monthAttendanceRows: monthAttendanceRows.length,
+              loanRows: employeeLoanRows.length,
+              leaveRows: employeeLeaveRows.length,
+              hasLatestPayroll: Boolean(latestPayrollRow),
+            },
+            ts: Date.now(),
+          });
+          fetch('http://127.0.0.1:7777/event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+          }).catch(() => {});
+        } catch (_) {}
+      })();
+      // #endregion
+
+      res.json({
+        view: 'employee',
+        date: selectedDate,
+        employee: {
+          id: String(employeeRecord?.id || employeeId || ''),
+          fullName: String(employeeRecord?.fullName || authUser?.fullName || ''),
+          department: String(employeeRecord?.department || ''),
+          position: String(employeeRecord?.position || ''),
+          status: String(employeeRecord?.status || ''),
+          employmentState: String(employeeRecord?.employmentState || ''),
+          leaveBalanceDays: Math.max(0, toNumberValue(employeeRecord?.leaveBalanceDays)),
+        },
+        attendance: {
+          status: dayAttendance.hasClockIn ? (dayAttendance.isLate ? 'Late' : 'On Time') : 'No Record',
+          lateMinutes: Math.max(0, toNumberValue(dayAttendance.lateMinutes)),
+          deductionAmount: Math.max(0, toNumberValue(dayAttendance.deductionAmount)),
+        },
+        monthToDate: {
+          lateMinutes: monthToDateLateMinutes,
+          deductionAmount: monthToDateDeductionAmount,
+        },
+        loans: {
+          activeCount: activeLoanRows.length,
+          outstandingAmount: activeLoanBalance,
+        },
+        leaves: {
+          pendingCount: pendingLeaveCount,
+          approvedCount: approvedLeaveCount,
+        },
+        compensation: {
+          source: latestPayrollRow ? 'latest-payroll' : 'estimate',
+          grossPay: latestPayrollRow ? Math.max(0, toNumberValue(latestPayrollRow?.grossPay)) : grossPayEstimate,
+          totalDeductions,
+          takeHomePay,
+          payrollPeriod:
+            String(
+              latestPayrollRow?.payrollMonth ||
+                latestPayrollRow?.period ||
+                latestPayrollRow?.month ||
+                latestPayrollRow?.date ||
+                ''
+            ).trim() || '',
+        },
+      });
+      return;
+    }
+
+    const [employeeRows, dayAttendanceRows, monthAttendanceRows, loanRows, leaveRows] = await Promise.all([
+      req.db.collection('employees').find({}).toArray(),
+      req.db.collection('attendanceTime').find({ date: selectedDate }).toArray(),
+      req.db.collection('attendanceTime').find({ date: { $gte: monthStartDate, $lte: selectedDate } }).toArray(),
+      req.db.collection('loanRecords').find({}).toArray(),
+      req.db.collection('leaveRequests').find({}).toArray(),
+    ]);
+
+    const activeEmployees = employeeRows.filter((row) => !getEmployeeAccessBlockReason(row));
+    const inactiveEmployees = employeeRows.length - activeEmployees.length;
+    const summarizedDailyAttendance = summarizeAttendanceByEmployee(dayAttendanceRows);
+    const onTimeCount = summarizedDailyAttendance.filter((row) => row.hasClockIn && !row.isLate).length;
+    const lateCount = summarizedDailyAttendance.filter((row) => row.hasClockIn && row.isLate).length;
+    const dailyDeductionAmount = summarizedDailyAttendance.reduce(
+      (total, row) => total + Math.max(0, toNumberValue(row.deductionAmount)),
+      0
+    );
+    const monthToDateDeductionAmount = monthAttendanceRows.reduce(
+      (total, row) => total + Math.max(0, toNumberValue(row?.deductionAmount)),
+      0
+    );
+    const activeLoanRows = loanRows.filter(isLoanCountableRecord);
+    const activeLoanOutstanding = activeLoanRows.reduce(
+      (total, row) => total + Math.max(0, toNumberValue(row?.balance || row?.amount)),
+      0
+    );
+    const pendingLeaveCount = leaveRows.filter(
+      (row) => !isLeaveRejectedRecord(row) && !isLeaveFullyApprovedRecord(row)
+    ).length;
+    const approvedLeaveCount = leaveRows.filter(isLeaveFullyApprovedRecord).length;
+    // #region debug-point D:dashboard-admin-success
+    (() => {
+      try {
+        const payload = JSON.stringify({
+          sessionId: 'dashboard-summary-load',
+          runId: 'post-fix',
+          hypothesisId: 'D',
+          location: 'backend/src/server.js:2261',
+          msg: '[DEBUG] Dashboard summary admin payload ready',
+          data: {
+            employees: employeeRows.length,
+            attendanceRows: dayAttendanceRows.length,
+            monthAttendanceRows: monthAttendanceRows.length,
+            loanRows: loanRows.length,
+            leaveRows: leaveRows.length,
+            activeEmployees: activeEmployees.length,
+          },
+          ts: Date.now(),
+        });
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        }).catch(() => {});
+      } catch (_) {}
+    })();
+    // #endregion
+
+    res.json({
+      view: 'admin',
+      date: selectedDate,
+      workforce: {
+        totalEmployees: employeeRows.length,
+        activeEmployees: activeEmployees.length,
+        inactiveEmployees,
+      },
+      attendance: {
+        onTimeCount,
+        lateCount,
+        clockedCount: summarizedDailyAttendance.filter((row) => row.hasClockIn).length,
+        totalDeductionAmount: dailyDeductionAmount,
+      },
+      monthToDate: {
+        totalDeductionAmount: monthToDateDeductionAmount,
+      },
+      loans: {
+        activeCount: activeLoanRows.length,
+        outstandingAmount: activeLoanOutstanding,
+      },
+      leaves: {
+        pendingCount: pendingLeaveCount,
+        approvedCount: approvedLeaveCount,
+      },
+    });
+  } catch (error) {
+    // #region debug-point B:dashboard-route-error
+    (() => {
+      try {
+        const payload = JSON.stringify({
+          sessionId: 'dashboard-summary-load',
+          runId: 'post-fix',
+          hypothesisId: 'B',
+          location: 'backend/src/server.js:2302',
+          msg: '[DEBUG] Dashboard summary route failed',
+          data: {
+            message: String(error?.message || ''),
+            stack: String(error?.stack || '').split('\n').slice(0, 6).join('\n'),
+          },
+          ts: Date.now(),
+        });
+        fetch('http://127.0.0.1:7777/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        }).catch(() => {});
+      } catch (_) {}
+    })();
+    // #endregion
+    res.status(500).json({ error: 'Failed to load dashboard summary' });
   }
 });
 
