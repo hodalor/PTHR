@@ -186,6 +186,21 @@ function isDataUrl(value) {
   return /^data:[^;]+;base64,/i.test(String(value || '').trim());
 }
 
+function isTransientBrowserFileUrl(value) {
+  return /^blob:/i.test(String(value || '').trim());
+}
+
+function isPortableMediaUrl(value) {
+  const rawValue = String(value || '').trim();
+  if (!rawValue || isTransientBrowserFileUrl(rawValue)) {
+    return false;
+  }
+  if (isDataUrl(rawValue) || extractStorageObjectPath(rawValue)) {
+    return true;
+  }
+  return /^https?:\/\//i.test(rawValue);
+}
+
 function decodeDataUrl(value) {
   const rawValue = String(value || '').trim();
   const match = rawValue.match(/^data:([^;]+);base64,(.+)$/);
@@ -337,6 +352,18 @@ async function uploadDataUrlToStorage(value, options = {}) {
 async function normalizeEmployeeStoredFileItem(fileItem, context = {}) {
   const source = fileItem || {};
   const rawUrl = String(source.url || '').trim();
+  if (isTransientBrowserFileUrl(rawUrl)) {
+    return {
+      ...source,
+      name: ensureFileNameExtension(
+        String(source.name || `${context.baseKey || 'file'}-${Number(context.index || 0) + 1}`),
+        source.isImage ? 'image/jpeg' : 'application/octet-stream'
+      ),
+      url: '',
+      isImage: Boolean(source.isImage),
+      unavailable: true,
+    };
+  }
   const decoded = decodeDataUrl(rawUrl);
   const mimeType = decoded?.mimeType || (source.isImage ? 'image/jpeg' : 'application/octet-stream');
   const normalizedName = ensureFileNameExtension(
@@ -375,6 +402,9 @@ async function normalizeEmployeeStoredFileItem(fileItem, context = {}) {
 }
 
 async function normalizePreviewValueForStorage(value, context = {}) {
+  if (isTransientBrowserFileUrl(value)) {
+    return '';
+  }
   if (Array.isArray(value)) {
     return Promise.all(
       value.map((item, index) =>
@@ -458,21 +488,57 @@ async function normalizeEmployeeStorageFields(record, context = {}) {
 async function signEmployeeStorageFields(record) {
   const source = record || {};
   const next = { ...source };
+  const mediaBaseKeys = new Set();
   const fileKeys = Object.keys(source).filter((key) => key.endsWith('Files') && Array.isArray(source[key]));
   for (const fileKey of fileKeys) {
+    const baseKey = fileKey.slice(0, -5);
+    mediaBaseKeys.add(baseKey);
     next[fileKey] = await Promise.all(
-      (source[fileKey] || []).map(async (fileItem) => ({
-        ...(fileItem || {}),
-        url: await createSignedStorageUrl(fileItem?.url),
-      }))
+      (source[fileKey] || []).map(async (fileItem) => {
+        const rawUrl = String(fileItem?.url || '').trim();
+        if (!rawUrl || isTransientBrowserFileUrl(rawUrl)) {
+          return {
+            ...(fileItem || {}),
+            url: '',
+            unavailable: true,
+          };
+        }
+        return {
+          ...(fileItem || {}),
+          url: await createSignedStorageUrl(rawUrl),
+        };
+      })
     );
+    if (next[fileKey].some((fileItem) => fileItem?.unavailable)) {
+      next[`${baseKey}MediaUnavailable`] = true;
+    }
   }
   const previewKeys = Object.keys(source).filter((key) => key.endsWith('Preview'));
   for (const previewKey of previewKeys) {
+    const baseKey = previewKey.slice(0, -7);
+    mediaBaseKeys.add(baseKey);
     if (Array.isArray(source[previewKey])) {
-      next[previewKey] = await Promise.all((source[previewKey] || []).map((value) => createSignedStorageUrl(value)));
+      next[previewKey] = await Promise.all(
+        (source[previewKey] || []).map((value) => (isTransientBrowserFileUrl(value) ? '' : createSignedStorageUrl(value)))
+      );
     } else {
-      next[previewKey] = await createSignedStorageUrl(source[previewKey]);
+      const rawValue = String(source[previewKey] || '').trim();
+      next[previewKey] = rawValue && !isTransientBrowserFileUrl(rawValue) ? await createSignedStorageUrl(rawValue) : '';
+      if (rawValue && isTransientBrowserFileUrl(rawValue)) {
+        next[`${baseKey}MediaUnavailable`] = true;
+      }
+    }
+  }
+  for (const baseKey of mediaBaseKeys) {
+    const previewKey = `${baseKey}Preview`;
+    const fileKey = `${baseKey}Files`;
+    const currentPreview = next[previewKey];
+    const currentFiles = Array.isArray(next[fileKey]) ? next[fileKey] : [];
+    if ((!currentPreview || (Array.isArray(currentPreview) && currentPreview.every((value) => !String(value || '').trim()))) && currentFiles.every((fileItem) => !String(fileItem?.url || '').trim())) {
+      const directValue = String(source[baseKey] || '').trim();
+      if (isPortableMediaUrl(directValue)) {
+        next[previewKey] = await createSignedStorageUrl(directValue);
+      }
     }
   }
   return next;
