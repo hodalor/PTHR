@@ -56,6 +56,83 @@ const moduleCollections = {
   training: 'trainingRecords',
 };
 
+const attendanceDayRuleMeta = [
+  { key: 'monday', defaultEnabled: true },
+  { key: 'tuesday', defaultEnabled: true },
+  { key: 'wednesday', defaultEnabled: true },
+  { key: 'thursday', defaultEnabled: true },
+  { key: 'friday', defaultEnabled: true },
+  { key: 'saturday', defaultEnabled: false },
+  { key: 'sunday', defaultEnabled: false },
+  { key: 'holiday', defaultEnabled: false },
+];
+
+function parseHolidayDateList(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item || '').trim()));
+  }
+  return String(value || '')
+    .split(/[\s,]+/)
+    .map((item) => String(item || '').trim())
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
+}
+
+function buildDefaultShiftDayRules(base = {}) {
+  return attendanceDayRuleMeta.reduce((accumulator, meta) => {
+    accumulator[meta.key] = {
+      enabled: meta.defaultEnabled,
+      reportTime: String(base.reportTime || '08:00').trim(),
+      shiftEnd: String(base.shiftEnd || '17:00').trim(),
+      graceInMinutes: Math.max(0, Number(base.graceInMinutes) || 0),
+      graceOutMinutes: Math.max(0, Number(base.graceOutMinutes) || 0),
+      overtimeEnabled: Boolean(base.overtimeEnabled),
+      overtimeStartAfterMinutes: Math.max(0, Number(base.overtimeStartAfterMinutes) || 0),
+      overtimePayPerMinute: Math.max(0, Number(base.overtimePayPerMinute) || 0),
+    };
+    return accumulator;
+  }, {});
+}
+
+function normalizeShiftDayRules(dayRules, base = {}) {
+  return attendanceDayRuleMeta.reduce((accumulator, meta) => {
+    const source = dayRules?.[meta.key] || {};
+    accumulator[meta.key] = {
+      enabled: source.enabled === undefined ? meta.defaultEnabled : Boolean(source.enabled),
+      reportTime: String(source.reportTime || base.reportTime || '08:00').trim(),
+      shiftEnd: String(source.shiftEnd || base.shiftEnd || '17:00').trim(),
+      graceInMinutes:
+        source.graceInMinutes === undefined
+          ? Math.max(0, Number(base.graceInMinutes) || 0)
+          : Math.max(0, Number(source.graceInMinutes) || 0),
+      graceOutMinutes:
+        source.graceOutMinutes === undefined
+          ? Math.max(0, Number(base.graceOutMinutes) || 0)
+          : Math.max(0, Number(source.graceOutMinutes) || 0),
+      overtimeEnabled:
+        source.overtimeEnabled === undefined ? Boolean(base.overtimeEnabled) : Boolean(source.overtimeEnabled),
+      overtimeStartAfterMinutes:
+        source.overtimeStartAfterMinutes === undefined
+          ? Math.max(0, Number(base.overtimeStartAfterMinutes) || 0)
+          : Math.max(0, Number(source.overtimeStartAfterMinutes) || 0),
+      overtimePayPerMinute:
+        source.overtimePayPerMinute === undefined
+          ? Math.max(0, Number(base.overtimePayPerMinute) || 0)
+          : Math.max(0, Number(source.overtimePayPerMinute) || 0),
+    };
+    return accumulator;
+  }, {});
+}
+
+function getAttendanceDayRuleKey(dateValue, holidayDates = []) {
+  const normalizedDate = String(dateValue || '').trim();
+  if (normalizedDate && holidayDates.includes(normalizedDate)) {
+    return 'holiday';
+  }
+  const parsed = new Date(`${normalizedDate}T00:00:00`);
+  const weekdayIndex = Number.isNaN(parsed.getTime()) ? 1 : parsed.getDay();
+  return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][weekdayIndex] || 'monday';
+}
+
 const defaultAttendanceSettings = {
   attendanceLateAfter: '08:15',
   attendanceReportTime: '08:00',
@@ -67,6 +144,10 @@ const defaultAttendanceSettings = {
   attendanceFixedScope: 'all',
   attendanceFixedDepartment: '',
   attendanceFixedEmployeeId: '',
+  attendanceNoClockInPenaltyPercent: 50,
+  attendanceNoClockOutPenaltyPercent: 50,
+  attendanceAbsentPenaltyPercent: 100,
+  attendanceHolidayDates: [],
   shifts: [
     {
       id: 'SHIFT-MORNING',
@@ -78,6 +159,15 @@ const defaultAttendanceSettings = {
       overtimeEnabled: false,
       overtimeStartAfterMinutes: 0,
       overtimePayPerMinute: 0,
+      dayRules: buildDefaultShiftDayRules({
+        reportTime: '08:00',
+        shiftEnd: '17:00',
+        graceInMinutes: 15,
+        graceOutMinutes: 0,
+        overtimeEnabled: false,
+        overtimeStartAfterMinutes: 0,
+        overtimePayPerMinute: 0,
+      }),
     },
   ],
 };
@@ -865,6 +955,7 @@ function normalizeGeneralSettings(payload) {
 
 function normalizeAttendanceSettings(payload) {
   const source = payload || {};
+  const holidayDates = parseHolidayDateList(source.attendanceHolidayDates);
   const shifts = Array.isArray(source.shifts)
     ? source.shifts
         .map((shift, index) => ({
@@ -877,6 +968,15 @@ function normalizeAttendanceSettings(payload) {
           overtimeEnabled: Boolean(shift?.overtimeEnabled),
           overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
           overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
+          dayRules: normalizeShiftDayRules(shift?.dayRules, {
+            reportTime: String(shift?.reportTime || '').trim(),
+            shiftEnd: String(shift?.shiftEnd || '').trim(),
+            graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
+            graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+            overtimeEnabled: Boolean(shift?.overtimeEnabled),
+            overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
+            overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
+          }),
         }))
         .filter(
           (shift) =>
@@ -904,6 +1004,19 @@ function normalizeAttendanceSettings(payload) {
       : defaultAttendanceSettings.attendanceFixedScope,
     attendanceFixedDepartment: String(source.attendanceFixedDepartment || ''),
     attendanceFixedEmployeeId: String(source.attendanceFixedEmployeeId || ''),
+    attendanceNoClockInPenaltyPercent: Math.max(
+      0,
+      Number(source.attendanceNoClockInPenaltyPercent) || defaultAttendanceSettings.attendanceNoClockInPenaltyPercent
+    ),
+    attendanceNoClockOutPenaltyPercent: Math.max(
+      0,
+      Number(source.attendanceNoClockOutPenaltyPercent) || defaultAttendanceSettings.attendanceNoClockOutPenaltyPercent
+    ),
+    attendanceAbsentPenaltyPercent: Math.max(
+      0,
+      Number(source.attendanceAbsentPenaltyPercent) || defaultAttendanceSettings.attendanceAbsentPenaltyPercent
+    ),
+    attendanceHolidayDates: holidayDates,
     shifts: shifts.length > 0 ? shifts : defaultAttendanceSettings.shifts,
   };
 }
@@ -919,6 +1032,43 @@ function toMinutesFromClock(value) {
     return null;
   }
   return hours * 60 + minutes;
+}
+
+function getShiftScheduleForAttendanceRecord(source, employee, settings) {
+  const shiftName = String(source?.shift || employee?.assignedShift || settings?.shifts?.[0]?.name || 'Default').trim();
+  const shiftConfig =
+    settings?.shifts?.find(
+      (shift) => String(shift?.name || '').trim().toLowerCase() === shiftName.toLowerCase()
+    ) || settings?.shifts?.[0];
+  const scheduleDate = String(source?.date || '').trim();
+  const holidayDates = Array.isArray(settings?.attendanceHolidayDates) ? settings.attendanceHolidayDates : [];
+  const ruleKey = getAttendanceDayRuleKey(scheduleDate, holidayDates);
+  const fallbackRules = buildDefaultShiftDayRules({
+    reportTime: shiftConfig?.reportTime || settings?.attendanceReportTime,
+    shiftEnd: shiftConfig?.shiftEnd || settings?.attendanceShiftEnd,
+    graceInMinutes: Math.max(0, Number(shiftConfig?.graceInMinutes) || 0),
+    graceOutMinutes: Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0),
+    overtimeEnabled: Boolean(shiftConfig?.overtimeEnabled),
+    overtimeStartAfterMinutes: Math.max(0, Number(shiftConfig?.overtimeStartAfterMinutes) || 0),
+    overtimePayPerMinute: Math.max(0, Number(shiftConfig?.overtimePayPerMinute) || 0),
+  });
+  const ruleSource = shiftConfig?.dayRules?.[ruleKey] || fallbackRules[ruleKey];
+  const reportTime = String(ruleSource?.reportTime || shiftConfig?.reportTime || settings?.attendanceReportTime || '').trim();
+  const shiftEnd = String(ruleSource?.shiftEnd || shiftConfig?.shiftEnd || settings?.attendanceShiftEnd || '').trim();
+  const reportMinutes = toMinutesFromClock(reportTime);
+  const graceInMinutes = Math.max(0, Number(ruleSource?.graceInMinutes) || 0);
+  const shiftEndMinutes = toMinutesFromClock(shiftEnd);
+  return {
+    shiftName: shiftConfig?.name || shiftName,
+    ruleKey,
+    isHoliday: ruleKey === 'holiday',
+    isWorkingDay: Boolean(ruleSource?.enabled),
+    reportTime,
+    shiftEnd,
+    reportMinutes,
+    lateAfterMinutes: reportMinutes === null ? null : reportMinutes + graceInMinutes,
+    shiftEndMinutes,
+  };
 }
 
 function formatWorkedDuration(checkIn, checkOut) {
@@ -1552,31 +1702,29 @@ function enrichAttendanceRecordWithContext(payload, context) {
   if (!employeeId && !employeeName && !employee) {
     return source;
   }
-  const shiftName = String(source.shift || employee?.assignedShift || settings.shifts?.[0]?.name || 'Default').trim();
-  const shiftConfig =
-    settings.shifts.find(
-      (shift) => String(shift?.name || '').trim().toLowerCase() === shiftName.toLowerCase()
-    ) || settings.shifts[0];
+  const shiftSchedule = getShiftScheduleForAttendanceRecord(source, employee, settings);
   const clockings = normalizeAttendanceClockings(source);
   const firstClockIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
   const lastClockOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
   const checkIn = firstClockIn?.time || String(source.checkIn || '').trim();
   const checkOut = lastClockOut?.time || String(source.checkOut || '').trim();
-  const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || settings.attendanceReportTime);
-  const lateAfterMinutes =
-    reportMinutes === null ? null : reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
   const checkInMinutes = toMinutesFromClock(checkIn);
   const lateMinutes =
-    lateAfterMinutes === null || checkInMinutes === null ? 0 : Math.max(0, checkInMinutes - lateAfterMinutes);
+    !shiftSchedule.isWorkingDay || shiftSchedule.lateAfterMinutes === null || checkInMinutes === null
+      ? 0
+      : Math.max(0, checkInMinutes - shiftSchedule.lateAfterMinutes);
   const existingStatus = String(source.status || '').trim();
-  const status =
-    checkInMinutes === null
-      ? existingStatus || 'Absent'
-      : lateMinutes > 0
-        ? 'Late'
-        : existingStatus === 'On Leave'
-          ? 'On Leave'
-          : 'On Time';
+  let computedStatus = 'On Time';
+  if (!shiftSchedule.isWorkingDay) {
+    computedStatus = checkInMinutes === null ? (shiftSchedule.isHoliday ? 'Holiday' : 'Off Day') : shiftSchedule.isHoliday ? 'Holiday Worked' : 'Off Day Worked';
+  } else if (checkInMinutes === null) {
+    computedStatus = 'Absent';
+  } else if (lateMinutes > 0) {
+    computedStatus = 'Late';
+  } else if (existingStatus === 'On Leave') {
+    computedStatus = 'On Leave';
+  }
+  const status = existingStatus || computedStatus;
   const deductionRate = Number.isFinite(Number(source.deductionRatePerMinute)) && Number(source.deductionRatePerMinute) > 0
     ? Number(source.deductionRatePerMinute)
     : Number.isFinite(Number(settings.attendanceFixedDeductionPerMinute)) && Number(settings.attendanceFixedDeductionPerMinute) > 0
@@ -1584,19 +1732,26 @@ function enrichAttendanceRecordWithContext(payload, context) {
       : 0;
   const existingDeduction = Number(source.deductionAmount);
   const computedDeduction = deductionRate > 0 && lateMinutes > 0 ? deductionRate * lateMinutes : 0;
-  const deductionAmount = Number.isFinite(existingDeduction) && existingDeduction > 0 ? existingDeduction : computedDeduction;
+  const deductionAmount =
+    !shiftSchedule.isWorkingDay
+      ? 0
+      : Number.isFinite(existingDeduction) && existingDeduction > 0
+        ? existingDeduction
+        : computedDeduction;
   // #region debug-point A:attendance-enrich-summary
-  (()=>{const fs=require('fs'),p='.dbg/attendance-compliance-tabs.env';let u='http://192.168.1.176:7778/event',s='attendance-compliance-tabs';try{const e=fs.readFileSync(p,'utf8');u=e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u;s=e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s}catch{}fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:s,runId:'pre-fix',hypothesisId:'A',location:'backend/src/server.js:enrichAttendanceRecordWithContext',msg:'[DEBUG] Attendance enriched',data:{employeeId,employeeName,date:String(source.date||''),checkIn,checkOut,lateMinutes,rawLateMinutes:String(source.lateMinutes||''),rawDeductionAmount:String(source.deductionAmount||''),deductionRate,deductionAmount,clockingsCount:Array.isArray(clockings)?clockings.length:0,clockingPhotos:Array.isArray(clockings)?clockings.filter((c)=>Boolean(String(c?.photoDataUrl||'').trim())).length:0,fallbackClockingsUsed:!(Array.isArray(source?.clockings)&&source.clockings.length>0),shift:shiftConfig?.name||shiftName,status},ts:Date.now()})}).catch(()=>{})})();
+  (()=>{const fs=require('fs'),p='.dbg/attendance-compliance-tabs.env';let u='http://192.168.1.176:7778/event',s='attendance-compliance-tabs';try{const e=fs.readFileSync(p,'utf8');u=e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u;s=e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s}catch{}fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:s,runId:'pre-fix',hypothesisId:'A',location:'backend/src/server.js:enrichAttendanceRecordWithContext',msg:'[DEBUG] Attendance enriched',data:{employeeId,employeeName,date:String(source.date||''),checkIn,checkOut,lateMinutes,rawLateMinutes:String(source.lateMinutes||''),rawDeductionAmount:String(source.deductionAmount||''),deductionRate,deductionAmount,clockingsCount:Array.isArray(clockings)?clockings.length:0,clockingPhotos:Array.isArray(clockings)?clockings.filter((c)=>Boolean(String(c?.photoDataUrl||'').trim())).length:0,fallbackClockingsUsed:!(Array.isArray(source?.clockings)&&source.clockings.length>0),shift:shiftSchedule.shiftName,status,ruleKey:shiftSchedule.ruleKey,isWorkingDay:shiftSchedule.isWorkingDay},ts:Date.now()})}).catch(()=>{})})();
   // #endregion
   return {
     ...source,
-    shift: shiftConfig?.name || shiftName,
+    shift: shiftSchedule.shiftName,
     checkIn,
     checkOut,
     workedHours: checkIn && checkOut ? formatWorkedDuration(checkIn, checkOut) : String(source.workedHours || ''),
     lateMinutes: String(lateMinutes),
     status,
     clockings,
+    attendanceRuleKey: shiftSchedule.ruleKey,
+    isWorkingDay: shiftSchedule.isWorkingDay,
     deductionRatePerMinute: String(deductionRate),
     deductionAmount: String(deductionAmount),
   };
