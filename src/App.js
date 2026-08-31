@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -104,6 +104,124 @@ const googleTileBaseUrl = googleMapsTileKey
 
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const ATTENDANCE_DAY_RULE_META = [
+  { key: 'monday', label: 'Mon', defaultEnabled: true },
+  { key: 'tuesday', label: 'Tue', defaultEnabled: true },
+  { key: 'wednesday', label: 'Wed', defaultEnabled: true },
+  { key: 'thursday', label: 'Thu', defaultEnabled: true },
+  { key: 'friday', label: 'Fri', defaultEnabled: true },
+  { key: 'saturday', label: 'Sat', defaultEnabled: false },
+  { key: 'sunday', label: 'Sun', defaultEnabled: false },
+  { key: 'holiday', label: 'Holiday', defaultEnabled: false },
+];
+const ATTENDANCE_PERMISSION_SCOPE_OPTIONS = [
+  { value: 'all', label: 'All Attendance Deductions' },
+  { value: 'late-only', label: 'Late Deduction Only' },
+  { value: 'no-clock-in', label: 'No Clock In Only' },
+  { value: 'no-clock-out', label: 'No Clock Out Only' },
+  { value: 'missing-clock', label: 'Any Missing Clock Penalty' },
+];
+const ATTENDANCE_CALENDAR_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ATTENDANCE_CALENDAR_WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const parseHolidayDateList = (value) => {
+  if (Array.isArray(value)) {
+    return value.filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item || '').trim()));
+  }
+  return String(value || '')
+    .split(/[\s,]+/)
+    .map((item) => String(item || '').trim())
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
+};
+
+const buildAttendanceCalendarMonthGrid = (year, monthIndex) => {
+  const firstDay = new Date(year, monthIndex, 1);
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const leadingEmptyDays = (firstDay.getDay() + 6) % 7;
+  const cells = Array.from({ length: leadingEmptyDays }, () => null);
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = new Date(year, monthIndex, day);
+    cells.push({
+      isoDate: toIsoDateString(date),
+      dayNumber: day,
+    });
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push(null);
+  }
+  return cells;
+};
+
+const describeAttendanceShiftWorkingDays = (shift) => {
+  const normalizedDayRules = normalizeShiftDayRules(shift?.dayRules, shift);
+  const workingDays = ATTENDANCE_DAY_RULE_META.filter((meta) => meta.key !== 'holiday' && normalizedDayRules[meta.key]?.enabled)
+    .map((meta) => meta.label)
+    .join(', ');
+  const holidayRule = normalizedDayRules.holiday;
+  return `${workingDays || 'No weekday rules'} • Holiday ${holidayRule?.enabled ? 'Working' : 'Off'}`;
+};
+
+const buildDefaultShiftDayRules = (base = {}) =>
+  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
+    accumulator[meta.key] = {
+      enabled: meta.defaultEnabled,
+      reportTime: String(base.reportTime || '08:00').trim(),
+      shiftEnd: String(base.shiftEnd || '17:00').trim(),
+      graceInMinutes: Math.max(0, Number(base.graceInMinutes) || 0),
+      graceOutMinutes: Math.max(0, Number(base.graceOutMinutes) || 0),
+      overtimeEnabled: Boolean(base.overtimeEnabled),
+      overtimeStartAfterMinutes: Math.max(0, Number(base.overtimeStartAfterMinutes) || 0),
+      overtimePayPerMinute: Math.max(0, Number(base.overtimePayPerMinute) || 0),
+    };
+    return accumulator;
+  }, {});
+
+const normalizeShiftDayRules = (dayRules, base = {}) =>
+  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
+    const source = dayRules?.[meta.key] || {};
+    accumulator[meta.key] = {
+      enabled: source.enabled === undefined ? meta.defaultEnabled : Boolean(source.enabled),
+      reportTime: String(source.reportTime || base.reportTime || '08:00').trim(),
+      shiftEnd: String(source.shiftEnd || base.shiftEnd || '17:00').trim(),
+      graceInMinutes:
+        source.graceInMinutes === undefined
+          ? Math.max(0, Number(base.graceInMinutes) || 0)
+          : Math.max(0, Number(source.graceInMinutes) || 0),
+      graceOutMinutes:
+        source.graceOutMinutes === undefined
+          ? Math.max(0, Number(base.graceOutMinutes) || 0)
+          : Math.max(0, Number(source.graceOutMinutes) || 0),
+      overtimeEnabled:
+        source.overtimeEnabled === undefined ? Boolean(base.overtimeEnabled) : Boolean(source.overtimeEnabled),
+      overtimeStartAfterMinutes:
+        source.overtimeStartAfterMinutes === undefined
+          ? Math.max(0, Number(base.overtimeStartAfterMinutes) || 0)
+          : Math.max(0, Number(source.overtimeStartAfterMinutes) || 0),
+      overtimePayPerMinute:
+        source.overtimePayPerMinute === undefined
+          ? Math.max(0, Number(base.overtimePayPerMinute) || 0)
+          : Math.max(0, Number(source.overtimePayPerMinute) || 0),
+    };
+    return accumulator;
+  }, {});
+
+const getAttendanceDayRuleKey = (dateValue, holidayDates = []) => {
+  const normalizedDate = String(dateValue || '').trim();
+  if (normalizedDate && holidayDates.includes(normalizedDate)) {
+    return 'holiday';
+  }
+  const parsed = parseIsoDateValue(normalizedDate);
+  const weekdayIndex = parsed?.getDay?.() ?? 1;
+  return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][weekdayIndex] || 'monday';
+};
+
+const isPermissionLeaveRecord = (row) => String(row?.type || '').trim().toLowerCase() === 'permission';
+
+const getAttendancePermissionScope = (row) => {
+  const normalized = String(row?.attendanceExemptionScope || '').trim().toLowerCase();
+  return ATTENDANCE_PERMISSION_SCOPE_OPTIONS.some((option) => option.value === normalized) ? normalized : 'all';
+};
+
 const allModuleOptions = sidebarSections.flatMap((section) =>
   section.items.map((item) => ({
     value: item.id,
@@ -250,35 +368,11 @@ const getAllowedModuleSetForUser = (user) => {
     return new Set(sidebarSections.flatMap((section) => section.items.map((item) => item.id)));
   }
   const isAdminRole = normalizedRole === 'admin' || normalizedRole === 'tenant-admin' || normalizedRole === 'superadmin';
-  const adminBaseline = [
-    'dashboard',
-    'employee-management',
-    'attendance-time',
-    'loan-records',
-    'fingerprint',
-    'leave-management',
-    'payroll-management',
-    'documents-records',
-    'reports-analytics',
-    'monitoring-tracking',
-    'user-management',
-    'settings',
-    'manual',
-    'auth-roles',
-    'recruitment',
-    'performance',
-    'training',
-  ];
   if (isAdminRole) {
-    const merged = new Set(adminBaseline);
     if (Array.isArray(user.allowedModules) && user.allowedModules.length > 0) {
-      user.allowedModules.forEach((moduleId) => {
-        if (moduleId !== 'tenant-management') {
-          merged.add(String(moduleId));
-        }
-      });
+      return new Set(user.allowedModules.filter((moduleId) => moduleId !== 'tenant-management'));
     }
-    return merged;
+    return new Set(roleModulePresets.admin);
   }
   if (Array.isArray(user.allowedModules) && user.allowedModules.length > 0) {
     return new Set(user.allowedModules.filter((moduleId) => moduleId !== 'tenant-management'));
@@ -729,6 +823,15 @@ function App({ initialModuleId }) {
   const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
   const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
   const [attendanceSettingsSavedMessage, setAttendanceSettingsSavedMessage] = useState('');
+  const [attendanceHolidayCalendarModal, setAttendanceHolidayCalendarModal] = useState({
+    open: false,
+    year: new Date().getFullYear(),
+    selectedDates: [],
+  });
+  const [attendanceShiftDayRuleModal, setAttendanceShiftDayRuleModal] = useState({
+    open: false,
+    shiftId: '',
+  });
   const [generalSettingsLoading, setGeneralSettingsLoading] = useState(false);
   const [generalSettingsError, setGeneralSettingsError] = useState('');
   const [generalSettingsSaving, setGeneralSettingsSaving] = useState(false);
@@ -759,6 +862,15 @@ function App({ initialModuleId }) {
         overtimeEnabled: false,
         overtimeStartAfterMinutes: 0,
         overtimePayPerMinute: 0,
+        dayRules: buildDefaultShiftDayRules({
+          reportTime: '08:00',
+          shiftEnd: '17:00',
+          graceInMinutes: 15,
+          graceOutMinutes: 0,
+          overtimeEnabled: false,
+          overtimeStartAfterMinutes: 0,
+          overtimePayPerMinute: 0,
+        }),
       },
       {
         id: 'SHIFT-EVENING',
@@ -770,6 +882,15 @@ function App({ initialModuleId }) {
         overtimeEnabled: false,
         overtimeStartAfterMinutes: 0,
         overtimePayPerMinute: 0,
+        dayRules: buildDefaultShiftDayRules({
+          reportTime: '14:00',
+          shiftEnd: '22:00',
+          graceInMinutes: 10,
+          graceOutMinutes: 0,
+          overtimeEnabled: false,
+          overtimeStartAfterMinutes: 0,
+          overtimePayPerMinute: 0,
+        }),
       },
     ],
     payrollWorkingDays: 26,
@@ -778,6 +899,10 @@ function App({ initialModuleId }) {
     attendanceFixedScope: 'all',
     attendanceFixedDepartment: '',
     attendanceFixedEmployeeId: '',
+    attendanceNoClockInPenaltyPercent: 50,
+    attendanceNoClockOutPenaltyPercent: 50,
+    attendanceAbsentPenaltyPercent: 100,
+    attendanceHolidayDates: [],
     statutoryRules: {
       napsaMode: 'percent-basic',
       napsaValue: 5,
@@ -854,6 +979,7 @@ function App({ initialModuleId }) {
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
+  const attendanceSettingsDraftRef = useRef(appSettings);
   const [backendHealth, setBackendHealth] = useState({
     status: 'unknown',
     mongo: 'unknown',
@@ -1632,6 +1758,21 @@ function App({ initialModuleId }) {
             : prev.attendanceFixedScope || 'all',
           attendanceFixedDepartment: String(data?.attendanceFixedDepartment || prev.attendanceFixedDepartment || ''),
           attendanceFixedEmployeeId: String(data?.attendanceFixedEmployeeId || prev.attendanceFixedEmployeeId || ''),
+          attendanceNoClockInPenaltyPercent: Math.max(
+            0,
+            Number(data?.attendanceNoClockInPenaltyPercent) || prev.attendanceNoClockInPenaltyPercent || 50
+          ),
+          attendanceNoClockOutPenaltyPercent: Math.max(
+            0,
+            Number(data?.attendanceNoClockOutPenaltyPercent) || prev.attendanceNoClockOutPenaltyPercent || 50
+          ),
+          attendanceAbsentPenaltyPercent: Math.max(
+            0,
+            Number(data?.attendanceAbsentPenaltyPercent) || prev.attendanceAbsentPenaltyPercent || 100
+          ),
+          attendanceHolidayDates: parseHolidayDateList(
+            data?.attendanceHolidayDates ?? prev.attendanceHolidayDates ?? []
+          ),
           shifts: Array.isArray(data?.shifts) && data.shifts.length > 0 ? data.shifts : prev.shifts,
         }));
         setAttendanceSettingsError('');
@@ -1645,6 +1786,10 @@ function App({ initialModuleId }) {
     fetchAttendanceSettings();
   }, [authHeaders, authToken]);
 
+  useLayoutEffect(() => {
+    attendanceSettingsDraftRef.current = appSettings;
+  }, [appSettings]);
+
   const buildAttendanceSettingsPayload = useCallback((source) => {
     return {
       attendanceLateAfter: source.attendanceLateAfter,
@@ -1657,6 +1802,10 @@ function App({ initialModuleId }) {
       attendanceFixedScope: source.attendanceFixedScope,
       attendanceFixedDepartment: source.attendanceFixedDepartment,
       attendanceFixedEmployeeId: source.attendanceFixedEmployeeId,
+      attendanceNoClockInPenaltyPercent: source.attendanceNoClockInPenaltyPercent,
+      attendanceNoClockOutPenaltyPercent: source.attendanceNoClockOutPenaltyPercent,
+      attendanceAbsentPenaltyPercent: source.attendanceAbsentPenaltyPercent,
+      attendanceHolidayDates: parseHolidayDateList(source.attendanceHolidayDates),
       shifts: Array.isArray(source.shifts) ? source.shifts : [],
     };
   }, []);
@@ -1667,7 +1816,8 @@ function App({ initialModuleId }) {
         setAttendanceSettingsSaving(true);
         setAttendanceSettingsSavedMessage('');
         setAttendanceSettingsError('');
-        const payload = buildAttendanceSettingsPayload(nextSettings || appSettings);
+        const effectiveSettings = attendanceSettingsDraftRef.current || nextSettings || appSettings;
+        const payload = buildAttendanceSettingsPayload(effectiveSettings);
         const response = await fetch(toApiUrl('http://localhost:8000/api/settings/attendance'), {
           method: 'POST',
           headers: jsonAuthHeaders,
@@ -1695,6 +1845,48 @@ function App({ initialModuleId }) {
     },
     [appSettings, buildAttendanceSettingsPayload, jsonAuthHeaders]
   );
+
+  const saveCurrentAttendanceSettings = useCallback(() => {
+    window.setTimeout(() => {
+      void saveAttendanceSettings(attendanceSettingsDraftRef.current);
+    }, 0);
+  }, [saveAttendanceSettings]);
+
+  const openAttendanceHolidayCalendarModal = useCallback(() => {
+    const selectedDates = parseHolidayDateList(attendanceSettingsDraftRef.current.attendanceHolidayDates);
+    const firstSelectedDate = parseIsoDateValue(selectedDates[0]);
+    setAttendanceHolidayCalendarModal({
+      open: true,
+      year: firstSelectedDate?.getFullYear?.() || new Date().getFullYear(),
+      selectedDates,
+    });
+  }, []);
+
+  const toggleAttendanceHolidayCalendarDate = useCallback((isoDate) => {
+    setAttendanceHolidayCalendarModal((prev) => {
+      const selectedDates = prev.selectedDates.includes(isoDate)
+        ? prev.selectedDates.filter((item) => item !== isoDate)
+        : [...prev.selectedDates, isoDate].sort();
+      return {
+        ...prev,
+        selectedDates,
+      };
+    });
+  }, []);
+
+  const saveAttendanceHolidayCalendar = useCallback(() => {
+    const nextSettings = {
+      ...attendanceSettingsDraftRef.current,
+      attendanceHolidayDates: parseHolidayDateList(attendanceHolidayCalendarModal.selectedDates),
+    };
+    attendanceSettingsDraftRef.current = nextSettings;
+    setAppSettings((prev) => ({
+      ...prev,
+      attendanceHolidayDates: nextSettings.attendanceHolidayDates,
+    }));
+    setAttendanceHolidayCalendarModal((prev) => ({ ...prev, open: false }));
+    void saveAttendanceSettings(nextSettings);
+  }, [attendanceHolidayCalendarModal.selectedDates, saveAttendanceSettings]);
 
   useEffect(() => {
     if (!authToken) {
@@ -2104,6 +2296,10 @@ function App({ initialModuleId }) {
     () => appSettings.employmentStages,
     [appSettings.employmentStages]
   );
+  const attendanceHolidayDates = useMemo(
+    () => parseHolidayDateList(appSettings.attendanceHolidayDates),
+    [appSettings.attendanceHolidayDates]
+  );
   const attendanceShiftOptions = useMemo(() => {
     const normalized = Array.isArray(appSettings.shifts)
       ? appSettings.shifts
@@ -2124,6 +2320,15 @@ function App({ initialModuleId }) {
               overtimeEnabled: Boolean(shift?.overtimeEnabled),
               overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
               overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
+              dayRules: normalizeShiftDayRules(shift?.dayRules, {
+                reportTime,
+                shiftEnd,
+                graceInMinutes: Math.max(0, Number(shift?.graceInMinutes) || 0),
+                graceOutMinutes: Math.max(0, Number(shift?.graceOutMinutes) || 0),
+                overtimeEnabled: Boolean(shift?.overtimeEnabled),
+                overtimeStartAfterMinutes: Math.max(0, Number(shift?.overtimeStartAfterMinutes) || 0),
+                overtimePayPerMinute: Math.max(0, Number(shift?.overtimePayPerMinute) || 0),
+              }),
             };
           })
           .filter(Boolean)
@@ -2146,6 +2351,19 @@ function App({ initialModuleId }) {
         overtimeEnabled: false,
         overtimeStartAfterMinutes: 0,
         overtimePayPerMinute: 0,
+        dayRules: buildDefaultShiftDayRules({
+          reportTime: appSettings.attendanceReportTime || '08:00',
+          shiftEnd: appSettings.attendanceShiftEnd || '17:00',
+          graceInMinutes: Math.max(
+            0,
+            (toMinutesFromClock(appSettings.attendanceLateAfter) ?? 0) -
+              (toMinutesFromClock(appSettings.attendanceReportTime) ?? 0)
+          ),
+          graceOutMinutes: 0,
+          overtimeEnabled: false,
+          overtimeStartAfterMinutes: 0,
+          overtimePayPerMinute: 0,
+        }),
       },
     ];
   }, [
@@ -2154,6 +2372,13 @@ function App({ initialModuleId }) {
     appSettings.attendanceShiftEnd,
     appSettings.shifts,
   ]);
+  const selectedAttendanceShiftForDayRules = useMemo(
+    () =>
+      attendanceShiftOptions.find(
+        (shift) => String(shift.id || '').trim() === String(attendanceShiftDayRuleModal.shiftId || '').trim()
+      ) || null,
+    [attendanceShiftDayRuleModal.shiftId, attendanceShiftOptions]
+  );
   const resolveShiftConfig = useCallback(
     (shiftName) => {
       const normalizedName = String(shiftName || '').trim().toLowerCase();
@@ -2728,6 +2953,7 @@ function App({ initialModuleId }) {
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
+              !isPermissionLeaveRecord(row) &&
               isLeaveFullyApprovedRecord(row)
           )
           .reduce((total, row) => total + row.daysRequested, 0);
@@ -2735,6 +2961,7 @@ function App({ initialModuleId }) {
           .filter(
             (row) =>
               String(row.employeeId || '') === String(employee.id || '') &&
+              !isPermissionLeaveRecord(row) &&
               !isLeaveRejectedRecord(row) &&
               !isLeaveFullyApprovedRecord(row)
           )
@@ -3456,21 +3683,72 @@ function App({ initialModuleId }) {
       </label>
     );
   };
-  const getAttendanceDeductionContextForRow = useCallback(
-    ({ employee, attendanceRow, checkInMinutes, lateMinutesOverride }) => {
+  const getShiftScheduleForAttendance = useCallback(
+    ({ attendanceRow, employee }) => {
       const shiftName =
         String(attendanceRow?.shift || '').trim() ||
         String(employee?.assignedShift || '').trim() ||
         attendanceShiftOptions[0]?.name ||
         'Default';
       const shiftConfig = resolveShiftConfig(shiftName);
-      const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || appSettings.attendanceReportTime) ?? 0;
-      const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
+      const scheduleDate = String(attendanceRow?.date || todayIsoDate).trim();
+      const ruleKey = getAttendanceDayRuleKey(scheduleDate, attendanceHolidayDates);
+      const ruleSource =
+        shiftConfig?.dayRules?.[ruleKey] ||
+        buildDefaultShiftDayRules({
+          reportTime: shiftConfig?.reportTime || appSettings.attendanceReportTime,
+          shiftEnd: shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd,
+          graceInMinutes: Math.max(0, Number(shiftConfig?.graceInMinutes) || 0),
+          graceOutMinutes: Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0),
+          overtimeEnabled: Boolean(shiftConfig?.overtimeEnabled),
+          overtimeStartAfterMinutes: Math.max(0, Number(shiftConfig?.overtimeStartAfterMinutes) || 0),
+          overtimePayPerMinute: Math.max(0, Number(shiftConfig?.overtimePayPerMinute) || 0),
+        })[ruleKey];
+      const reportTime = String(ruleSource?.reportTime || shiftConfig?.reportTime || appSettings.attendanceReportTime).trim();
+      const shiftEnd = String(ruleSource?.shiftEnd || shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd).trim();
+      const reportMinutes = toMinutesFromClock(reportTime) ?? 0;
+      const graceInMinutes = Math.max(0, Number(ruleSource?.graceInMinutes) || 0);
+      const lateAfterMinutes = reportMinutes + graceInMinutes;
+      const shiftEndMinutes = toMinutesFromClock(shiftEnd) ?? 0;
+      const clockOutGraceMinutes = Math.max(0, Number(ruleSource?.graceOutMinutes) || 0);
+      const overtimeStartAfterMinutes = Math.max(0, Number(ruleSource?.overtimeStartAfterMinutes) || 0);
+      return {
+        shiftName: shiftConfig?.name || shiftName,
+        ruleKey,
+        isHoliday: ruleKey === 'holiday',
+        isWorkingDay: Boolean(ruleSource?.enabled),
+        reportTime,
+        shiftEnd,
+        reportMinutes,
+        graceInMinutes,
+        lateAfterMinutes,
+        shiftEndMinutes,
+        shiftEndWithGraceMinutes: shiftEndMinutes + clockOutGraceMinutes,
+        overtimeEnabled: Boolean(ruleSource?.overtimeEnabled),
+        overtimeStartAfterMinutes,
+        overtimeStartMinutes: shiftEndMinutes + overtimeStartAfterMinutes,
+        overtimePayPerMinute: Math.max(0, Number(ruleSource?.overtimePayPerMinute) || 0),
+      };
+    },
+    [
+      appSettings.attendanceReportTime,
+      appSettings.attendanceShiftEnd,
+      attendanceHolidayDates,
+      attendanceShiftOptions,
+      resolveShiftConfig,
+      todayIsoDate,
+    ]
+  );
+  const getAttendanceDeductionContextForRow = useCallback(
+    ({ employee, attendanceRow, checkInMinutes, lateMinutesOverride }) => {
+      const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
       const effectiveLateMinutes =
-        typeof lateMinutesOverride === 'number'
+        !shiftSchedule.isWorkingDay
+          ? 0
+          : typeof lateMinutesOverride === 'number'
           ? lateMinutesOverride
-          : Number.isFinite(checkInMinutes) && lateAfterMinutes !== null
-            ? Math.max(0, checkInMinutes - lateAfterMinutes)
+          : Number.isFinite(checkInMinutes) && shiftSchedule.lateAfterMinutes !== null
+            ? Math.max(0, checkInMinutes - shiftSchedule.lateAfterMinutes)
             : 0;
       const payrollProfile = getEmployeePayrollProfile({
         moduleRowsState,
@@ -3480,8 +3758,8 @@ function App({ initialModuleId }) {
       });
       const basicPay = toNumberValue(payrollProfile?.basicPay);
       const workingDays = Math.max(1, Number(payrollProfile?.workingDays || appSettings.payrollWorkingDays) || 1);
-      const shiftStart = shiftConfig?.reportTime || appSettings.attendanceReportTime;
-      const shiftEnd = shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd;
+      const shiftStart = shiftSchedule.reportTime || appSettings.attendanceReportTime;
+      const shiftEnd = shiftSchedule.shiftEnd || appSettings.attendanceShiftEnd;
       const scheduledMinutes = Math.max(1, getMinutesBetweenClocks(shiftStart, shiftEnd) || 1);
       const autoMinuteRate = basicPay > 0 ? basicPay / workingDays / scheduledMinutes : 0;
       const fixedMinuteRate = Math.max(0, Number(appSettings.attendanceFixedDeductionPerMinute) || 0);
@@ -3496,10 +3774,13 @@ function App({ initialModuleId }) {
         appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
       const deductionAmount = effectiveLateMinutes * deductionRatePerMinute;
       return {
-        shiftName,
+        shiftName: shiftSchedule.shiftName,
         lateMinutes: effectiveLateMinutes,
         deductionRatePerMinute,
         deductionAmount,
+        isWorkingDay: shiftSchedule.isWorkingDay,
+        ruleKey: shiftSchedule.ruleKey,
+        isHoliday: shiftSchedule.isHoliday,
       };
     },
     [
@@ -3511,10 +3792,9 @@ function App({ initialModuleId }) {
       appSettings.attendanceFixedDepartment,
       appSettings.attendanceFixedEmployeeId,
       appSettings.payrollWorkingDays,
-      attendanceShiftOptions,
       employeeBaseRows,
+      getShiftScheduleForAttendance,
       moduleRowsState,
-      resolveShiftConfig,
     ]
   );
   const enrichMergedAttendanceRow = useCallback(
@@ -3535,7 +3815,19 @@ function App({ initialModuleId }) {
       const summaryStatus = String(baseRow?.status || summary.status || '').trim();
       const status =
         summaryStatus ||
-        (deductionContext.lateMinutes > 0 ? 'Late' : summary.checkIn ? 'On Time' : baseRow?.status || 'Pending Clock In');
+        (!deductionContext.isWorkingDay
+          ? summary.checkIn
+            ? deductionContext.isHoliday
+              ? 'Holiday Worked'
+              : 'Off Day Worked'
+            : deductionContext.isHoliday
+              ? 'Holiday'
+              : 'Off Day'
+          : deductionContext.lateMinutes > 0
+            ? 'Late'
+            : summary.checkIn
+              ? 'On Time'
+              : baseRow?.status || 'Pending Clock In');
       return {
         ...baseRow,
         date: dateValue,
@@ -3739,38 +4031,6 @@ function App({ initialModuleId }) {
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
   );
-  const getShiftScheduleForAttendance = useCallback(
-    ({ attendanceRow, employee }) => {
-      const shiftName =
-        String(attendanceRow?.shift || '').trim() ||
-        String(employee?.assignedShift || '').trim() ||
-        attendanceShiftOptions[0]?.name ||
-        'Default';
-      const shiftConfig = resolveShiftConfig(shiftName);
-      const reportMinutes = toMinutesFromClock(shiftConfig?.reportTime || appSettings.attendanceReportTime) ?? 0;
-      const lateAfterMinutes = reportMinutes + Math.max(0, Number(shiftConfig?.graceInMinutes) || 0);
-      const shiftEndMinutes = toMinutesFromClock(shiftConfig?.shiftEnd || appSettings.attendanceShiftEnd) ?? 0;
-      const clockOutGraceMinutes = Math.max(0, Number(shiftConfig?.graceOutMinutes) || 0);
-      const overtimeStartAfterMinutes = Math.max(0, Number(shiftConfig?.overtimeStartAfterMinutes) || 0);
-      return {
-        shiftName: shiftConfig?.name || shiftName,
-        reportMinutes,
-        lateAfterMinutes,
-        shiftEndMinutes,
-        shiftEndWithGraceMinutes: shiftEndMinutes + clockOutGraceMinutes,
-        overtimeEnabled: Boolean(shiftConfig?.overtimeEnabled),
-        overtimeStartAfterMinutes,
-        overtimeStartMinutes: shiftEndMinutes + overtimeStartAfterMinutes,
-        overtimePayPerMinute: Math.max(0, Number(shiftConfig?.overtimePayPerMinute) || 0),
-      };
-    },
-    [
-      appSettings.attendanceReportTime,
-      appSettings.attendanceShiftEnd,
-      attendanceShiftOptions,
-      resolveShiftConfig,
-    ]
-  );
   const penaltyAdjustmentRows = useMemo(() => moduleRowsState['attendance-penalty-adjustments'] || [], [moduleRowsState]);
   const attendanceComplianceRows = useMemo(() => {
     if (
@@ -3828,47 +4088,79 @@ function App({ initialModuleId }) {
           leaveEmployeeId === String(employee.id || '') || leaveEmployee === String(employee.fullName || '');
         return (
           matchesEmployee &&
+          !isPermissionLeaveRecord(leaveRow) &&
           (status === 'approved' || status === 'active') &&
           String(leaveRow.startDate || '') <= targetDate &&
           String(leaveRow.endDate || '') >= targetDate
         );
       });
+      const permissionMatch = leaveRows.find((leaveRow) => {
+        const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
+        const leaveEmployee = String(leaveRow.employee || '').trim();
+        const status = String(leaveRow.status || '').toLowerCase();
+        const matchesEmployee =
+          leaveEmployeeId === String(employee.id || '') || leaveEmployee === String(employee.fullName || '');
+        return (
+          matchesEmployee &&
+          isPermissionLeaveRecord(leaveRow) &&
+          (status === 'approved' || status === 'active') &&
+          String(leaveRow.startDate || '') <= targetDate &&
+          String(leaveRow.endDate || '') >= targetDate
+        );
+      });
+      const permissionScope = permissionMatch ? getAttendancePermissionScope(permissionMatch) : '';
+      const exemptLate = permissionScope === 'all' || permissionScope === 'late-only';
+      const exemptNoClockIn = permissionScope === 'all' || permissionScope === 'missing-clock' || permissionScope === 'no-clock-in';
+      const exemptNoClockOut = permissionScope === 'all' || permissionScope === 'missing-clock' || permissionScope === 'no-clock-out';
       const employeeStatus = String(employee.status || '').toLowerCase();
       const employeeStage = String(employee.employmentState || '').toLowerCase();
       const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
       const isOnLeave = Boolean(leaveMatch);
-      const isExempt = isOffDuty || isOnLeave;
+      const isOffScheduleDay = !shiftSchedule.isWorkingDay;
+      const isExempt = isOffDuty || isOnLeave || isOffScheduleDay;
       const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
       const rawCheckOut = String(attendanceSummary.checkOut || '');
       const hasMidnightCheckout = rawCheckOut === '00:00' || rawCheckOut === '24:00';
       const checkOutMinutes = hasMidnightCheckout ? null : toMinutesFromClock(rawCheckOut);
       const hasClockIn = checkInMinutes !== null;
       const hasClockOut = checkOutMinutes !== null && checkOutMinutes > (checkInMinutes ?? 0);
-      const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+      const isLate = shiftSchedule.isWorkingDay && hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
       const leftEarly =
         hasClockOut && shiftSchedule.shiftEndMinutes > 0 && checkOutMinutes < shiftSchedule.shiftEndMinutes;
       const overtimeMinutes =
-        hasClockOut && shiftSchedule.overtimeEnabled
+        shiftSchedule.isWorkingDay && hasClockOut && shiftSchedule.overtimeEnabled
           ? Math.max(0, (checkOutMinutes ?? 0) - shiftSchedule.overtimeStartMinutes)
           : 0;
       const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
       const lateMinutes = Math.max(0, Number(deductionContext.lateMinutes || effectiveAttendanceRow?.lateMinutes || matchedAttendanceRow?.lateMinutes || 0));
-      const lateDeduction = Math.max(
+      const lateDeductionBase = Math.max(
         0,
         toNumberValue(effectiveAttendanceRow?.deductionAmount || matchedAttendanceRow?.deductionAmount || deductionContext.deductionAmount || 0)
       );
+      const lateDeduction = exemptLate ? 0 : lateDeductionBase;
       const countMissingClockIn =
         !isExempt &&
+        !exemptNoClockIn &&
         !hasClockIn &&
         (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
       const countMissingClockOut =
         !isExempt &&
+        !exemptNoClockOut &&
         !hasClockOut &&
         (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
       const missingCount = Number(countMissingClockIn) + Number(countMissingClockOut);
-      const noClockInPenalty = missingCount === 1 && countMissingClockIn ? dailyWage / 2 : 0;
-      const noClockOutPenalty = missingCount === 1 && countMissingClockOut ? dailyWage / 2 : 0;
-      const absentPenalty = missingCount >= 2 ? dailyWage : 0;
+      const noClockInPenalty =
+        missingCount === 1 && countMissingClockIn
+          ? dailyWage * (Math.max(0, Number(appSettings.attendanceNoClockInPenaltyPercent) || 0) / 100)
+          : 0;
+      const noClockOutPenalty =
+        missingCount === 1 && countMissingClockOut
+          ? dailyWage * (Math.max(0, Number(appSettings.attendanceNoClockOutPenaltyPercent) || 0) / 100)
+          : 0;
+      const absentPenalty =
+        missingCount >= 2
+          ? dailyWage * (Math.max(0, Number(appSettings.attendanceAbsentPenaltyPercent) || 0) / 100)
+          : 0;
       const pendingClockIn = !isExempt && !hasClockIn && !countMissingClockIn;
       const penalties = [];
       if (lateDeduction > 0) {
@@ -3881,35 +4173,43 @@ function App({ initialModuleId }) {
       if (noClockInPenalty > 0) {
         penalties.push({
           type: 'no-clock-in',
-          label: 'No Clock In (Half Day)',
+          label: 'No Clock In',
           amount: noClockInPenalty,
         });
       }
       if (noClockOutPenalty > 0) {
         penalties.push({
           type: 'no-clock-out',
-          label: 'No Clock Out (Half Day)',
+          label: 'No Clock Out',
           amount: noClockOutPenalty,
         });
       }
       if (absentPenalty > 0) {
         penalties.push({
           type: 'absent',
-          label: 'Absent (Full Day)',
+          label: 'Absent',
           amount: absentPenalty,
         });
       }
       let dailyStatus = 'On Time';
-      if (isExempt) {
-        dailyStatus = isOnLeave ? 'On Leave' : 'Off Duty';
+      if (isOnLeave) {
+        dailyStatus = 'On Leave';
+      } else if (isOffDuty) {
+        dailyStatus = 'Off Duty';
+      } else if (isOffScheduleDay) {
+        dailyStatus = hasClockIn || hasClockOut ? (shiftSchedule.isHoliday ? 'Holiday Worked' : 'Off Day Worked') : (shiftSchedule.isHoliday ? 'Holiday' : 'Off Day');
+      } else if (permissionMatch && !hasClockIn && !hasClockOut && (exemptNoClockIn || exemptNoClockOut)) {
+        dailyStatus = 'Permission';
       } else if (absentPenalty > 0) {
         dailyStatus = 'Absent';
       } else if (!hasClockIn) {
-        dailyStatus = pendingClockIn ? 'Pending Clock In' : 'No Clock In';
+        dailyStatus = exemptNoClockIn ? 'No Clock In (Permitted)' : pendingClockIn ? 'Pending Clock In' : 'No Clock In';
+      } else if (!hasClockOut && exemptNoClockOut) {
+        dailyStatus = 'No Clock Out (Permitted)';
       } else if (noClockOutPenalty > 0) {
         dailyStatus = 'Clocked In Once';
       } else if (isLate) {
-        dailyStatus = 'Late';
+        dailyStatus = exemptLate ? 'Late (Permitted)' : 'Late';
       }
       if (dailyStatus === 'On Time' && leftEarly) {
         dailyStatus = 'Left Early';
@@ -3933,6 +4233,9 @@ function App({ initialModuleId }) {
         dailyWage,
         dailyStatus,
         isLate,
+        permissionId: String(permissionMatch?.id || ''),
+        permissionScope,
+        permissionReason: String(permissionMatch?.reason || ''),
         leftEarly,
         overtimeMinutes,
         overtimeAmount,
@@ -3973,6 +4276,9 @@ function App({ initialModuleId }) {
     return [...rowsFromAttendance, ...missingEmployeeRows];
   }, [
     activeModuleId,
+    appSettings.attendanceAbsentPenaltyPercent,
+    appSettings.attendanceNoClockInPenaltyPercent,
+    appSettings.attendanceNoClockOutPenaltyPercent,
     attendanceViewTab,
     currentUser,
     attendanceAuditDate,
@@ -6208,7 +6514,11 @@ function App({ initialModuleId }) {
           showToast('Reason is required.', 'error');
           return;
         }
-        if (String(formValues.startDate || '') < todayIsoDate || String(formValues.endDate || '') < todayIsoDate) {
+        const isPermissionRequest = isPermissionLeaveRecord(formValues);
+        if (
+          !isPermissionRequest &&
+          (String(formValues.startDate || '') < todayIsoDate || String(formValues.endDate || '') < todayIsoDate)
+        ) {
           setFormError('Past dates are not allowed for leave request.');
           showToast('Past dates are not allowed for leave request.', 'error');
           return;
@@ -6219,7 +6529,7 @@ function App({ initialModuleId }) {
           showToast('Select a valid start and end date.', 'error');
           return;
         }
-        if (selectedLeaveFormBalance && leaveDays > selectedLeaveFormBalance.availableBalance) {
+        if (!isPermissionRequest && selectedLeaveFormBalance && leaveDays > selectedLeaveFormBalance.availableBalance) {
           setFormError(
             `Requested ${leaveDays} day(s) exceeds remaining ${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s).`
           );
@@ -6241,6 +6551,9 @@ function App({ initialModuleId }) {
           endDate: formValues.endDate,
           daysRequested: leaveDays,
           reason,
+          attendanceExemptionScope: isPermissionRequest
+            ? getAttendancePermissionScope(formValues)
+            : '',
           requestedOn: formValues.requestedOn || `${getTodayIsoDate()} ${getCurrentClockValue()}`,
           departmentApproval: formValues.departmentApproval || 'Pending',
           departmentApprover: formValues.departmentApprover || '',
@@ -7554,7 +7867,7 @@ function App({ initialModuleId }) {
                             attendanceReportTime: event.target.value || '08:00',
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       />
                     </label>
                     <label>
@@ -7569,7 +7882,7 @@ function App({ initialModuleId }) {
                             attendanceLateAfter: event.target.value || '08:15',
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       />
                     </label>
                     <label>
@@ -7584,7 +7897,7 @@ function App({ initialModuleId }) {
                             attendanceShiftEnd: event.target.value || '17:00',
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       />
                     </label>
                     <label className="inline-field">
@@ -7597,11 +7910,45 @@ function App({ initialModuleId }) {
                             ...appSettings,
                             requireWebClockInPhoto: event.target.checked,
                           };
+                          attendanceSettingsDraftRef.current = nextSettings;
                           setAppSettings(nextSettings);
                           void saveAttendanceSettings(nextSettings);
                         }}
                       />
                     </label>
+                    <div className="attendance-settings-card" style={{ gridColumn: '1 / -1' }}>
+                      <div className="attendance-settings-card-head">
+                        <div>
+                          <strong>Holiday Calendar</strong>
+                          <p>Select holiday dates from a full-year calendar instead of typing them one by one.</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="neutral-btn"
+                          disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                          onClick={openAttendanceHolidayCalendarModal}
+                        >
+                          Manage Holidays
+                        </button>
+                      </div>
+                      <div className="attendance-holiday-summary">
+                        <span>{attendanceHolidayDates.length} holiday date(s) selected</span>
+                        {attendanceHolidayDates.length > 0 ? (
+                          <div className="attendance-chip-list">
+                            {attendanceHolidayDates.slice(0, 10).map((holidayDate) => (
+                              <span key={holidayDate} className="attendance-chip">
+                                {formatCardDate(holidayDate)}
+                              </span>
+                            ))}
+                            {attendanceHolidayDates.length > 10 ? (
+                              <span className="attendance-chip">+{attendanceHolidayDates.length - 10} more</span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <p className="muted-note">No holidays selected yet.</p>
+                        )}
+                      </div>
+                    </div>
                     <div className="attendance-audit-wrap" style={{ gridColumn: '1 / -1' }}>
                       <div className="attendance-audit-head">
                         <h4>Shift Templates</h4>
@@ -7626,9 +7973,19 @@ function App({ initialModuleId }) {
                                       overtimeEnabled: false,
                                       overtimeStartAfterMinutes: 0,
                                       overtimePayPerMinute: 0,
+                                      dayRules: buildDefaultShiftDayRules({
+                                        reportTime: prev.attendanceReportTime || '08:00',
+                                        shiftEnd: prev.attendanceShiftEnd || '17:00',
+                                        graceInMinutes: 15,
+                                        graceOutMinutes: 0,
+                                        overtimeEnabled: false,
+                                        overtimeStartAfterMinutes: 0,
+                                        overtimePayPerMinute: 0,
+                                      }),
                                     },
                                   ],
                                 };
+                                attendanceSettingsDraftRef.current = nextSettings;
                                 void saveAttendanceSettings(nextSettings);
                                 return nextSettings;
                               })
@@ -7696,8 +8053,11 @@ function App({ initialModuleId }) {
                                         );
                                       }
                                     }}
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
+                                  <div className="attendance-shift-summary">
+                                    {describeAttendanceShiftWorkingDays(shift)}
+                                  </div>
                                 </td>
                                 <td>
                                   <input
@@ -7714,7 +8074,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
@@ -7732,7 +8092,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
@@ -7751,7 +8111,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
@@ -7770,7 +8130,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
@@ -7788,7 +8148,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   >
                                     <option value="off">Off</option>
                                     <option value="on">On</option>
@@ -7810,7 +8170,7 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
@@ -7830,50 +8190,70 @@ function App({ initialModuleId }) {
                                         ),
                                       }))
                                     }
-                                    onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                                    onBlur={saveCurrentAttendanceSettings}
                                   />
                                 </td>
                                 <td>
-                                  <button
-                                    type="button"
-                                    className="danger-btn"
-                                    onClick={() =>
-                                      (() => {
-                                        const removingName = String(shift.name || '').trim();
-                                        const fallbackShiftName =
-                                          attendanceShiftOptions.find((item) => String(item.name || '').trim() !== removingName)?.name ||
-                                          '';
-                                        setAppSettings((prev) => {
-                                          const nextSettings = {
+                                  <div className="attendance-shift-action-stack">
+                                    <button
+                                      type="button"
+                                      className="neutral-btn"
+                                      disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                                      onClick={() =>
+                                        setAttendanceShiftDayRuleModal({
+                                          open: true,
+                                          shiftId: String(shift.id || ''),
+                                        })
+                                      }
+                                    >
+                                      Edit Day Rules
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="danger-btn"
+                                      onClick={() =>
+                                        (() => {
+                                          const removingName = String(shift.name || '').trim();
+                                          const fallbackShiftName =
+                                            attendanceShiftOptions.find((item) => String(item.name || '').trim() !== removingName)?.name ||
+                                            '';
+                                          setAppSettings((prev) => {
+                                            const nextSettings = {
+                                              ...prev,
+                                              shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).filter(
+                                                (item, itemIndex) => !(item.id === shift.id || itemIndex === index)
+                                              ),
+                                            };
+                                            attendanceSettingsDraftRef.current = nextSettings;
+                                            void saveAttendanceSettings(nextSettings);
+                                            return nextSettings;
+                                          });
+                                          if (attendanceShiftDayRuleModal.open && attendanceShiftDayRuleModal.shiftId === shift.id) {
+                                            setAttendanceShiftDayRuleModal({ open: false, shiftId: '' });
+                                          }
+                                          setModuleRowsState((prev) => ({
                                             ...prev,
-                                            shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).filter(
-                                              (item, itemIndex) => !(item.id === shift.id || itemIndex === index)
+                                            'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
+                                              String(employeeRow.assignedShift || '').trim() === removingName
+                                                ? { ...employeeRow, assignedShift: fallbackShiftName }
+                                                : employeeRow
                                             ),
-                                          };
-                                          void saveAttendanceSettings(nextSettings);
-                                          return nextSettings;
-                                        });
-                                        setModuleRowsState((prev) => ({
-                                          ...prev,
-                                          'employee-management': (prev['employee-management'] || []).map((employeeRow) =>
-                                            String(employeeRow.assignedShift || '').trim() === removingName
-                                              ? { ...employeeRow, assignedShift: fallbackShiftName }
-                                              : employeeRow
-                                          ),
-                                        }));
-                                        setAttendanceClockDraft((prev) =>
-                                          String(prev.shift || '').trim() === removingName
-                                            ? { ...prev, shift: fallbackShiftName }
-                                            : prev
-                                        );
-                                      })()
-                                    }
-                                    disabled={attendanceShiftOptions.length <= 1 || attendanceSettingsLoading || attendanceSettingsSaving}
-                                  >
-                                    Remove
-                                  </button>
+                                          }));
+                                          setAttendanceClockDraft((prev) =>
+                                            String(prev.shift || '').trim() === removingName
+                                              ? { ...prev, shift: fallbackShiftName }
+                                              : prev
+                                          );
+                                        })()
+                                      }
+                                      disabled={attendanceShiftOptions.length <= 1 || attendanceSettingsLoading || attendanceSettingsSaving}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
+                              
                             ))}
                           </tbody>
                         </table>
@@ -7893,7 +8273,58 @@ function App({ initialModuleId }) {
                             payrollWorkingDays: Math.max(1, Number(event.target.value) || 1),
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
+                      />
+                    </label>
+                    <label>
+                      <span>No Clock In Deduction (% of Daily Wage)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                        value={appSettings.attendanceNoClockInPenaltyPercent}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            attendanceNoClockInPenaltyPercent: Math.max(0, Number(event.target.value) || 0),
+                          }))
+                        }
+                        onBlur={saveCurrentAttendanceSettings}
+                      />
+                    </label>
+                    <label>
+                      <span>No Clock Out Deduction (% of Daily Wage)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                        value={appSettings.attendanceNoClockOutPenaltyPercent}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            attendanceNoClockOutPenaltyPercent: Math.max(0, Number(event.target.value) || 0),
+                          }))
+                        }
+                        onBlur={saveCurrentAttendanceSettings}
+                      />
+                    </label>
+                    <label>
+                      <span>Absent Deduction (% of Daily Wage)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                        value={appSettings.attendanceAbsentPenaltyPercent}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            attendanceAbsentPenaltyPercent: Math.max(0, Number(event.target.value) || 0),
+                          }))
+                        }
+                        onBlur={saveCurrentAttendanceSettings}
                       />
                     </label>
                     <label>
@@ -7908,7 +8339,7 @@ function App({ initialModuleId }) {
                             attendanceCalculationMode: event.target.value === 'fixed' ? 'fixed' : 'auto',
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       >
                         <option value="auto">System Calculation</option>
                         <option value="fixed">Fixed Per Minute</option>
@@ -7928,7 +8359,7 @@ function App({ initialModuleId }) {
                             attendanceFixedDeductionPerMinute: Math.max(0, Number(event.target.value) || 0),
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       />
                     </label>
                     <label>
@@ -7943,7 +8374,7 @@ function App({ initialModuleId }) {
                             attendanceFixedScope: event.target.value,
                           }))
                         }
-                        onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                        onBlur={saveCurrentAttendanceSettings}
                       >
                         <option value="all">All Employees</option>
                         <option value="department">By Department</option>
@@ -7963,7 +8394,7 @@ function App({ initialModuleId }) {
                               attendanceFixedDepartment: event.target.value,
                             }))
                           }
-                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                          onBlur={saveCurrentAttendanceSettings}
                         >
                           <option value="">Select department</option>
                           {currentDepartmentOptions.map((department) => (
@@ -7987,7 +8418,7 @@ function App({ initialModuleId }) {
                               attendanceFixedEmployeeId: event.target.value,
                             }))
                           }
-                          onBlur={() => saveAttendanceSettings({ ...appSettings })}
+                          onBlur={saveCurrentAttendanceSettings}
                         >
                           <option value="">Select employee</option>
                           {employeeBaseRows.map((employee) => (
@@ -8003,7 +8434,7 @@ function App({ initialModuleId }) {
                         type="button"
                         className="primary-btn"
                         disabled={attendanceSettingsLoading || attendanceSettingsSaving}
-                        onClick={() => saveAttendanceSettings({ ...appSettings })}
+                        onClick={saveCurrentAttendanceSettings}
                       >
                         {attendanceSettingsSaving ? 'Saving Attendance Settings...' : 'Save Attendance Settings'}
                       </button>
@@ -9671,6 +10102,405 @@ function App({ initialModuleId }) {
           )}
         </main>
       </div>
+      {isSettingsPage && attendanceHolidayCalendarModal.open ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => setAttendanceHolidayCalendarModal((prev) => ({ ...prev, open: false }))}
+        >
+          <div
+            className="modal-card attendance-calendar-modal"
+            onClick={(event) => event.stopPropagation()}
+            style={{ width: 'min(1180px, 98vw)' }}
+          >
+            <div className="modal-header">
+              <h3>Holiday Calendar</h3>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() => setAttendanceHolidayCalendarModal((prev) => ({ ...prev, open: false }))}
+              >
+                Close
+              </button>
+            </div>
+            <div className="attendance-calendar-toolbar">
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() =>
+                  setAttendanceHolidayCalendarModal((prev) => ({
+                    ...prev,
+                    year: prev.year - 1,
+                  }))
+                }
+              >
+                Prev Year
+              </button>
+              <strong>{attendanceHolidayCalendarModal.year}</strong>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() =>
+                  setAttendanceHolidayCalendarModal((prev) => ({
+                    ...prev,
+                    year: prev.year + 1,
+                  }))
+                }
+              >
+                Next Year
+              </button>
+            </div>
+            <div className="attendance-calendar-grid">
+              {ATTENDANCE_CALENDAR_MONTH_LABELS.map((monthLabel, monthIndex) => (
+                <div key={`${attendanceHolidayCalendarModal.year}-${monthLabel}`} className="attendance-calendar-month">
+                  <h4>
+                    {monthLabel} {attendanceHolidayCalendarModal.year}
+                  </h4>
+                  <div className="attendance-calendar-weekdays">
+                    {ATTENDANCE_CALENDAR_WEEKDAY_LABELS.map((weekday) => (
+                      <span key={`${monthLabel}-${weekday}`}>{weekday}</span>
+                    ))}
+                  </div>
+                  <div className="attendance-calendar-days">
+                    {buildAttendanceCalendarMonthGrid(attendanceHolidayCalendarModal.year, monthIndex).map((cell, cellIndex) =>
+                      cell ? (
+                        <button
+                          key={cell.isoDate}
+                          type="button"
+                          className={`attendance-calendar-day ${
+                            attendanceHolidayCalendarModal.selectedDates.includes(cell.isoDate) ? 'selected' : ''
+                          }`}
+                          onClick={() => toggleAttendanceHolidayCalendarDate(cell.isoDate)}
+                        >
+                          {cell.dayNumber}
+                        </button>
+                      ) : (
+                        <span key={`${monthLabel}-empty-${cellIndex}`} className="attendance-calendar-day empty" />
+                      )
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="attendance-audit-actions" style={{ marginTop: 16 }}>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() =>
+                  setAttendanceHolidayCalendarModal((prev) => ({
+                    ...prev,
+                    selectedDates: [],
+                  }))
+                }
+              >
+                Clear All
+              </button>
+              <button type="button" className="primary-btn" onClick={saveAttendanceHolidayCalendar}>
+                Save Holidays
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isSettingsPage && attendanceShiftDayRuleModal.open && selectedAttendanceShiftForDayRules ? (
+        <div
+          className="modal-backdrop"
+          onClick={() => setAttendanceShiftDayRuleModal({ open: false, shiftId: '' })}
+        >
+          <div
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+            style={{ width: 'min(1180px, 98vw)' }}
+          >
+            <div className="modal-header">
+              <h3>{selectedAttendanceShiftForDayRules.name} Day Rules</h3>
+              <button
+                type="button"
+                className="neutral-btn"
+                onClick={() => setAttendanceShiftDayRuleModal({ open: false, shiftId: '' })}
+              >
+                Close
+              </button>
+            </div>
+            <p className="muted-note" style={{ marginTop: 0 }}>
+              Edit which days count as working days and set different Saturday, Sunday, or holiday timings without overcrowding the main settings page.
+            </p>
+            <div className="attendance-audit-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th>Working</th>
+                    <th>Time In</th>
+                    <th>Time Out</th>
+                    <th>Grace In</th>
+                    <th>Grace Out</th>
+                    <th>OT</th>
+                    <th>OT Start After</th>
+                    <th>OT Pay / Min</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ATTENDANCE_DAY_RULE_META.map((dayMeta) => {
+                    const dayRule =
+                      selectedAttendanceShiftForDayRules.dayRules?.[dayMeta.key] ||
+                      buildDefaultShiftDayRules(selectedAttendanceShiftForDayRules)[dayMeta.key];
+                    return (
+                      <tr key={`${selectedAttendanceShiftForDayRules.id || selectedAttendanceShiftForDayRules.name}-${dayMeta.key}`}>
+                        <td>{dayMeta.label}</td>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(dayRule.enabled)}
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        enabled: event.target.checked,
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="time"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.reportTime}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        reportTime: event.target.value || '08:00',
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="time"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.shiftEnd}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        shiftEnd: event.target.value || '17:00',
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.graceInMinutes}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        graceInMinutes: Math.max(0, Number(event.target.value) || 0),
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.graceOutMinutes}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        graceOutMinutes: Math.max(0, Number(event.target.value) || 0),
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            className="filter-select"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.overtimeEnabled ? 'on' : 'off'}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        overtimeEnabled: event.target.value === 'on',
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          >
+                            <option value="off">Off</option>
+                            <option value="on">On</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.overtimeStartAfterMinutes}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        overtimeStartAfterMinutes: Math.max(0, Number(event.target.value) || 0),
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            disabled={attendanceSettingsLoading || attendanceSettingsSaving}
+                            value={dayRule.overtimePayPerMinute}
+                            onChange={(event) =>
+                              setAppSettings((prev) => ({
+                                ...prev,
+                                shifts: (Array.isArray(prev.shifts) ? prev.shifts : []).map((item) => {
+                                  if (String(item.id || '') !== String(selectedAttendanceShiftForDayRules.id || '')) {
+                                    return item;
+                                  }
+                                  const normalizedDayRules = normalizeShiftDayRules(item.dayRules, item);
+                                  return {
+                                    ...item,
+                                    dayRules: {
+                                      ...normalizedDayRules,
+                                      [dayMeta.key]: {
+                                        ...normalizedDayRules[dayMeta.key],
+                                        overtimePayPerMinute: Math.max(0, Number(event.target.value) || 0),
+                                      },
+                                    },
+                                  };
+                                }),
+                              }))
+                            }
+                            onBlur={saveCurrentAttendanceSettings}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="attendance-audit-actions" style={{ marginTop: 16 }}>
+              <button type="button" className="primary-btn" onClick={saveCurrentAttendanceSettings}>
+                Save Day Rules
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {!isSettingsPage && isInstallHelpOpen ? (
         <div className="modal-backdrop" onClick={() => setIsInstallHelpOpen(false)}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 520 }}>
@@ -9789,10 +10619,14 @@ function App({ initialModuleId }) {
                         setFormValues((prev) => ({
                           ...prev,
                           type: event.target.value,
+                          attendanceExemptionScope:
+                            event.target.value === 'Permission'
+                              ? getAttendancePermissionScope(prev)
+                              : '',
                         }))
                       }
                     >
-                      {['Annual', 'Sick', 'Maternity', 'Paternity', 'Emergency', 'Unpaid'].map((option) => (
+                      {['Annual', 'Sick', 'Maternity', 'Paternity', 'Emergency', 'Unpaid', 'Permission'].map((option) => (
                         <option key={option} value={option}>
                           {option}
                         </option>
@@ -9804,7 +10638,7 @@ function App({ initialModuleId }) {
                     <input
                       type="date"
                       value={formValues.startDate || ''}
-                      min={todayIsoDate}
+                      min={String(formValues.type || '') === 'Permission' ? '' : todayIsoDate}
                       onChange={(event) =>
                         setFormValues((prev) => ({
                           ...prev,
@@ -9818,7 +10652,7 @@ function App({ initialModuleId }) {
                     <input
                       type="date"
                       value={formValues.endDate || ''}
-                      min={formValues.startDate || todayIsoDate}
+                      min={String(formValues.type || '') === 'Permission' ? '' : formValues.startDate || todayIsoDate}
                       onChange={(event) =>
                         setFormValues((prev) => ({
                           ...prev,
@@ -9828,18 +10662,40 @@ function App({ initialModuleId }) {
                     />
                   </label>
                   <label>
-                    <span>Days Requested</span>
+                    <span>{String(formValues.type || '') === 'Permission' ? 'Days Covered' : 'Days Requested'}</span>
                     <input value={leaveFormAutoDaysRequested > 0 ? String(leaveFormAutoDaysRequested) : ''} readOnly />
                   </label>
-                  <label>
-                    <span>Remaining Balance</span>
-                    <input
-                      value={
-                        selectedLeaveFormBalance ? `${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s)` : ''
-                      }
-                      readOnly
-                    />
-                  </label>
+                  {String(formValues.type || '') !== 'Permission' ? (
+                    <label>
+                      <span>Remaining Balance</span>
+                      <input
+                        value={
+                          selectedLeaveFormBalance ? `${selectedLeaveFormBalance.availableBalance.toFixed(1)} day(s)` : ''
+                        }
+                        readOnly
+                      />
+                    </label>
+                  ) : (
+                    <label>
+                      <span>Exemption Scope</span>
+                      <select
+                        className="filter-select"
+                        value={getAttendancePermissionScope(formValues)}
+                        onChange={(event) =>
+                          setFormValues((prev) => ({
+                            ...prev,
+                            attendanceExemptionScope: event.target.value,
+                          }))
+                        }
+                      >
+                        {ATTENDANCE_PERMISSION_SCOPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <label>
                     <span>Reason *</span>
                     <textarea

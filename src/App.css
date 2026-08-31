@@ -2132,6 +2132,135 @@ tbody tr:hover {
   color: #1f3670;
 }
 
+.attendance-settings-card {
+  border: 1px solid #dbe7fb;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.attendance-settings-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.attendance-settings-card-head strong {
+  display: block;
+  color: #1f3670;
+  margin-bottom: 4px;
+}
+
+.attendance-settings-card-head p {
+  margin: 0;
+  color: #5b6f96;
+  font-size: 0.9rem;
+}
+
+.attendance-holiday-summary {
+  display: grid;
+  gap: 10px;
+  color: #32466f;
+}
+
+.attendance-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attendance-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #cfe0fb;
+  background: #f6f9ff;
+  color: #24427b;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.84rem;
+}
+
+.attendance-shift-summary {
+  margin-top: 6px;
+  color: #64779d;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.attendance-shift-action-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.attendance-calendar-modal {
+  display: grid;
+  gap: 14px;
+}
+
+.attendance-calendar-toolbar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.attendance-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.attendance-calendar-month {
+  border: 1px solid #dbe7fb;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px;
+}
+
+.attendance-calendar-month h4 {
+  margin: 0 0 10px;
+  color: #1f3670;
+}
+
+.attendance-calendar-weekdays,
+.attendance-calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.attendance-calendar-weekdays span {
+  text-align: center;
+  font-size: 0.75rem;
+  color: #6f84ad;
+}
+
+.attendance-calendar-day {
+  min-height: 34px;
+  border: 1px solid #d4e0f4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #24427b;
+  cursor: pointer;
+}
+
+.attendance-calendar-day.selected {
+  background: #21425f;
+  border-color: #21425f;
+  color: #ffffff;
+}
+
+.attendance-calendar-day.empty {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+
 .manual-page {
   display: grid;
   gap: 14px;
