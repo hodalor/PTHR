@@ -41,6 +41,7 @@ const allowedUserRoles = new Set(['employee', 'manager', 'hr', 'admin', 'tenant-
 const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
 const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
 const HOT_READ_CACHE_TTL_MS = 15000;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 const moduleCollections = {
   'employee-management': 'employees',
@@ -480,6 +481,31 @@ function buildAttendanceComplianceQuery(query = {}, authUser = null) {
   return mongoQuery;
 }
 
+function buildAttendancePerformanceQuery(query = {}, authUser = null) {
+  const normalizedRole = String(authUser?.role || '').trim().toLowerCase();
+  const employeeId = String(authUser?.employeeId || '').trim();
+  const employeeName = String(authUser?.fullName || '').trim();
+  const startDate = String(query.startDate || '').trim();
+  const endDate = String(query.endDate || '').trim();
+  const mongoQuery = {};
+  if (/^\d{4}-\d{2}-\d{2}$/.test(startDate) && /^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    mongoQuery.date = { $gte: startDate, $lte: endDate };
+  }
+  if (normalizedRole === 'employee') {
+    const employeeOr = [];
+    if (employeeId) {
+      employeeOr.push({ employeeId });
+    }
+    if (employeeName) {
+      employeeOr.push({ employee: employeeName });
+    }
+    if (employeeOr.length > 0) {
+      mongoQuery.$or = employeeOr;
+    }
+  }
+  return mongoQuery;
+}
+
 function isPermissionLeaveRecord(row) {
   return String(row?.type || '').trim().toLowerCase() === 'permission';
 }
@@ -489,6 +515,42 @@ function getAttendancePermissionScope(row) {
   return ['all', 'late-only', 'no-clock-in', 'no-clock-out', 'missing-clock'].includes(normalized)
     ? normalized
     : 'all';
+}
+
+function parseIsoDateValue(value) {
+  const normalized = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+  const parsed = new Date(`${normalized}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toIsoDateString(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function overlapDaysInclusive(startA, endA, startB, endB) {
+  const safeStartA = parseIsoDateValue(startA);
+  const safeEndA = parseIsoDateValue(endA);
+  const safeStartB = parseIsoDateValue(startB);
+  const safeEndB = parseIsoDateValue(endB);
+  if (!safeStartA || !safeEndA || !safeStartB || !safeEndB) {
+    return 0;
+  }
+  const start = Math.max(safeStartA.getTime(), safeStartB.getTime());
+  const end = Math.min(safeEndA.getTime(), safeEndB.getTime());
+  if (start > end) {
+    return 0;
+  }
+  return Math.floor((end - start) / DAY_IN_MS) + 1;
 }
 
 function getAttendanceEmployeeMatchClauses(authUser = null, fields = {}) {
@@ -851,6 +913,252 @@ function getAttendanceComplianceListView(records, query = {}, context = {}) {
       page: safePage,
       pageSize,
       statusCounts,
+      sortKey,
+      sortDirection,
+    },
+  };
+}
+
+function getAttendancePerformanceListView(records, query = {}, context = {}) {
+  const startDate = String(query.startDate || '').trim();
+  const endDate = String(query.endDate || '').trim();
+  const rankMetric = String(query.rankMetric || 'perfect-attendance').trim();
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const departmentFilter = String(query.departmentFilter || 'All').trim();
+  const sortKey = ['employee', 'department', 'onTimeCompleteDays', 'lateDays', 'absentDays', 'attendanceScore'].includes(
+    String(query.sortKey || '').trim()
+  )
+    ? String(query.sortKey || '').trim()
+    : 'attendanceScore';
+  const sortDirection = String(query.sortDirection || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+  const settings = context?.settings || defaultAttendanceSettings;
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const todayIsoDate = toIsoDateString(new Date());
+  const leaveRows = Array.isArray(context?.leaveRows) ? context.leaveRows : [];
+  const scopedEmployees = Array.isArray(context?.employees) ? context.employees : [];
+  const mergedRows = mergeDuplicateAttendanceRecords(records, context);
+  const attendanceByEmployeeDate = new Map();
+  mergedRows.forEach((row) => {
+    const employeeId = String(row?.employeeId || '').trim();
+    const employeeName = String(row?.employee || '').trim().toLowerCase();
+    const date = String(row?.date || '').trim();
+    if (!date) {
+      return;
+    }
+    if (employeeId) {
+      attendanceByEmployeeDate.set(`${employeeId}|${date}`, row);
+    }
+    if (employeeName) {
+      attendanceByEmployeeDate.set(`${employeeName}|${date}`, row);
+    }
+  });
+
+  const rows = scopedEmployees
+    .map((employee) => {
+      const employeeId = String(employee?.id || employee?.employeeId || '').trim();
+      const employeeName = String(employee?.fullName || '').trim();
+      const employeeNameKey = employeeName.toLowerCase();
+      const employeeStatus = String(employee?.status || '').toLowerCase();
+      const employeeStage = String(employee?.employmentState || '').toLowerCase();
+      const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
+      const leaveApplications = leaveRows.filter((leaveRow) => {
+        const leaveEmployeeId = String(leaveRow?.employeeId || '').trim();
+        const leaveEmployeeName = String(leaveRow?.employee || '').trim();
+        const matches = leaveEmployeeId === employeeId || leaveEmployeeName === employeeName;
+        return matches && String(leaveRow?.startDate || '') >= startDate && String(leaveRow?.startDate || '') <= endDate;
+      });
+      const leaveDays = leaveRows.reduce((total, leaveRow) => {
+        const leaveEmployeeId = String(leaveRow?.employeeId || '').trim();
+        const leaveEmployeeName = String(leaveRow?.employee || '').trim();
+        const leaveStatus = String(leaveRow?.status || '').toLowerCase();
+        const matches = leaveEmployeeId === employeeId || leaveEmployeeName === employeeName;
+        if (!matches || !['approved', 'active', 'planned'].includes(leaveStatus)) {
+          return total;
+        }
+        return total + overlapDaysInclusive(leaveRow?.startDate, leaveRow?.endDate, startDate, endDate);
+      }, 0);
+      let expectedWorkDays = 0;
+      let onTimeCompleteDays = 0;
+      let lateDays = 0;
+      let absentDays = 0;
+      let clockedOnceDays = 0;
+      let leftEarlyDays = 0;
+      let noClockInDays = 0;
+      let noClockOutDays = 0;
+
+      for (
+        let cursor = parseIsoDateValue(startDate);
+        cursor && cursor <= (parseIsoDateValue(endDate) || cursor);
+        cursor = new Date(cursor.getTime() + DAY_IN_MS)
+      ) {
+        const currentDate = toIsoDateString(cursor);
+        const isPastDate = currentDate < todayIsoDate;
+        const leaveOnDate = leaveRows.find((leaveRow) => {
+          const leaveEmployeeId = String(leaveRow?.employeeId || '').trim();
+          const leaveEmployeeName = String(leaveRow?.employee || '').trim();
+          const leaveStatus = String(leaveRow?.status || '').toLowerCase();
+          const matches = leaveEmployeeId === employeeId || leaveEmployeeName === employeeName;
+          return (
+            matches &&
+            ['approved', 'active', 'planned'].includes(leaveStatus) &&
+            String(leaveRow?.startDate || '') <= currentDate &&
+            String(leaveRow?.endDate || '') >= currentDate
+          );
+        });
+        if (!isOffDuty && !leaveOnDate) {
+          expectedWorkDays += 1;
+          const attendanceRow =
+            attendanceByEmployeeDate.get(`${employeeId}|${currentDate}`) ||
+            attendanceByEmployeeDate.get(`${employeeNameKey}|${currentDate}`) ||
+            null;
+          const shiftSchedule = getShiftScheduleForAttendanceRecord(
+            attendanceRow || {
+              date: currentDate,
+              employeeId,
+              employee: employeeName,
+              shift: String(employee?.assignedShift || '').trim(),
+            },
+            employee,
+            settings
+          );
+          const checkIn = String(attendanceRow?.checkIn || '').trim();
+          const checkOutRaw = String(attendanceRow?.checkOut || '').trim();
+          const checkInMinutes = toMinutesFromClock(checkIn);
+          const checkOutMinutes = toMinutesFromClock(checkOutRaw);
+          const hasClockIn = checkInMinutes !== null;
+          const hasClockOut =
+            checkOutRaw !== '00:00' &&
+            checkOutRaw !== '24:00' &&
+            checkOutMinutes !== null &&
+            checkOutMinutes > (checkInMinutes ?? 0);
+          const isLate =
+            hasClockIn &&
+            shiftSchedule.lateAfterMinutes !== null &&
+            checkInMinutes > shiftSchedule.lateAfterMinutes;
+          const leftEarly =
+            hasClockOut &&
+            shiftSchedule.shiftEndMinutes > 0 &&
+            checkOutMinutes < shiftSchedule.shiftEndMinutes;
+          if (isLate) {
+            lateDays += 1;
+          }
+          if (leftEarly) {
+            leftEarlyDays += 1;
+          }
+          const missingClockIn =
+            !hasClockIn &&
+            shiftSchedule.lateAfterMinutes !== null &&
+            (isPastDate || (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+          const missingClockOut =
+            !hasClockOut &&
+            (isPastDate || (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
+          if (missingClockIn) {
+            noClockInDays += 1;
+          }
+          if (missingClockOut) {
+            noClockOutDays += 1;
+          }
+          if (missingClockIn && missingClockOut) {
+            absentDays += 1;
+          } else if (missingClockIn || missingClockOut) {
+            clockedOnceDays += 1;
+          }
+          if (hasClockIn && hasClockOut && !isLate && !leftEarly) {
+            onTimeCompleteDays += 1;
+          }
+        }
+      }
+      const periodDays = Math.max(1, overlapDaysInclusive(startDate, endDate, startDate, endDate));
+      const perfectAttendance =
+        expectedWorkDays > 0 &&
+        onTimeCompleteDays === expectedWorkDays &&
+        leaveApplications.length === 0 &&
+        absentDays === 0 &&
+        lateDays === 0 &&
+        clockedOnceDays === 0 &&
+        leftEarlyDays === 0;
+      const attendanceScore = expectedWorkDays > 0 ? (onTimeCompleteDays / expectedWorkDays) * 100 : 0;
+      return {
+        employeeId,
+        employee: employeeName,
+        department: String(employee?.department || '').trim() || 'Unassigned',
+        periodStart: startDate,
+        periodEnd: endDate,
+        periodDays,
+        expectedWorkDays,
+        onTimeCompleteDays,
+        lateDays,
+        absentDays,
+        clockedOnceDays,
+        leftEarlyDays,
+        leaveDays,
+        leaveApplications: leaveApplications.length,
+        perfectAttendance,
+        attendanceScore,
+        noClockInDays,
+        noClockOutDays,
+      };
+    })
+    .filter((row) => {
+      const matchesDepartment = departmentFilter === 'All' || String(row?.department || '') === departmentFilter;
+      if (!matchesDepartment) {
+        return false;
+      }
+      if (!searchText) {
+        return true;
+      }
+      return (
+        String(row?.employee || '').toLowerCase().includes(searchText) ||
+        String(row?.employeeId || '').toLowerCase().includes(searchText) ||
+        String(row?.department || '').toLowerCase().includes(searchText)
+      );
+    })
+    .sort((left, right) => {
+      if (rankMetric === 'least-leave-applications') {
+        return left.leaveApplications - right.leaveApplications || right.attendanceScore - left.attendanceScore;
+      }
+      if (rankMetric === 'most-leave-applications') {
+        return right.leaveApplications - left.leaveApplications || left.attendanceScore - right.attendanceScore;
+      }
+      if (rankMetric === 'least-absent') {
+        return left.absentDays - right.absentDays || right.attendanceScore - left.attendanceScore;
+      }
+      if (rankMetric === 'most-absent') {
+        return right.absentDays - left.absentDays || left.attendanceScore - right.attendanceScore;
+      }
+      if (rankMetric === 'least-late') {
+        return left.lateDays - right.lateDays || right.attendanceScore - left.attendanceScore;
+      }
+      if (rankMetric === 'most-late') {
+        return right.lateDays - left.lateDays || left.attendanceScore - right.attendanceScore;
+      }
+      return right.attendanceScore - left.attendanceScore || Number(right.perfectAttendance) - Number(left.perfectAttendance);
+    })
+    .sort((left, right) => {
+      const primaryCompare = compareAttendanceSortValues(left?.[sortKey], right?.[sortKey], sortDirection);
+      if (primaryCompare !== 0) {
+        return primaryCompare;
+      }
+      return String(left?.employee || '').localeCompare(String(right?.employee || ''));
+    });
+
+  const totalRows = rows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  return {
+    records: rows.slice(start, start + pageSize),
+    meta: {
+      totalRows,
+      totalPages,
+      page: safePage,
+      pageSize,
+      periodStart: startDate,
+      periodEnd: endDate,
+      departmentFilter,
+      rankMetric,
       sortKey,
       sortDirection,
     },
@@ -2474,6 +2782,7 @@ async function enrichAttendanceRecord(db, payload, options = {}) {
 let mongoClient;
 const tenantDbCache = new Map();
 const hotReadCache = new Map();
+const dbIndexInitPromises = new Map();
 
 function buildHotReadCacheKey(parts) {
   return parts.map((part) => String(part || '')).join('::');
@@ -2525,6 +2834,38 @@ function serializeQueryForCache(query = {}) {
     .sort(([left], [right]) => String(left).localeCompare(String(right)))
     .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : String(value || '')}`)
     .join('&');
+}
+
+async function ensureOperationalIndexes(db, dbName = '') {
+  const normalizedDbName = String(dbName || db?.databaseName || '').trim() || MONGO_MASTER_DB_NAME;
+  const existingInit = dbIndexInitPromises.get(normalizedDbName);
+  if (existingInit) {
+    return existingInit;
+  }
+  const initPromise = Promise.all([
+    db.collection('employees').createIndex({ id: 1 }, { unique: true }),
+    db.collection('employees').createIndex({ fullName: 1 }),
+    db.collection('employees').createIndex({ department: 1, status: 1, employmentState: 1 }),
+    db.collection('employees').createIndex({ contractEndDate: 1 }),
+    db.collection('attendanceTime').createIndex({ employeeId: 1, date: -1 }),
+    db.collection('attendanceTime').createIndex({ employee: 1, date: -1 }),
+    db.collection('attendanceTime').createIndex({ date: -1 }),
+    db.collection('attendanceTime').createIndex({ date: -1, updatedAt: -1 }),
+    db.collection('attendancePenaltyAdjustments').createIndex({ employeeId: 1, date: -1, penaltyType: 1 }),
+    db.collection('attendancePenaltyAdjustments').createIndex({ employee: 1, date: -1, penaltyType: 1 }),
+    db.collection('loanRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
+    db.collection('loanRecords').createIndex({ status: 1, updatedAt: -1 }),
+    db.collection('leaveRequests').createIndex({ employeeId: 1, startDate: -1, endDate: -1 }),
+    db.collection('leaveRequests').createIndex({ employee: 1, startDate: -1, endDate: -1 }),
+    db.collection('leaveRequests').createIndex({ status: 1, startDate: -1, endDate: -1 }),
+    db.collection('payrollRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
+    db.collection('payrollRecords').createIndex({ employee: 1, updatedAt: -1 }),
+  ]).catch((error) => {
+    dbIndexInitPromises.delete(normalizedDbName);
+    throw error;
+  });
+  dbIndexInitPromises.set(normalizedDbName, initPromise);
+  return initPromise;
 }
 
 function stripEmployeeHeavyFields(record) {
@@ -2673,6 +3014,7 @@ async function getTenantDatabase(masterDb, tenantIdRaw) {
     throw new Error('tenantId is required');
   }
   if (normalizedTenantId === 'master') {
+    await ensureOperationalIndexes(masterDb, MONGO_MASTER_DB_NAME);
     return { tenantId: 'master', dbName: MONGO_MASTER_DB_NAME, db: masterDb };
   }
   const tenant = await masterDb.collection('tenants').findOne({ tenantId: normalizedTenantId, status: 'active' });
@@ -2696,6 +3038,7 @@ async function getTenantDatabase(masterDb, tenantIdRaw) {
     tenant,
     db: mongoClient.db(dbName),
   };
+  await ensureOperationalIndexes(tenantContext.db, dbName);
   tenantDbCache.set(normalizedTenantId, tenantContext);
   return tenantContext;
 }
@@ -3141,6 +3484,15 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
             ],
           }
         : null;
+    const attendanceSummaryProjection = {
+      employeeId: 1,
+      employee: 1,
+      lateMinutes: 1,
+      deductionAmount: 1,
+      checkIn: 1,
+      status: 1,
+      clockings: 1,
+    };
 
     if (normalizedRole === 'employee' && employeeMatchQuery) {
       const [employeeRecord, dayAttendanceRows, monthAttendanceRows, employeeLoanRows, employeeLeaveRows, latestPayrollRow] =
@@ -3164,16 +3516,46 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
               },
             }
           ),
-          req.db.collection('attendanceTime').find({ ...employeeMatchQuery, date: selectedDate }).toArray(),
+          req.db.collection('attendanceTime').find(
+            { ...employeeMatchQuery, date: selectedDate },
+            { projection: attendanceSummaryProjection }
+          ).toArray(),
           req.db
             .collection('attendanceTime')
-            .find({ ...employeeMatchQuery, date: { $gte: monthStartDate, $lte: selectedDate } })
+            .find(
+              { ...employeeMatchQuery, date: { $gte: monthStartDate, $lte: selectedDate } },
+              { projection: { lateMinutes: 1, deductionAmount: 1 } }
+            )
             .toArray(),
-          req.db.collection('loanRecords').find(employeeMatchQuery).toArray(),
-          req.db.collection('leaveRequests').find(employeeMatchQuery).toArray(),
+          req.db.collection('loanRecords').find(employeeMatchQuery, {
+            projection: { status: 1, balance: 1, amount: 1 },
+          }).toArray(),
+          req.db.collection('leaveRequests').find(employeeMatchQuery, {
+            projection: {
+              departmentApproval: 1,
+              supervisorApproval: 1,
+              hrApproval: 1,
+              managerApproval: 1,
+              finalManagerApproval: 1,
+              branchManagerApproval: 1,
+              status: 1,
+            },
+          }).toArray(),
           req.db
             .collection('payrollRecords')
-            .find(employeeMatchQuery)
+            .find(employeeMatchQuery, {
+              projection: {
+                totalDeductions: 1,
+                netPayable: 1,
+                grossPay: 1,
+                payrollMonth: 1,
+                period: 1,
+                month: 1,
+                date: 1,
+                updatedAt: 1,
+                createdAt: 1,
+              },
+            })
             .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
             .limit(1)
             .next(),
@@ -3263,11 +3645,31 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
     }
 
     const [employeeRows, dayAttendanceRows, monthAttendanceRows, loanRows, leaveRows] = await Promise.all([
-      req.db.collection('employees').find({}).toArray(),
-      req.db.collection('attendanceTime').find({ date: selectedDate }).toArray(),
-      req.db.collection('attendanceTime').find({ date: { $gte: monthStartDate, $lte: selectedDate } }).toArray(),
-      req.db.collection('loanRecords').find({}).toArray(),
-      req.db.collection('leaveRequests').find({}).toArray(),
+      req.db.collection('employees').find({}, {
+        projection: { status: 1, employmentState: 1 },
+      }).toArray(),
+      req.db.collection('attendanceTime').find(
+        { date: selectedDate },
+        { projection: attendanceSummaryProjection }
+      ).toArray(),
+      req.db.collection('attendanceTime').find(
+        { date: { $gte: monthStartDate, $lte: selectedDate } },
+        { projection: { deductionAmount: 1 } }
+      ).toArray(),
+      req.db.collection('loanRecords').find({}, {
+        projection: { status: 1, balance: 1, amount: 1 },
+      }).toArray(),
+      req.db.collection('leaveRequests').find({}, {
+        projection: {
+          departmentApproval: 1,
+          supervisorApproval: 1,
+          hrApproval: 1,
+          managerApproval: 1,
+          finalManagerApproval: 1,
+          branchManagerApproval: 1,
+          status: 1,
+        },
+      }).toArray(),
     ]);
 
     const activeEmployees = employeeRows.filter((row) => !getEmployeeAccessBlockReason(row));
@@ -3383,7 +3785,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
     }
     const attendanceMode = String(req.query?.mode || '').trim().toLowerCase();
     const isAttendancePagedRequest =
-      moduleId === 'attendance-time' && ['clock-page', 'compliance-page', 'penalty-page'].includes(attendanceMode);
+      moduleId === 'attendance-time' && ['clock-page', 'compliance-page', 'penalty-page', 'performance-page'].includes(attendanceMode);
     const records = isAttendancePagedRequest
       ? []
       : moduleId === 'employee-management'
@@ -3732,6 +4134,95 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.json(setHotReadCache(moduleCacheKey, payload));
       return;
     }
+    if (attendanceMode === 'performance-page') {
+      const performanceStartDate = String(req.query?.startDate || '').trim();
+      const performanceEndDate = String(req.query?.endDate || '').trim();
+      const attendanceQuery = buildAttendancePerformanceQuery(req.query, req.user);
+      const leaveScopeClauses = getAttendanceEmployeeMatchClauses(req.user, {
+        idField: 'employeeId',
+        nameField: 'employee',
+      });
+      const employeeRole = String(req.user?.role || '').trim().toLowerCase() === 'employee';
+      const employeeScopeClauses = [];
+      if (employeeRole) {
+        const employeeId = String(req.user?.employeeId || '').trim();
+        const employeeName = String(req.user?.fullName || '').trim();
+        if (employeeId) {
+          employeeScopeClauses.push({ id: employeeId }, { employeeId });
+        }
+        if (employeeName) {
+          employeeScopeClauses.push({ fullName: employeeName });
+        }
+      }
+      const [rangeRecords, settingsRecord, employees, leaveRows] = await Promise.all([
+        collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
+        req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+        req.db.collection('employees').find(
+          employeeScopeClauses.length > 0 ? { $or: employeeScopeClauses } : {},
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              fullName: 1,
+              department: 1,
+              assignedShift: 1,
+              status: 1,
+              employmentState: 1,
+            },
+          }
+        ).toArray(),
+        req.db.collection('leaveRequests').find(
+          {
+            startDate: { $lte: performanceEndDate },
+            endDate: { $gte: performanceStartDate },
+            ...(leaveScopeClauses.length > 0 ? { $or: leaveScopeClauses } : {}),
+          },
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              employee: 1,
+              status: 1,
+              startDate: 1,
+              endDate: 1,
+            },
+          }
+        ).toArray(),
+      ]);
+      const employeeById = new Map();
+      const employeeByEmployeeId = new Map();
+      const employeeByName = new Map();
+      for (const employee of employees) {
+        if (employee?.id) {
+          employeeById.set(String(employee.id), employee);
+        }
+        if (employee?.employeeId) {
+          employeeByEmployeeId.set(String(employee.employeeId), employee);
+        }
+        if (employee?.fullName) {
+          employeeByName.set(String(employee.fullName), employee);
+        }
+      }
+      const settings = normalizeAttendanceSettings(settingsRecord?.value);
+      const performancePageView = getAttendancePerformanceListView(
+        rangeRecords,
+        req.query,
+        {
+          settings,
+          employees,
+          leaveRows,
+          employeeById,
+          employeeByEmployeeId,
+          employeeByName,
+        }
+      );
+      const payload = {
+        records: performancePageView.records,
+        meta: performancePageView.meta,
+      };
+      res.json(setHotReadCache(moduleCacheKey, payload));
+      return;
+    }
     const [settingsRecord, employees] = await Promise.all([
       req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
       req.db.collection('employees').find({}).toArray(),
@@ -3832,9 +4323,6 @@ app.post('/api/modules/:moduleId', async (req, res) => {
               $or: attendanceMatch,
             })
           : null;
-      // #region debug-point B:attendance-post
-      fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"B",location:"backend/src/server.js:/api/modules/:moduleId POST attendance-time",msg:"[DEBUG] attendance post candidate",data:{employeeId,employeeName,date,hasExistingAttendance:Boolean(existingAttendance),payloadClockings:Array.isArray(payload.clockings)?payload.clockings.length:0,payloadPhotos:Array.isArray(payload.clockings)?payload.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,payloadCheckIn:String(payload.checkIn||""),payloadCheckOut:String(payload.checkOut||"")},ts:Date.now()})}).catch(()=>{});
-      // #endregion
       await validateAttendancePhotoRequirement(req.db, payload, existingAttendance);
       if (existingAttendance) {
         const merged = await enrichAttendanceRecord(
@@ -3926,13 +4414,10 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
       moduleId,
       updatedAt: new Date().toISOString(),
     };
-    // #region debug-point B:attendance-put
-    if (moduleId === 'attendance-time') { fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"B",location:"backend/src/server.js:/api/modules/:moduleId/:recordId PUT attendance-time",msg:"[DEBUG] attendance put update",data:{recordId,employeeId:String(update.employeeId||""),employee:String(update.employee||""),date:String(update.date||""),clockings:Array.isArray(update.clockings)?update.clockings.length:0,photos:Array.isArray(update.clockings)?update.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,checkIn:String(update.checkIn||""),checkOut:String(update.checkOut||"")},ts:Date.now()})}).catch(()=>{}); }
-    // #endregion
     if (moduleId === 'attendance-time') {
       await validateAttendancePhotoRequirement(req.db, update, existingRecord);
     }
-    const result = await collection.updateOne({ id: recordId }, { $set: update });
+    await collection.updateOne({ id: recordId }, { $set: update });
     const updated = await collection.findOne({ id: recordId });
     if (moduleId === 'employee-management') {
       await syncEmployeeUser(req.db, updated);
@@ -3994,17 +4479,7 @@ async function start() {
       { upsert: true }
     );
     await ensureSuperAdmin(masterDb);
-    await Promise.all([
-      masterDb.collection('employees').createIndex({ id: 1 }, { unique: true }),
-      masterDb.collection('employees').createIndex({ fullName: 1 }),
-      masterDb.collection('attendanceTime').createIndex({ employeeId: 1, date: -1 }),
-      masterDb.collection('attendanceTime').createIndex({ employee: 1, date: -1 }),
-      masterDb.collection('attendanceTime').createIndex({ date: -1 }),
-      masterDb.collection('attendancePenaltyAdjustments').createIndex({ employeeId: 1, date: -1, penaltyType: 1 }),
-      masterDb.collection('loanRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
-      masterDb.collection('leaveRequests').createIndex({ employeeId: 1, startDate: -1, endDate: -1 }),
-      masterDb.collection('payrollRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
-    ]);
+    await ensureOperationalIndexes(masterDb, MONGO_MASTER_DB_NAME);
     app.listen(PORT, () => {
       console.log(`Connected to MongoDB Atlas database "${MONGO_MASTER_DB_NAME}"`);
       console.log(`HR backend listening on port ${PORT}`);
