@@ -1856,6 +1856,123 @@ function stripEmployeeHeavyFields(record) {
   return next;
 }
 
+function isInactiveEmployeeLikeRecord(record) {
+  const normalizedStatus = String(record?.status || '').trim().toLowerCase();
+  const normalizedStage = String(record?.employmentState || '').trim().toLowerCase();
+  return blockedEmployeeStatusValues.has(normalizedStatus) || blockedEmployeeStageValues.has(normalizedStage);
+}
+
+function getEmployeeListView(records, query = {}) {
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const departmentFilter = String(query.filterValue || 'All').trim();
+  const statusFilter = String(query.statusFilterValue || 'All').trim();
+  const employmentStageFilter = String(query.employmentStageFilterValue || 'All').trim();
+  const directoryTab = String(query.employeeDirectoryTab || 'active').trim().toLowerCase();
+  const expiryFilter = String(query.expiryFilterValue || 'All').trim();
+  const sortBy = String(query.sortByValue || 'default').trim();
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const within30Iso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const filteredRows = (Array.isArray(records) ? records : []).filter((row) => {
+    const matchesSearch =
+      !searchText ||
+      [
+        row?.id,
+        row?.fullName,
+        row?.department,
+        row?.position,
+        row?.email,
+        row?.assignedShift,
+        row?.employmentState,
+        row?.status,
+      ].some((value) => String(value || '').toLowerCase().includes(searchText));
+    const matchesDepartment = departmentFilter === 'All' || String(row?.department || '') === departmentFilter;
+    const matchesStatus = statusFilter === 'All' || String(row?.status || '') === statusFilter;
+    const matchesEmploymentStage =
+      employmentStageFilter === 'All' || String(row?.employmentState || '') === employmentStageFilter;
+    const isInactive = isInactiveEmployeeLikeRecord(row);
+    const matchesDirectoryTab = directoryTab === 'inactive' ? isInactive : !isInactive;
+    const contractEndDate = String(row?.contractEndDate || '').trim();
+    const hasContractEndDate = /^\d{4}-\d{2}-\d{2}$/.test(contractEndDate);
+    const matchesExpiryFilter =
+      expiryFilter === 'All' ||
+      (expiryFilter === 'within30' && hasContractEndDate && contractEndDate >= todayIso && contractEndDate <= within30Iso) ||
+      (expiryFilter === 'after30' && hasContractEndDate && contractEndDate > within30Iso) ||
+      (expiryFilter === 'expired' && hasContractEndDate && contractEndDate < todayIso) ||
+      (expiryFilter === 'no-end-date' && !hasContractEndDate);
+    return (
+      matchesSearch &&
+      matchesDepartment &&
+      matchesStatus &&
+      matchesEmploymentStage &&
+      matchesDirectoryTab &&
+      matchesExpiryFilter
+    );
+  });
+
+  const sortedRows = [...filteredRows].sort((left, right) => {
+    const leftEnd = String(left?.contractEndDate || '').trim();
+    const rightEnd = String(right?.contractEndDate || '').trim();
+    const leftComparable = /^\d{4}-\d{2}-\d{2}$/.test(leftEnd) ? leftEnd : '9999-12-31';
+    const rightComparable = /^\d{4}-\d{2}-\d{2}$/.test(rightEnd) ? rightEnd : '9999-12-31';
+    if (sortBy === 'closest-expiry') {
+      return leftComparable.localeCompare(rightComparable) || String(left?.fullName || '').localeCompare(String(right?.fullName || ''));
+    }
+    if (sortBy === 'expiry-priority') {
+      const getBucket = (value) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          return 3;
+        }
+        if (value < todayIso) {
+          return 0;
+        }
+        if (value <= within30Iso) {
+          return 1;
+        }
+        return 2;
+      };
+      const leftBucket = getBucket(leftEnd);
+      const rightBucket = getBucket(rightEnd);
+      if (leftBucket !== rightBucket) {
+        return leftBucket - rightBucket;
+      }
+      return leftComparable.localeCompare(rightComparable) || String(left?.fullName || '').localeCompare(String(right?.fullName || ''));
+    }
+    return String(right?._id || '').localeCompare(String(left?._id || ''));
+  });
+
+  const totalRows = sortedRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  const directoryCounts = (Array.isArray(records) ? records : []).reduce(
+    (accumulator, row) => {
+      if (isInactiveEmployeeLikeRecord(row)) {
+        accumulator.inactive += 1;
+      } else {
+        accumulator.active += 1;
+      }
+      return accumulator;
+    },
+    { active: 0, inactive: 0 }
+  );
+  return {
+    records: sortedRows.slice(start, start + pageSize),
+    meta: {
+      totalRows,
+      totalPages,
+      page: safePage,
+      pageSize,
+      directoryCounts,
+      filterOptions: [...new Set((records || []).map((row) => String(row?.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+      statusOptions: [...new Set((records || []).map((row) => String(row?.status || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+      employmentStageOptions: [...new Set((records || []).map((row) => String(row?.employmentState || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    },
+  };
+}
+
 async function connectToMongo() {
   if (!MONGO_URI) {
     throw new Error('MONGO_URI is not configured');
@@ -2581,7 +2698,10 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.json(cachedRecords);
       return;
     }
-    const records = await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
+    const records =
+      moduleId === 'employee-management'
+        ? await collection.find({}).toArray()
+        : await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
       if (moduleId === 'employee-management') {
         const users = await req.db.collection('users').find({ employeeId: { $ne: '' } }).toArray();
@@ -2589,9 +2709,10 @@ app.get('/api/modules/:moduleId', async (req, res) => {
           users.map((user) => [String(user.employeeId || '').trim(), user]).filter(([employeeId]) => employeeId)
         );
         const lookupMode = String(req.query?.mode || '').trim().toLowerCase() === 'lookup';
+        const employeeListView = lookupMode ? null : getEmployeeListView(records, req.query);
         const payload = {
           records: await Promise.all(
-            records.map((record) =>
+            (lookupMode ? records : employeeListView.records).map((record) =>
               lookupMode
                 ? stripEmployeeHeavyFields(
                     mergeEmployeeAuthAccess(
@@ -2612,6 +2733,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
                   )
             )
           ),
+          ...(employeeListView ? { meta: employeeListView.meta } : {}),
         };
         res.json(setHotReadCache(moduleCacheKey, payload));
         return;
