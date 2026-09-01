@@ -23,10 +23,6 @@ export default function AttendanceTimePage({
   selectedAttendanceEmployee,
   handleClockIn,
   handleClockOut,
-  attendanceTodayRows,
-  attendanceLateCount,
-  downloadCsv,
-  downloadPdf,
   todayIsoDate,
   attendanceAuditDate,
   setAttendanceAuditDate,
@@ -68,13 +64,18 @@ export default function AttendanceTimePage({
   getCurrentClockValue,
   currentUser,
   handleAssignEmployeeShift,
-  attendanceRows,
   attendanceClockRangeStartDate,
   setAttendanceClockRangeStartDate,
   attendanceClockRangeEndDate,
   setAttendanceClockRangeEndDate,
   attendanceClockRangeSearchText,
   setAttendanceClockRangeSearchText,
+  attendanceClockPage,
+  setAttendanceClockPage,
+  attendanceClockPageSize,
+  setAttendanceClockPageSize,
+  attendanceClockPageMeta,
+  attendanceClockPageLoading,
   attendanceClockRangeRows,
   exportAttendanceClockCsv,
   exportAttendanceClockPdf,
@@ -113,6 +114,11 @@ export default function AttendanceTimePage({
   const [performancePageSize, setPerformancePageSize] = useState(25);
   const [shiftAssignmentPage, setShiftAssignmentPage] = useState(1);
   const [shiftAssignmentPageSize, setShiftAssignmentPageSize] = useState(25);
+  const effectiveClockPage = Number(attendanceClockPage) || clockPage;
+  const effectiveSetClockPage = typeof setAttendanceClockPage === 'function' ? setAttendanceClockPage : setClockPage;
+  const effectiveClockPageSize = Number(attendanceClockPageSize) || clockPageSize;
+  const effectiveSetClockPageSize =
+    typeof setAttendanceClockPageSize === 'function' ? setAttendanceClockPageSize : setClockPageSize;
   const buildPaginationState = (rows, page, pageSize) => {
     const safeRows = Array.isArray(rows) ? rows : [];
     const safeSize = Math.max(1, Number(pageSize) || 25);
@@ -232,8 +238,8 @@ export default function AttendanceTimePage({
     }
   }, []);
   useEffect(() => {
-    setClockPage(1);
-  }, [attendanceClockRangeStartDate, attendanceClockRangeEndDate, attendanceClockRangeSearchText]);
+    effectiveSetClockPage(1);
+  }, [attendanceClockRangeStartDate, attendanceClockRangeEndDate, attendanceClockRangeSearchText, effectiveSetClockPage]);
   useEffect(() => {
     setCompliancePage(1);
   }, [attendanceAuditDate, attendanceAuditFilter, attendanceAuditSearchText, complianceSort]);
@@ -353,11 +359,33 @@ export default function AttendanceTimePage({
     shiftOptions,
   ]);
 
-  const paginatedClockRows = buildPaginationState(attendanceClockRangeRows, clockPage, clockPageSize);
+  const paginatedClockRows = attendanceClockPageMeta
+    ? {
+        rows: attendanceClockRangeRows,
+        totalRows: Math.max(0, Number(attendanceClockPageMeta.totalRows) || 0),
+        totalPages: Math.max(1, Number(attendanceClockPageMeta.totalPages) || 1),
+        page: Math.max(1, Number(attendanceClockPageMeta.page) || effectiveClockPage),
+        pageSize: Math.max(1, Number(attendanceClockPageMeta.pageSize) || effectiveClockPageSize),
+      }
+    : buildPaginationState(attendanceClockRangeRows, effectiveClockPage, effectiveClockPageSize);
   const paginatedComplianceRows = buildPaginationState(sortedComplianceRows, compliancePage, compliancePageSize);
   const paginatedPenaltyRows = buildPaginationState(sortedPenaltyRows, penaltyPage, penaltyPageSize);
   const paginatedPerformanceRows = buildPaginationState(sortedPerformanceRows, performancePage, performancePageSize);
   const paginatedShiftAssignmentRows = buildPaginationState(shiftAssignmentRows, shiftAssignmentPage, shiftAssignmentPageSize);
+  const attendanceClockSummary = attendanceClockPageMeta || {
+    totalRows: attendanceClockRangeRows.length,
+    lateCount: attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
+    onTimeCount: Math.max(
+      0,
+      attendanceClockRangeRows.length -
+        attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length
+    ),
+    totalLateMinutes: attendanceClockRangeRows.reduce(
+      (total, row) => total + Math.max(0, Number(row.lateMinutes || row.minutesLate || 0)),
+      0
+    ),
+    totalDeductionAmount: attendanceClockRangeRows.reduce((total, row) => total + toNumberValue(row.deductionAmount), 0),
+  };
 
   const stopClockCamera = useCallback(() => {
     if (streamRef.current) {
@@ -667,7 +695,7 @@ export default function AttendanceTimePage({
           </div>
           <div className="attendance-stats-grid">
             <article className="attendance-stat">
-              <strong>{attendanceClockRangeRows.length}</strong>
+              <strong>{attendanceClockSummary.totalRows}</strong>
               <span>
                 {attendanceClockRangeStartDate === attendanceClockRangeEndDate
                   ? `Logs (${attendanceClockRangeStartDate})`
@@ -675,36 +703,19 @@ export default function AttendanceTimePage({
               </span>
             </article>
             <article className="attendance-stat">
-              <strong>
-                {attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length}
-              </strong>
+              <strong>{attendanceClockSummary.lateCount}</strong>
               <span>Late</span>
             </article>
             <article className="attendance-stat">
-              <strong>
-                {Math.max(
-                  0,
-                  attendanceClockRangeRows.length -
-                    attendanceClockRangeRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length
-                )}
-              </strong>
+              <strong>{attendanceClockSummary.onTimeCount}</strong>
               <span>On Time</span>
             </article>
             <article className="attendance-stat">
-              <strong>
-                {attendanceClockRangeRows.reduce(
-                  (total, row) => total + Math.max(0, Number(row.lateMinutes || row.minutesLate || 0)),
-                  0
-                )}
-              </strong>
+              <strong>{attendanceClockSummary.totalLateMinutes}</strong>
               <span>Total Minutes Late</span>
             </article>
             <article className="attendance-stat">
-              <strong>
-                {toNumberValue(
-                  attendanceClockRangeRows.reduce((total, row) => total + toNumberValue(row.deductionAmount), 0)
-                ).toFixed(2)}
-              </strong>
+              <strong>{toNumberValue(attendanceClockSummary.totalDeductionAmount).toFixed(2)}</strong>
               <span>Total Deductions</span>
             </article>
           </div>
@@ -865,16 +876,18 @@ export default function AttendanceTimePage({
                 ) : (
                   <tr>
                     <td colSpan={9}>
-                      {attendanceClockRangeStartDate === attendanceClockRangeEndDate
-                        ? `No attendance logs for ${attendanceClockRangeStartDate}.`
-                        : `No attendance logs between ${attendanceClockRangeStartDate} and ${attendanceClockRangeEndDate}.`}
+                      {attendanceClockPageLoading
+                        ? 'Loading attendance logs...'
+                        : attendanceClockRangeStartDate === attendanceClockRangeEndDate
+                          ? `No attendance logs for ${attendanceClockRangeStartDate}.`
+                          : `No attendance logs between ${attendanceClockRangeStartDate} and ${attendanceClockRangeEndDate}.`}
                     </td>
                   </tr>
                 )}
                 <PaginationControls
                   state={paginatedClockRows}
-                  setPage={setClockPage}
-                  setPageSize={setClockPageSize}
+                  setPage={effectiveSetClockPage}
+                  setPageSize={effectiveSetClockPageSize}
                   colSpan={9}
                   label="logs"
                 />

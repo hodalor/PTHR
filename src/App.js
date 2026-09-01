@@ -739,6 +739,11 @@ function App({ initialModuleId }) {
   const [attendanceClockRangeStartDate, setAttendanceClockRangeStartDate] = useState(getTodayIsoDate());
   const [attendanceClockRangeEndDate, setAttendanceClockRangeEndDate] = useState(getTodayIsoDate());
   const [attendanceClockRangeSearchText, setAttendanceClockRangeSearchText] = useState('');
+  const [attendanceClockPage, setAttendanceClockPage] = useState(1);
+  const [attendanceClockPageSize, setAttendanceClockPageSize] = useState(25);
+  const [attendanceClockPageRows, setAttendanceClockPageRows] = useState([]);
+  const [attendanceClockPageMeta, setAttendanceClockPageMeta] = useState(null);
+  const [attendanceClockPageLoading, setAttendanceClockPageLoading] = useState(false);
   const [attendanceAuditDate, setAttendanceAuditDate] = useState(getTodayIsoDate());
   const [attendanceAuditFilter, setAttendanceAuditFilter] = useState('All');
   const [attendanceAuditSearchText, setAttendanceAuditSearchText] = useState('');
@@ -779,6 +784,12 @@ function App({ initialModuleId }) {
   const [loanActionMessage, setLoanActionMessage] = useState('');
   const [loanApprovalDrafts, setLoanApprovalDrafts] = useState({});
   const [loanApprovalSavingId, setLoanApprovalSavingId] = useState(null);
+  const [loanPage, setLoanPage] = useState(1);
+  const [loanPageSize, setLoanPageSize] = useState(25);
+  const [loanPageRows, setLoanPageRows] = useState([]);
+  const [loanPageMeta, setLoanPageMeta] = useState(null);
+  const [loanPageLoading, setLoanPageLoading] = useState(false);
+  const [loanPageRefreshCounter, setLoanPageRefreshCounter] = useState(0);
   const [toasts, setToasts] = useState([]);
   const [loginForm, setLoginForm] = useState({
     tenantId: storedAuth?.tenantId || storedAuth?.user?.tenantId || '',
@@ -1697,6 +1708,109 @@ function App({ initialModuleId }) {
       cancelled = true;
     };
   }, [allowedModulesByRole, authHeaders, currentUser, employeeRowsCount]);
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'loan-records') {
+      return;
+    }
+    let cancelled = false;
+    const requestParams = new URLSearchParams({
+      mode: 'page',
+      page: String(loanPage),
+      pageSize: String(loanPageSize),
+      viewTab: loanViewTab,
+      search: loanSearchText,
+      statusFilter: loanStatusFilter,
+    }).toString();
+    const fetchLoanPage = async () => {
+      try {
+        setLoanPageLoading(true);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/loan-records?${requestParams}`), {
+          headers: authHeaders,
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        setLoanPageRows(Array.isArray(data?.records) ? data.records : []);
+        setLoanPageMeta(data?.meta || null);
+      } catch (error) {
+      } finally {
+        if (!cancelled) {
+          setLoanPageLoading(false);
+        }
+      }
+    };
+    fetchLoanPage();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModuleId,
+    authHeaders,
+    authToken,
+    currentUser,
+    loanPage,
+    loanPageRefreshCounter,
+    loanPageSize,
+    loanSearchText,
+    loanStatusFilter,
+    loanViewTab,
+  ]);
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'clock') {
+      return;
+    }
+    let cancelled = false;
+    const requestParams = new URLSearchParams({
+      mode: 'clock-page',
+      startDate: attendanceClockRangeStartDate,
+      endDate: attendanceClockRangeEndDate,
+      search: attendanceClockRangeSearchText,
+      page: String(attendanceClockPage),
+      pageSize: String(attendanceClockPageSize),
+    }).toString();
+    const fetchAttendanceClockPage = async () => {
+      try {
+        setAttendanceClockPageLoading(true);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/attendance-time?${requestParams}`), {
+          headers: authHeaders,
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        setAttendanceClockPageRows(Array.isArray(data?.records) ? data.records : []);
+        setAttendanceClockPageMeta(data?.meta || null);
+      } catch (error) {
+      } finally {
+        if (!cancelled) {
+          setAttendanceClockPageLoading(false);
+        }
+      }
+    };
+    fetchAttendanceClockPage();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModuleId,
+    attendanceClockPage,
+    attendanceClockPageSize,
+    attendanceClockRangeEndDate,
+    attendanceClockRangeSearchText,
+    attendanceClockRangeStartDate,
+    attendanceViewTab,
+    authHeaders,
+    authToken,
+    currentUser,
+    moduleRowsState,
+  ]);
 
   useEffect(() => {
     if (!authToken) {
@@ -2193,6 +2307,7 @@ function App({ initialModuleId }) {
   }, [activeModuleConfig, activeModuleId, appSettings, loanRowsScopedByRole, moduleRowsState]);
   const isServerPagedEmployeeModule = activeModuleId === 'employee-management';
   const employeeModuleTableMeta = moduleTableMetaState['employee-management'] || null;
+  const activeLoanPageRows = activeModuleId === 'loan-records' ? loanPageRows : [];
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
   const modalRow = rows.find((row) => row.id === modalState.rowId) || null;
@@ -3131,6 +3246,9 @@ function App({ initialModuleId }) {
     [loanViewTab]
   );
   const loanStatusOptions = useMemo(() => {
+    if (activeModuleId === 'loan-records' && Array.isArray(loanPageMeta?.statusOptions)) {
+      return ['All', ...loanPageMeta.statusOptions];
+    }
     const options = [
       ...new Set(
         loanRequestRows
@@ -3139,51 +3257,7 @@ function App({ initialModuleId }) {
       ),
     ];
     return ['All', ...options.sort((a, b) => a.localeCompare(b))];
-  }, [getLoanViewStatus, loanRequestRows, loanViewTab]);
-  const loanRequestFilteredRows = useMemo(() => {
-    const query = loanSearchText.trim().toLowerCase();
-    let scopedRows = loanRequestRows.filter((row) => {
-      if (loanViewTab === 'hr') {
-        return String(row.departmentApproval || '') === 'Approved';
-      }
-      if (loanViewTab === 'manager') {
-        return String(row.departmentApproval || '') === 'Approved' && String(row.hrApproval || '') === 'Approved';
-      }
-      return true;
-    });
-    if (currentUser && currentUser.role === 'employee') {
-      const employeeId = String(currentUser.employeeId || '').trim();
-      const employeeName = String(currentUser.fullName || '').trim();
-      scopedRows = scopedRows.filter((row) => {
-        const rowEmployeeId = String(row.employeeId || '').trim();
-        const rowEmployeeName = String(row.employee || '').trim();
-        if (employeeId) {
-          return rowEmployeeId === employeeId;
-        }
-        if (employeeName) {
-          return rowEmployeeName === employeeName;
-        }
-        return false;
-      });
-    }
-    return scopedRows.filter((row) => {
-      const statusLabel = getLoanViewStatus(row);
-      const matchesStatus = loanStatusFilter === 'All' || String(statusLabel) === String(loanStatusFilter);
-      if (!matchesStatus) {
-        return false;
-      }
-      if (!query) {
-        return true;
-      }
-      return (
-        String(row.employee || '').toLowerCase().includes(query) ||
-        String(row.employeeId || '').toLowerCase().includes(query) ||
-        String(row.type || '').toLowerCase().includes(query) ||
-        String(row.department || '').toLowerCase().includes(query) ||
-        String(row.status || '').toLowerCase().includes(query)
-      );
-    });
-  }, [currentUser, getLoanViewStatus, loanRequestRows, loanSearchText, loanStatusFilter, loanViewTab]);
+  }, [activeModuleId, getLoanViewStatus, loanPageMeta, loanRequestRows, loanViewTab]);
   const leaveBalanceFilteredRows = useMemo(() => {
     const query = leaveSearchText.trim().toLowerCase();
     const scopedRows = leaveBalanceRows.filter((row) => {
@@ -3317,8 +3391,12 @@ function App({ initialModuleId }) {
     if (activeModuleId !== 'loan-records') {
       return null;
     }
-    return loanRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) || null;
-  }, [activeModuleId, loanRequestRows, modalState.rowId]);
+    return (
+      loanPageRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) ||
+      loanRequestRows.find((row) => String(row.id || '') === String(modalState.rowId || '')) ||
+      null
+    );
+  }, [activeModuleId, loanPageRows, loanRequestRows, modalState.rowId]);
   useEffect(() => {
     if (activeModuleId !== 'leave-management' || modalState.mode !== 'form') {
       return;
@@ -3892,15 +3970,82 @@ function App({ initialModuleId }) {
     },
     [doesAttendanceRowMatchEmployee, employeeBaseRows, getAttendanceClockSummary, getAttendanceDeductionContextForRow, todayIsoDate]
   );
+  const attendanceRowsByDate = useMemo(() => {
+    const rowsByDate = new Map();
+    attendanceRows.forEach((row) => {
+      const dateKey = String(row?.date || '').trim();
+      if (!dateKey) {
+        return;
+      }
+      if (!rowsByDate.has(dateKey)) {
+        rowsByDate.set(dateKey, []);
+      }
+      rowsByDate.get(dateKey).push(row);
+    });
+    return rowsByDate;
+  }, [attendanceRows]);
+  const mergedAttendanceRowsByDate = useMemo(() => {
+    const mergedByDate = new Map();
+    attendanceRowsByDate.forEach((dateRows, dateKey) => {
+      const groupedRows = new Map();
+      const groupEmployees = new Map();
+      dateRows.forEach((row) => {
+        const matchedEmployee = findEmployeeForAttendanceRow(row) || null;
+        const groupingKey = matchedEmployee
+          ? String(matchedEmployee.id || matchedEmployee.employeeId || matchedEmployee.fullName || '')
+              .trim()
+              .toLowerCase()
+          : `${String(row.employeeId || '').trim().toLowerCase()}|${String(row.employee || '').trim().toLowerCase()}`;
+        if (!groupedRows.has(groupingKey)) {
+          groupedRows.set(groupingKey, []);
+          groupEmployees.set(groupingKey, matchedEmployee);
+        }
+        groupedRows.get(groupingKey).push(row);
+      });
+      mergedByDate.set(
+        dateKey,
+        Array.from(groupedRows.entries())
+          .map(([groupingKey, groupedDateRows]) => {
+            const merged = mergeMatchingAttendanceRows(groupedDateRows);
+            if (!merged) {
+              return null;
+            }
+            return enrichMergedAttendanceRow({
+              baseRow: merged,
+              matchedEmployee: groupEmployees.get(groupingKey) || null,
+              fallbackDate: dateKey,
+            });
+          })
+          .filter(Boolean)
+      );
+    });
+    return mergedByDate;
+  }, [attendanceRowsByDate, enrichMergedAttendanceRow, findEmployeeForAttendanceRow, mergeMatchingAttendanceRows]);
+  const mergedAttendanceRowLookup = useMemo(() => {
+    const lookup = new Map();
+    mergedAttendanceRowsByDate.forEach((rows, dateKey) => {
+      rows.forEach((row) => {
+        const employeeId = String(row.employeeId || '').trim();
+        const employeeName = String(row.employee || '').trim().toLowerCase();
+        if (employeeId) {
+          lookup.set(`${dateKey}|id:${employeeId}`, row);
+          lookup.set(`${dateKey}|eid:${employeeId}`, row);
+        }
+        if (employeeName) {
+          lookup.set(`${dateKey}|name:${employeeName}`, row);
+        }
+      });
+    });
+    return lookup;
+  }, [mergedAttendanceRowsByDate]);
   const getMergedAttendanceRowsForDate = useCallback(
     (targetDate) => {
-      const scopedRows = attendanceRows.filter((row) => {
-        if (String(row.date || '').trim() !== String(targetDate || '').trim()) {
-          return false;
-        }
-        if (currentUser && currentUser.role === 'employee') {
-          const employeeId = String(currentUser.employeeId || '').trim();
-          const employeeName = String(currentUser.fullName || '').trim().toLowerCase();
+      const normalizedDate = String(targetDate || '').trim();
+      const dayRows = mergedAttendanceRowsByDate.get(normalizedDate) || [];
+      if (currentUser && currentUser.role === 'employee') {
+        const employeeId = String(currentUser.employeeId || '').trim();
+        const employeeName = String(currentUser.fullName || '').trim().toLowerCase();
+        return dayRows.filter((row) => {
           const rowEmployeeId = String(row.employeeId || '').trim();
           const rowEmployeeName = String(row.employee || '').trim().toLowerCase();
           if (employeeId) {
@@ -3910,99 +4055,37 @@ function App({ initialModuleId }) {
             return rowEmployeeName === employeeName;
           }
           return false;
-        }
-        return true;
-      });
-      const groupedRows = new Map();
-      const groupEmployees = new Map();
-      scopedRows.forEach((row) => {
-        const matchedEmployee =
-          employeeBaseRows.find((employee) => doesAttendanceRowMatchEmployee(row, employee)) || null;
-        const groupingKey = matchedEmployee
-          ? String(matchedEmployee.id || matchedEmployee.employeeId || matchedEmployee.fullName || '').trim().toLowerCase()
-          : `${String(row.employeeId || '').trim().toLowerCase()}|${String(row.employee || '').trim().toLowerCase()}`;
-        if (!groupedRows.has(groupingKey)) {
-          groupedRows.set(groupingKey, []);
-          groupEmployees.set(groupingKey, matchedEmployee);
-        }
-        groupedRows.get(groupingKey).push(row);
-      });
-      return Array.from(groupedRows.entries())
-        .map(([groupingKey, rows]) => {
-          const merged = mergeMatchingAttendanceRows(rows);
-          if (!merged) {
-            return null;
-          }
-          return enrichMergedAttendanceRow({
-            baseRow: merged,
-            matchedEmployee: groupEmployees.get(groupingKey) || null,
-            fallbackDate: targetDate,
-          });
-        })
-        .filter(Boolean);
+        });
+      }
+      return dayRows;
     },
-    [attendanceRows, currentUser, doesAttendanceRowMatchEmployee, employeeBaseRows, enrichMergedAttendanceRow, mergeMatchingAttendanceRows]
+    [currentUser, mergedAttendanceRowsByDate]
   );
   const findAttendanceRowForEmployeeOnDate = useCallback(
     (employee, targetDate) => {
-      const matchingRawRows = attendanceRows.filter(
-        (row) =>
-          String(row.date || '').trim() === String(targetDate || '').trim() && doesAttendanceRowMatchEmployee(row, employee)
+      const normalizedDate = String(targetDate || '').trim();
+      const employeeId = String(employee?.id || '').trim();
+      const altEmployeeId = String(employee?.employeeId || '').trim();
+      const employeeName = String(employee?.fullName || '').trim().toLowerCase();
+      return (
+        (employeeId && mergedAttendanceRowLookup.get(`${normalizedDate}|id:${employeeId}`)) ||
+        (altEmployeeId && mergedAttendanceRowLookup.get(`${normalizedDate}|eid:${altEmployeeId}`)) ||
+        (employeeName && mergedAttendanceRowLookup.get(`${normalizedDate}|name:${employeeName}`)) ||
+        null
       );
-      const merged = mergeMatchingAttendanceRows(matchingRawRows);
-      if (!merged) {
-        return null;
-      }
-      return enrichMergedAttendanceRow({
-        baseRow: merged,
-        matchedEmployee: employee,
-        fallbackDate: targetDate,
-      });
     },
-    [attendanceRows, doesAttendanceRowMatchEmployee, enrichMergedAttendanceRow, mergeMatchingAttendanceRows]
+    [mergedAttendanceRowLookup]
   );
   const attendanceTodayRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'clock') {
+      return [];
+    }
     return getMergedAttendanceRowsForDate(todayIsoDate).sort((a, b) => {
       const aSummary = getAttendanceClockSummary(a);
       const bSummary = getAttendanceClockSummary(b);
       return (toMinutesFromClock(bSummary.checkIn) || -1) - (toMinutesFromClock(aSummary.checkIn) || -1);
     });
-  }, [getMergedAttendanceRowsForDate, getAttendanceClockSummary, todayIsoDate]);
-  useEffect(() => {
-    // #region debug-point D:attendance-today
-    if (activeModuleId === 'attendance-time') {
-      fetch("http://192.168.1.176:7777/event", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: "attendance-photo-clock",
-          runId: "pre-fix",
-          hypothesisId: "D",
-          location: "frontend/src/App.js:attendanceTodayRows",
-          msg: "[DEBUG] attendance today rows derived",
-          data: {
-            todayIsoDate,
-            rowCount: attendanceTodayRows.length,
-            rows: attendanceTodayRows.slice(0, 12).map((row) => {
-              const summary = getAttendanceClockSummary(row);
-              return {
-                id: String(row?.id || ''),
-                employeeId: String(row?.employeeId || ''),
-                employee: String(row?.employee || ''),
-                date: String(row?.date || ''),
-                status: String(row?.status || ''),
-                checkIn: String(summary.checkIn || ''),
-                checkOut: String(summary.checkOut || ''),
-                clockings: Array.isArray(summary.clockings) ? summary.clockings.length : 0,
-              };
-            }),
-          },
-          ts: Date.now(),
-        }),
-      }).catch(() => {});
-    }
-    // #endregion
-  }, [activeModuleId, attendanceTodayRows, getAttendanceClockSummary, todayIsoDate]);
+  }, [activeModuleId, attendanceViewTab, getMergedAttendanceRowsForDate, getAttendanceClockSummary, todayIsoDate]);
   const attendanceLateCount = useMemo(
     () => attendanceTodayRows.filter((row) => String(row.status || '').toLowerCase() === 'late').length,
     [attendanceTodayRows]
@@ -4337,10 +4420,7 @@ function App({ initialModuleId }) {
       })),
     []
   );
-  const attendanceClockRangeRows = useMemo(() => {
-    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'clock') {
-      return [];
-    }
+  const getFullAttendanceClockRangeRows = useCallback(() => {
     const startDate = String(attendanceClockRangeStartDate || '').trim();
     const endDate = String(attendanceClockRangeEndDate || '').trim();
     const query = attendanceClockRangeSearchText.trim().toLowerCase();
@@ -4388,11 +4468,15 @@ function App({ initialModuleId }) {
     attendanceClockRangeEndDate,
     attendanceClockRangeSearchText,
     attendanceClockRangeStartDate,
-    attendanceViewTab,
-    activeModuleId,
     currentUser,
     getMergedAttendanceRowsForDate,
   ]);
+  const attendanceClockRangeRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'clock') {
+      return [];
+    }
+    return attendanceClockPageRows;
+  }, [activeModuleId, attendanceClockPageRows, attendanceViewTab]);
   const attendanceComplianceFilteredRows = useMemo(() => {
     const query = attendanceAuditSearchText.trim().toLowerCase();
     return attendanceComplianceRows.filter((row) => {
@@ -4463,9 +4547,9 @@ function App({ initialModuleId }) {
     downloadCsv(
       `attendance-clock-${attendanceClockRangeStartDate}-to-${attendanceClockRangeEndDate}.csv`,
       headers,
-      getAttendanceClockExportRows(attendanceClockRangeRows)
+      getAttendanceClockExportRows(getFullAttendanceClockRangeRows())
     );
-  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, attendanceClockRangeRows, getAttendanceClockExportRows]);
+  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, getAttendanceClockExportRows, getFullAttendanceClockRangeRows]);
   const exportAttendanceClockPdf = useCallback(() => {
     const headers = [
       { key: 'Date', label: 'Date' },
@@ -4482,9 +4566,9 @@ function App({ initialModuleId }) {
     downloadPdf(
       `Attendance Clock - ${attendanceClockRangeStartDate} to ${attendanceClockRangeEndDate}`,
       headers,
-      getAttendanceClockExportRows(attendanceClockRangeRows)
+      getAttendanceClockExportRows(getFullAttendanceClockRangeRows())
     );
-  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, attendanceClockRangeRows, getAttendanceClockExportRows]);
+  }, [attendanceClockRangeEndDate, attendanceClockRangeStartDate, getAttendanceClockExportRows, getFullAttendanceClockRangeRows]);
   const exportAttendanceAuditCsv = useCallback(() => {
     const headers = [
       { key: 'Date', label: 'Date' },
@@ -4524,6 +4608,9 @@ function App({ initialModuleId }) {
     );
   }, [attendanceAuditDate, attendanceComplianceFilteredRows, getAttendanceComplianceExportRows]);
   const attendancePenaltyLedgerRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalty') {
+      return [];
+    }
     const scopedComplianceRows = attendanceComplianceRows.filter((row) => {
       if (currentUser && currentUser.role === 'employee') {
         const employeeId = String(currentUser.employeeId || '').trim();
@@ -4567,8 +4654,11 @@ function App({ initialModuleId }) {
       });
     });
     return ledger;
-  }, [attendanceComplianceRows, currentUser, penaltyAdjustmentRows]);
+  }, [activeModuleId, attendanceComplianceRows, attendanceViewTab, currentUser, penaltyAdjustmentRows]);
   const attendancePenaltyFilteredRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalty') {
+      return [];
+    }
     const query = attendanceAuditSearchText.trim().toLowerCase();
     return attendancePenaltyLedgerRows.filter((row) => {
       const matchesDate = String(row.date || '') === String(attendanceAuditDate || todayIsoDate);
@@ -4586,8 +4676,10 @@ function App({ initialModuleId }) {
   }, [
     attendanceAuditDate,
     attendanceAuditSearchText,
+    activeModuleId,
     attendancePenaltyLedgerRows,
     attendancePenaltyStatusFilter,
+    attendanceViewTab,
     todayIsoDate,
   ]);
   const selectedPenaltyRow = useMemo(
@@ -4622,14 +4714,12 @@ function App({ initialModuleId }) {
     todayIsoDate,
   ]);
   const attendancePerformanceRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'performance') {
+      return [];
+    }
     const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
     const rangeStart = attendancePerformanceRange.startDate;
     const rangeEnd = attendancePerformanceRange.endDate;
-    const attendanceByEmployeeDate = attendanceRows.reduce((acc, row) => {
-      const key = `${String(row.employeeId || '')}|${String(row.date || '')}`;
-      acc[key] = row;
-      return acc;
-    }, {});
     const periodDays = Math.max(
       1,
       Math.floor(
@@ -4701,7 +4791,7 @@ function App({ initialModuleId }) {
           });
           if (!isOffDuty && !leaveOnDate) {
             expectedWorkDays += 1;
-            const attendanceRow = attendanceByEmployeeDate[`${String(employee.id || '')}|${currentDate}`];
+            const attendanceRow = findAttendanceRowForEmployeeOnDate(employee, currentDate);
             const attendanceSummary = getAttendanceClockSummary(attendanceRow);
             const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
             const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
@@ -4817,13 +4907,15 @@ function App({ initialModuleId }) {
         return b.attendanceScore - a.attendanceScore || Number(b.perfectAttendance) - Number(a.perfectAttendance);
       });
   }, [
+    activeModuleId,
     currentUser,
     attendancePerformanceRange,
     attendancePerformanceRankMetric,
     attendancePerformanceDepartmentFilter,
     attendancePerformanceSearchText,
-    attendanceRows,
+    attendanceViewTab,
     employeeBaseRows,
+    findAttendanceRowForEmployeeOnDate,
     getShiftScheduleForAttendance,
     getAttendanceClockSummary,
     leaveRows,
@@ -5100,6 +5192,7 @@ function App({ initialModuleId }) {
     activeModuleId !== 'attendance-time' &&
     activeModuleId !== 'dashboard' &&
     activeModuleId !== 'leave-management' &&
+    activeModuleId !== 'loan-records' &&
     activeModuleId !== 'monitoring-tracking' &&
     activeModuleId !== 'user-management' &&
     activeModuleId !== 'tenant-management' &&
@@ -5377,6 +5470,12 @@ function App({ initialModuleId }) {
     setLeaveSortBy('date-desc');
     setLeaveActionMessage('');
     setLeaveApprovalDrafts({});
+    setLoanViewTab('requests');
+    setLoanSearchText('');
+    setLoanStatusFilter('All');
+    setLoanActionMessage('');
+    setLoanApprovalDrafts({});
+    setLoanPage(1);
     setPenaltyActionDraft({
       mode: 'partial',
       amount: '',
@@ -6036,6 +6135,7 @@ function App({ initialModuleId }) {
           String(row.id || '') === String(loanId || '') ? persisted : row
         ),
       }));
+      setLoanPageRefreshCounter((prev) => prev + 1);
     } catch (error) {
       showToast(`Error saving department decision for ${loanId}.`, 'error');
     } finally {
@@ -6103,6 +6203,7 @@ function App({ initialModuleId }) {
           String(row.id || '') === String(loanId || '') ? persisted : row
         ),
       }));
+      setLoanPageRefreshCounter((prev) => prev + 1);
     } catch (error) {
       showToast(`Error saving HR decision for ${loanId}.`, 'error');
     } finally {
@@ -6169,6 +6270,7 @@ function App({ initialModuleId }) {
           String(row.id || '') === String(loanId || '') ? persisted : row
         ),
       }));
+      setLoanPageRefreshCounter((prev) => prev + 1);
     } catch (error) {
       showToast(`Error saving manager decision for ${loanId}.`, 'error');
     } finally {
@@ -6379,6 +6481,9 @@ function App({ initialModuleId }) {
         ...prev,
         'employee-management': null,
       }));
+    }
+    if (activeModuleId === 'loan-records') {
+      setLoanPageRefreshCounter((prev) => prev + 1);
     }
     setModuleRowsState((prev) => {
       const currentRows = prev[activeModuleId] || [];
@@ -6789,6 +6894,9 @@ function App({ initialModuleId }) {
           }
           const data = await response.json().catch(() => null);
           const saved = data?.record || rowWithId;
+          if (activeModuleId === 'loan-records') {
+            setLoanPageRefreshCounter((prev) => prev + 1);
+          }
           if (activeModuleId === 'employee-management') {
             setEmployeeLookupRows((prev) => {
               const withoutSaved = prev.filter((employeeRow) => String(employeeRow.id || '') !== String(saved.id || ''));
@@ -9772,6 +9880,12 @@ function App({ initialModuleId }) {
                   setAttendanceClockRangeEndDate={setAttendanceClockRangeEndDate}
                   attendanceClockRangeSearchText={attendanceClockRangeSearchText}
                   setAttendanceClockRangeSearchText={setAttendanceClockRangeSearchText}
+                  attendanceClockPage={attendanceClockPage}
+                  setAttendanceClockPage={setAttendanceClockPage}
+                  attendanceClockPageSize={attendanceClockPageSize}
+                  setAttendanceClockPageSize={setAttendanceClockPageSize}
+                  attendanceClockPageMeta={attendanceClockPageMeta}
+                  attendanceClockPageLoading={attendanceClockPageLoading}
                   attendanceClockRangeRows={attendanceClockRangeRows}
                   exportAttendanceClockCsv={exportAttendanceClockCsv}
                   exportAttendanceClockPdf={exportAttendanceClockPdf}
@@ -9820,10 +9934,16 @@ function App({ initialModuleId }) {
                   loanStatusFilter={loanStatusFilter}
                   setLoanStatusFilter={setLoanStatusFilter}
                   loanStatusOptions={loanStatusOptions}
-                  loanRequestFilteredRows={loanRequestFilteredRows}
+                  loanRequestFilteredRows={activeLoanPageRows}
                   getLoanViewStatus={getLoanViewStatus}
                   loanActionMessage={loanActionMessage}
                   loanViewTab={loanViewTab}
+                  loanPage={loanPage}
+                  setLoanPage={setLoanPage}
+                  loanPageSize={loanPageSize}
+                  setLoanPageSize={setLoanPageSize}
+                  loanPageMeta={loanPageMeta}
+                  loanPageLoading={loanPageLoading}
                   openDetails={openDetails}
                   getApprovalBadgeClass={getApprovalBadgeClass}
                 />

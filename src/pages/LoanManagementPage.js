@@ -1,6 +1,5 @@
 export default function LoanManagementPage({
   appSettings,
-  currentUser,
   startCreate,
   selectedRowId,
   loanSearchText,
@@ -12,9 +11,25 @@ export default function LoanManagementPage({
   getLoanViewStatus,
   loanActionMessage,
   loanViewTab,
+  loanPage,
+  setLoanPage,
+  loanPageSize,
+  setLoanPageSize,
+  loanPageMeta,
+  loanPageLoading,
   openDetails,
   getApprovalBadgeClass,
 }) {
+  const summary = loanPageMeta?.summary || {
+    totalRequests: loanRequestFilteredRows.length,
+    pendingCount: loanRequestFilteredRows.filter((row) =>
+      String(getLoanViewStatus(row, loanViewTab)).toLowerCase().includes('pending')
+    ).length,
+    approvedCount: loanRequestFilteredRows.filter((row) => String(getLoanViewStatus(row)) === 'Approved').length,
+    rejectedCount: loanRequestFilteredRows.filter((row) => String(getLoanViewStatus(row)) === 'Rejected').length,
+  };
+  const totalPages = Math.max(1, Number(loanPageMeta?.totalPages) || 1);
+  const currentPage = Math.max(1, Number(loanPageMeta?.page) || loanPage || 1);
   return (
     <div className="attendance-ops-card">
       <div className="attendance-ops-head">
@@ -54,27 +69,71 @@ export default function LoanManagementPage({
       </div>
       <div className="attendance-stats-grid">
         <article className="attendance-stat">
-          <strong>{loanRequestFilteredRows.length}</strong>
+          <strong>{summary.totalRequests}</strong>
           <span>Total Requests</span>
         </article>
         <article className="attendance-stat">
-          <strong>
-            {loanRequestFilteredRows.filter((row) =>
-              String(getLoanViewStatus(row, loanViewTab)).toLowerCase().includes('pending')
-            ).length}
-          </strong>
+          <strong>{summary.pendingCount}</strong>
           <span>Pending Requests</span>
         </article>
         <article className="attendance-stat">
-          <strong>{loanRequestFilteredRows.filter((row) => String(getLoanViewStatus(row)) === 'Approved').length}</strong>
+          <strong>{summary.approvedCount}</strong>
           <span>Approved</span>
         </article>
         <article className="attendance-stat">
-          <strong>{loanRequestFilteredRows.filter((row) => String(getLoanViewStatus(row)) === 'Rejected').length}</strong>
+          <strong>{summary.rejectedCount}</strong>
           <span>Rejected</span>
         </article>
       </div>
       {loanActionMessage ? <p className="field-title">{loanActionMessage}</p> : null}
+      <div className="pagination-controls" style={{ marginBottom: 12 }}>
+        <div className="pagination-actions">
+          <select
+            className="filter-select"
+            value={loanPageSize}
+            onChange={(event) => {
+              setLoanPageSize(Number(event.target.value) || 25);
+              setLoanPage(1);
+            }}
+          >
+            {[10, 25, 50, 100, 250].map((size) => (
+              <option key={size} value={size}>
+                {size} / page
+              </option>
+            ))}
+          </select>
+          <button type="button" className="mini-btn" onClick={() => setLoanPage(1)} disabled={currentPage <= 1}>
+            « First
+          </button>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setLoanPage((page) => Math.max(1, page - 1))}
+            disabled={currentPage <= 1}
+          >
+            ‹ Prev
+          </button>
+          <div className="pagination-info">
+            Page {currentPage} / {totalPages}
+          </div>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setLoanPage((page) => Math.min(totalPages, page + 1))}
+            disabled={currentPage >= totalPages}
+          >
+            Next ›
+          </button>
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setLoanPage(totalPages)}
+            disabled={currentPage >= totalPages}
+          >
+            Last »
+          </button>
+        </div>
+      </div>
       <div className="attendance-audit-wrap">
         <div className="attendance-audit-table">
           <table>
@@ -132,7 +191,7 @@ export default function LoanManagementPage({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9}>No loan requests for the selected filters.</td>
+                  <td colSpan={9}>{loanPageLoading ? 'Loading loan requests...' : 'No loan requests for the selected filters.'}</td>
                 </tr>
               )}
             </tbody>
