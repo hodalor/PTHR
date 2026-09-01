@@ -45,6 +45,7 @@ const HOT_READ_CACHE_TTL_MS = 15000;
 const moduleCollections = {
   'employee-management': 'employees',
   'attendance-time': 'attendanceTime',
+  'attendance-penalty-adjustments': 'attendancePenaltyAdjustments',
   'loan-records': 'loanRecords',
   fingerprint: 'fingerprintRecords',
   'leave-management': 'leaveRequests',
@@ -455,6 +456,93 @@ function buildAttendanceClockRangeQuery(query = {}, authUser = null) {
   return mongoQuery;
 }
 
+function buildAttendanceComplianceQuery(query = {}, authUser = null) {
+  const normalizedRole = String(authUser?.role || '').trim().toLowerCase();
+  const employeeId = String(authUser?.employeeId || '').trim();
+  const employeeName = String(authUser?.fullName || '').trim();
+  const targetDate = String(query.date || '').trim();
+  const mongoQuery = {};
+  if (/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    mongoQuery.date = targetDate;
+  }
+  if (normalizedRole === 'employee') {
+    const employeeOr = [];
+    if (employeeId) {
+      employeeOr.push({ employeeId });
+    }
+    if (employeeName) {
+      employeeOr.push({ employee: employeeName });
+    }
+    if (employeeOr.length > 0) {
+      mongoQuery.$or = employeeOr;
+    }
+  }
+  return mongoQuery;
+}
+
+function isPermissionLeaveRecord(row) {
+  return String(row?.type || '').trim().toLowerCase() === 'permission';
+}
+
+function getAttendancePermissionScope(row) {
+  const normalized = String(row?.attendanceExemptionScope || '').trim().toLowerCase();
+  return ['all', 'late-only', 'no-clock-in', 'no-clock-out', 'missing-clock'].includes(normalized)
+    ? normalized
+    : 'all';
+}
+
+function getAttendanceEmployeeMatchClauses(authUser = null, fields = {}) {
+  const idField = String(fields.idField || 'employeeId');
+  const nameField = String(fields.nameField || 'employee');
+  const employeeId = String(authUser?.employeeId || '').trim();
+  const employeeName = String(authUser?.fullName || '').trim();
+  const clauses = [];
+  if (employeeId) {
+    clauses.push({ [idField]: employeeId });
+  }
+  if (employeeName) {
+    clauses.push({ [nameField]: employeeName });
+  }
+  return clauses;
+}
+
+function getRecordEmployeeKey(record) {
+  return String(record?.id || record?.employeeId || record?.fullName || record?.employee || '')
+    .trim()
+    .toLowerCase();
+}
+
+function getComparableAttendanceValue(row, sortKey) {
+  switch (sortKey) {
+    case 'date':
+      return String(row?.date || '');
+    case 'employee':
+      return String(row?.employee || '');
+    case 'shift':
+      return String(row?.shift || '');
+    case 'checkIn':
+      return toMinutesFromClock(row?.checkIn) ?? -1;
+    case 'checkOut':
+      return toMinutesFromClock(row?.checkOut) ?? -1;
+    case 'dailyStatus':
+      return String(row?.dailyStatus || '');
+    case 'lateMinutes':
+      return Math.max(0, toNumberValue(row?.lateMinutes));
+    case 'deductionAmount':
+      return Math.max(0, toNumberValue(row?.deductionAmount));
+    default:
+      return String(row?.employee || '');
+  }
+}
+
+function compareAttendanceSortValues(left, right, direction) {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  const bothNumbers = Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+  const base = bothNumbers ? leftNumber - rightNumber : String(left ?? '').localeCompare(String(right ?? ''));
+  return direction === 'desc' ? -base : base;
+}
+
 function getAttendanceClockListView(records, query = {}, context = {}) {
   const searchText = String(query.search || '').trim().toLowerCase();
   const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
@@ -506,6 +594,393 @@ function getAttendanceClockListView(records, query = {}, context = {}) {
       page: safePage,
       pageSize,
       totalPages,
+    },
+  };
+}
+
+function buildAttendanceComplianceRows(records, query = {}, context = {}) {
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const filterValue = String(query.filter || 'All').trim();
+  const sortKey = ['date', 'employee', 'shift', 'checkIn', 'checkOut', 'dailyStatus', 'lateMinutes', 'deductionAmount'].includes(
+    String(query.sortKey || '').trim()
+  )
+    ? String(query.sortKey || '').trim()
+    : 'employee';
+  const sortDirection = String(query.sortDirection || '').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
+  const settings = context?.settings || defaultAttendanceSettings;
+  const targetDate = String(query.date || '').trim();
+  const todayIsoDate = new Date().toISOString().slice(0, 10);
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const isPastDate = targetDate < todayIsoDate;
+  const leaveRows = Array.isArray(context?.leaveRows) ? context.leaveRows : [];
+  const payrollByEmployeeKey = context?.payrollByEmployeeKey instanceof Map ? context.payrollByEmployeeKey : new Map();
+  const mergedRows = mergeDuplicateAttendanceRecords(records, context);
+  return mergedRows
+    .map((attendanceRow) => {
+      const employeeId = String(attendanceRow?.employeeId || '').trim();
+      const employeeName = String(attendanceRow?.employee || '').trim();
+      const matchedEmployee =
+        context?.employeeById?.get(employeeId) ||
+        context?.employeeByEmployeeId?.get(employeeId) ||
+        context?.employeeByName?.get(employeeName) || {
+          id: employeeId,
+          employeeId,
+          fullName: employeeName,
+          department: String(attendanceRow?.department || '').trim() || 'Unassigned',
+          assignedShift: String(attendanceRow?.shift || '').trim(),
+          status: 'Active',
+          employmentState: 'Confirmed',
+        };
+      const effectiveAttendanceRow = attendanceRow?.__enriched
+        ? attendanceRow
+        : enrichAttendanceRecordWithContext(attendanceRow, context);
+      const shiftSchedule = getShiftScheduleForAttendanceRecord(effectiveAttendanceRow, matchedEmployee, settings);
+      const clockings = normalizeAttendanceClockings(effectiveAttendanceRow);
+      const firstCheckIn = clockings.find((clocking) => clocking.mode === 'clock-in') || null;
+      const lastCheckOut = [...clockings].reverse().find((clocking) => clocking.mode === 'clock-out') || null;
+      const checkIn = String(firstCheckIn?.time || effectiveAttendanceRow?.checkIn || '').trim();
+      const checkOut = String(lastCheckOut?.time || effectiveAttendanceRow?.checkOut || '').trim();
+      const checkInMinutes = toMinutesFromClock(checkIn);
+      const rawCheckOut = String(checkOut || '').trim();
+      const hasMidnightCheckout = rawCheckOut === '00:00' || rawCheckOut === '24:00';
+      const checkOutMinutes = hasMidnightCheckout ? null : toMinutesFromClock(rawCheckOut);
+      const hasClockIn = checkInMinutes !== null;
+      const hasClockOut = checkOutMinutes !== null && checkOutMinutes > (checkInMinutes ?? 0);
+      const lateMinutes = Math.max(0, toNumberValue(effectiveAttendanceRow?.lateMinutes));
+      const lateDeductionBase = Math.max(0, toNumberValue(effectiveAttendanceRow?.deductionAmount));
+      const payrollProfile =
+        payrollByEmployeeKey.get(getRecordEmployeeKey(matchedEmployee)) ||
+        payrollByEmployeeKey.get(getRecordEmployeeKey(effectiveAttendanceRow)) ||
+        null;
+      const basicPay = toNumberValue(payrollProfile?.basicPay || matchedEmployee?.basicPay);
+      const workingDays = Math.max(
+        1,
+        Number(payrollProfile?.workingDays || matchedEmployee?.workingDays || settings?.payrollWorkingDays) || 1
+      );
+      const dailyWage = basicPay > 0 ? basicPay / workingDays : 0;
+      const leaveMatch = leaveRows.find((leaveRow) => {
+        const leaveEmployeeId = String(leaveRow?.employeeId || '').trim();
+        const leaveEmployee = String(leaveRow?.employee || '').trim();
+        const status = String(leaveRow?.status || '').trim().toLowerCase();
+        const matchesEmployee =
+          leaveEmployeeId === String(matchedEmployee?.id || '').trim() ||
+          leaveEmployeeId === String(matchedEmployee?.employeeId || '').trim() ||
+          leaveEmployee === String(matchedEmployee?.fullName || '').trim();
+        return (
+          matchesEmployee &&
+          !isPermissionLeaveRecord(leaveRow) &&
+          (status === 'approved' || status === 'active') &&
+          String(leaveRow?.startDate || '').trim() <= targetDate &&
+          String(leaveRow?.endDate || '').trim() >= targetDate
+        );
+      });
+      const permissionMatch = leaveRows.find((leaveRow) => {
+        const leaveEmployeeId = String(leaveRow?.employeeId || '').trim();
+        const leaveEmployee = String(leaveRow?.employee || '').trim();
+        const status = String(leaveRow?.status || '').trim().toLowerCase();
+        const matchesEmployee =
+          leaveEmployeeId === String(matchedEmployee?.id || '').trim() ||
+          leaveEmployeeId === String(matchedEmployee?.employeeId || '').trim() ||
+          leaveEmployee === String(matchedEmployee?.fullName || '').trim();
+        return (
+          matchesEmployee &&
+          isPermissionLeaveRecord(leaveRow) &&
+          (status === 'approved' || status === 'active') &&
+          String(leaveRow?.startDate || '').trim() <= targetDate &&
+          String(leaveRow?.endDate || '').trim() >= targetDate
+        );
+      });
+      const permissionScope = permissionMatch ? getAttendancePermissionScope(permissionMatch) : '';
+      const exemptLate = permissionScope === 'all' || permissionScope === 'late-only';
+      const exemptNoClockIn =
+        permissionScope === 'all' || permissionScope === 'missing-clock' || permissionScope === 'no-clock-in';
+      const exemptNoClockOut =
+        permissionScope === 'all' || permissionScope === 'missing-clock' || permissionScope === 'no-clock-out';
+      const employeeStatus = String(matchedEmployee?.status || '').trim().toLowerCase();
+      const employeeStage = String(matchedEmployee?.employmentState || '').trim().toLowerCase();
+      const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
+      const isOnLeave = Boolean(leaveMatch);
+      const isOffScheduleDay = !shiftSchedule.isWorkingDay;
+      const isExempt = isOffDuty || isOnLeave || isOffScheduleDay;
+      const isLate = shiftSchedule.isWorkingDay && hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
+      const leftEarly =
+        hasClockOut && shiftSchedule.shiftEndMinutes > 0 && checkOutMinutes < shiftSchedule.shiftEndMinutes;
+      const overtimeMinutes =
+        shiftSchedule.isWorkingDay && hasClockOut && shiftSchedule.overtimeEnabled
+          ? Math.max(0, (checkOutMinutes ?? 0) - shiftSchedule.overtimeStartMinutes)
+          : 0;
+      const overtimeAmount = overtimeMinutes * Math.max(0, Number(shiftSchedule.overtimePayPerMinute) || 0);
+      const countMissingClockIn =
+        !isExempt &&
+        !exemptNoClockIn &&
+        !hasClockIn &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
+      const countMissingClockOut =
+        !isExempt &&
+        !exemptNoClockOut &&
+        !hasClockOut &&
+        (isPastDate || (targetDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
+      const missingCount = Number(countMissingClockIn) + Number(countMissingClockOut);
+      const noClockInPenalty =
+        missingCount === 1 && countMissingClockIn
+          ? dailyWage * (Math.max(0, Number(settings?.attendanceNoClockInPenaltyPercent) || 0) / 100)
+          : 0;
+      const noClockOutPenalty =
+        missingCount === 1 && countMissingClockOut
+          ? dailyWage * (Math.max(0, Number(settings?.attendanceNoClockOutPenaltyPercent) || 0) / 100)
+          : 0;
+      const absentPenalty =
+        missingCount >= 2
+          ? dailyWage * (Math.max(0, Number(settings?.attendanceAbsentPenaltyPercent) || 0) / 100)
+          : 0;
+      const pendingClockIn = !isExempt && !hasClockIn && !countMissingClockIn;
+      const lateDeduction = exemptLate ? 0 : lateDeductionBase;
+      const penalties = [];
+      if (lateDeduction > 0) {
+        penalties.push({ type: 'lateness', label: 'Late Clock In', amount: lateDeduction });
+      }
+      if (noClockInPenalty > 0) {
+        penalties.push({ type: 'no-clock-in', label: 'No Clock In', amount: noClockInPenalty });
+      }
+      if (noClockOutPenalty > 0) {
+        penalties.push({ type: 'no-clock-out', label: 'No Clock Out', amount: noClockOutPenalty });
+      }
+      if (absentPenalty > 0) {
+        penalties.push({ type: 'absent', label: 'Absent', amount: absentPenalty });
+      }
+      let dailyStatus = 'On Time';
+      if (isOnLeave) {
+        dailyStatus = 'On Leave';
+      } else if (isOffDuty) {
+        dailyStatus = 'Off Duty';
+      } else if (isOffScheduleDay) {
+        dailyStatus = hasClockIn || hasClockOut
+          ? shiftSchedule.isHoliday
+            ? 'Holiday Worked'
+            : 'Off Day Worked'
+          : shiftSchedule.isHoliday
+            ? 'Holiday'
+            : 'Off Day';
+      } else if (permissionMatch && !hasClockIn && !hasClockOut && (exemptNoClockIn || exemptNoClockOut)) {
+        dailyStatus = 'Permission';
+      } else if (absentPenalty > 0) {
+        dailyStatus = 'Absent';
+      } else if (!hasClockIn) {
+        dailyStatus = exemptNoClockIn ? 'No Clock In (Permitted)' : pendingClockIn ? 'Pending Clock In' : 'No Clock In';
+      } else if (!hasClockOut && exemptNoClockOut) {
+        dailyStatus = 'No Clock Out (Permitted)';
+      } else if (noClockOutPenalty > 0) {
+        dailyStatus = 'Clocked In Once';
+      } else if (isLate) {
+        dailyStatus = exemptLate ? 'Late (Permitted)' : 'Late';
+      }
+      if (dailyStatus === 'On Time' && leftEarly) {
+        dailyStatus = 'Left Early';
+      }
+      return {
+        date: targetDate,
+        employeeId: String(matchedEmployee?.id || matchedEmployee?.employeeId || effectiveAttendanceRow?.employeeId || '').trim(),
+        employee: String(matchedEmployee?.fullName || effectiveAttendanceRow?.employee || '').trim(),
+        department: String(matchedEmployee?.department || effectiveAttendanceRow?.department || '').trim() || 'Unassigned',
+        shift: shiftSchedule.shiftName,
+        checkIn,
+        checkOut,
+        clockings,
+        firstCheckInPhoto: String(firstCheckIn?.photoDataUrl || ''),
+        lastCheckOutPhoto: String(lastCheckOut?.photoDataUrl || ''),
+        deductionAmount: lateDeduction,
+        lateMinutes,
+        dailyWage,
+        dailyStatus,
+        isLate,
+        permissionId: String(permissionMatch?.id || ''),
+        permissionScope,
+        permissionReason: String(permissionMatch?.reason || ''),
+        leftEarly,
+        overtimeMinutes,
+        overtimeAmount,
+        penalties,
+      };
+    })
+    .filter((row) => {
+      const matchesFilter = filterValue === 'All' || String(row?.dailyStatus || '') === filterValue;
+      const matchesSearch =
+        !searchText ||
+        String(row?.employee || '').toLowerCase().includes(searchText) ||
+        String(row?.employeeId || '').toLowerCase().includes(searchText) ||
+        String(row?.department || '').toLowerCase().includes(searchText);
+      return matchesFilter && matchesSearch;
+    })
+    .sort((left, right) => {
+      const primaryCompare = compareAttendanceSortValues(
+        getComparableAttendanceValue(left, sortKey),
+        getComparableAttendanceValue(right, sortKey),
+        sortDirection
+      );
+      if (primaryCompare !== 0) {
+        return primaryCompare;
+      }
+      return String(left?.employee || '').localeCompare(String(right?.employee || ''));
+    });
+}
+
+function getAttendanceComplianceListView(records, query = {}, context = {}) {
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+  const sortKey = ['date', 'employee', 'shift', 'checkIn', 'checkOut', 'dailyStatus', 'lateMinutes', 'deductionAmount'].includes(
+    String(query.sortKey || '').trim()
+  )
+    ? String(query.sortKey || '').trim()
+    : 'employee';
+  const sortDirection = String(query.sortDirection || '').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
+  const complianceRows = buildAttendanceComplianceRows(records, query, context);
+  const statusCounts = complianceRows.reduce((accumulator, row) => {
+    const statusKey = String(row?.dailyStatus || 'Unknown');
+    accumulator[statusKey] = (accumulator[statusKey] || 0) + 1;
+    return accumulator;
+  }, {});
+  const totalRows = complianceRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  return {
+    records: complianceRows.slice(start, start + pageSize),
+    meta: {
+      totalRows,
+      totalPages,
+      page: safePage,
+      pageSize,
+      statusCounts,
+      sortKey,
+      sortDirection,
+    },
+  };
+}
+
+function getAttendancePenaltyListView(records, adjustments = [], query = {}, context = {}) {
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const statusFilter = String(query.statusFilter || 'Outstanding').trim();
+  const sortKey = ['employee', 'date', 'penaltyLabel', 'outstandingAmount', 'status'].includes(
+    String(query.sortKey || '').trim()
+  )
+    ? String(query.sortKey || '').trim()
+    : 'date';
+  const sortDirection = String(query.sortDirection || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+  const complianceRows = buildAttendanceComplianceRows(
+    records,
+    {
+      date: query.date,
+      filter: 'All',
+      search: '',
+      sortKey: 'employee',
+      sortDirection: 'asc',
+    },
+    context
+  );
+  const adjustmentsByPenaltyKey = new Map();
+  (Array.isArray(adjustments) ? adjustments : []).forEach((adjustment) => {
+    const penaltyKey = [
+      String(adjustment?.employeeId || '').trim(),
+      String(adjustment?.date || '').trim(),
+      String(adjustment?.penaltyType || '').trim(),
+    ].join('|');
+    if (!adjustmentsByPenaltyKey.has(penaltyKey)) {
+      adjustmentsByPenaltyKey.set(penaltyKey, []);
+    }
+    adjustmentsByPenaltyKey.get(penaltyKey).push(adjustment);
+  });
+  const penaltyRows = complianceRows
+    .flatMap((row) =>
+      (Array.isArray(row?.penalties) ? row.penalties : []).map((penalty) => {
+        const penaltyKey = `${String(row.employeeId || '').trim()}|${String(row.date || '').trim()}|${String(penalty?.type || '').trim()}`;
+        const penaltyAdjustments = [...(adjustmentsByPenaltyKey.get(penaltyKey) || [])].sort((left, right) =>
+          String(right?.actedOn || right?.updatedAt || '').localeCompare(String(left?.actedOn || left?.updatedAt || ''))
+        );
+        const clearedAmount = penaltyAdjustments.reduce(
+          (total, adjustment) => total + Math.max(0, toNumberValue(adjustment?.clearedAmount)),
+          0
+        );
+        const outstandingAmount = Math.max(0, Math.max(0, toNumberValue(penalty?.amount)) - clearedAmount);
+        return {
+          key: penaltyKey,
+          employeeId: row.employeeId,
+          employee: row.employee,
+          department: row.department,
+          date: row.date,
+          penaltyType: String(penalty?.type || '').trim(),
+          penaltyLabel: String(penalty?.label || '').trim(),
+          baseAmount: Math.max(0, toNumberValue(penalty?.amount)),
+          clearedAmount,
+          outstandingAmount,
+          status: outstandingAmount > 0 ? 'Outstanding' : 'Cleared',
+          adjustments: penaltyAdjustments,
+        };
+      })
+    )
+    .filter((row) => {
+      const matchesStatus =
+        statusFilter === 'All' ||
+        (statusFilter === 'Outstanding' && row.outstandingAmount > 0) ||
+        (statusFilter === 'Cleared' && row.outstandingAmount <= 0);
+      const matchesSearch =
+        !searchText ||
+        String(row?.employee || '').toLowerCase().includes(searchText) ||
+        String(row?.employeeId || '').toLowerCase().includes(searchText) ||
+        String(row?.department || '').toLowerCase().includes(searchText) ||
+        String(row?.penaltyLabel || '').toLowerCase().includes(searchText);
+      return matchesStatus && matchesSearch;
+    })
+    .sort((left, right) => {
+      const leftValue =
+        sortKey === 'status'
+          ? left.status
+          : sortKey === 'outstandingAmount'
+            ? left.outstandingAmount
+            : left?.[sortKey];
+      const rightValue =
+        sortKey === 'status'
+          ? right.status
+          : sortKey === 'outstandingAmount'
+            ? right.outstandingAmount
+            : right?.[sortKey];
+      const primaryCompare = compareAttendanceSortValues(leftValue, rightValue, sortDirection);
+      if (primaryCompare !== 0) {
+        return primaryCompare;
+      }
+      return String(left?.employee || '').localeCompare(String(right?.employee || ''));
+    });
+
+  const summary = penaltyRows.reduce(
+    (accumulator, row) => {
+      accumulator.totalRows += 1;
+      accumulator.totalOutstandingAmount += Math.max(0, row.outstandingAmount);
+      accumulator.totalClearedAmount += Math.max(0, row.clearedAmount);
+      accumulator.outstandingCount += row.outstandingAmount > 0 ? 1 : 0;
+      return accumulator;
+    },
+    {
+      totalRows: 0,
+      totalOutstandingAmount: 0,
+      totalClearedAmount: 0,
+      outstandingCount: 0,
+    }
+  );
+  summary.clearedCount = Math.max(0, summary.totalRows - summary.outstandingCount);
+  const totalPages = Math.max(1, Math.ceil(summary.totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  return {
+    records: penaltyRows.slice(start, start + pageSize),
+    meta: {
+      ...summary,
+      page: safePage,
+      pageSize,
+      totalPages,
+      sortKey,
+      sortDirection,
+      statusFilter,
     },
   };
 }
@@ -918,6 +1393,12 @@ async function signEmployeeStorageFields(record) {
 async function signAttendanceRecordMedia(record) {
   const source = record || {};
   const next = { ...source };
+  if (source.firstCheckInPhoto) {
+    next.firstCheckInPhoto = await createSignedStorageUrl(source.firstCheckInPhoto);
+  }
+  if (source.lastCheckOutPhoto) {
+    next.lastCheckOutPhoto = await createSignedStorageUrl(source.lastCheckOutPhoto);
+  }
   if (Array.isArray(source.clockings)) {
     next.clockings = await Promise.all(
       source.clockings.map(async (clocking) => ({
@@ -1257,6 +1738,8 @@ function getShiftScheduleForAttendanceRecord(source, employee, settings) {
   const reportMinutes = toMinutesFromClock(reportTime);
   const graceInMinutes = Math.max(0, Number(ruleSource?.graceInMinutes) || 0);
   const shiftEndMinutes = toMinutesFromClock(shiftEnd);
+  const graceOutMinutes = Math.max(0, Number(ruleSource?.graceOutMinutes) || 0);
+  const overtimeStartAfterMinutes = Math.max(0, Number(ruleSource?.overtimeStartAfterMinutes) || 0);
   return {
     shiftName: shiftConfig?.name || shiftName,
     ruleKey,
@@ -1265,8 +1748,15 @@ function getShiftScheduleForAttendanceRecord(source, employee, settings) {
     reportTime,
     shiftEnd,
     reportMinutes,
+    graceInMinutes,
     lateAfterMinutes: reportMinutes === null ? null : reportMinutes + graceInMinutes,
     shiftEndMinutes,
+    graceOutMinutes,
+    shiftEndWithGraceMinutes: (shiftEndMinutes ?? 0) + graceOutMinutes,
+    overtimeEnabled: Boolean(ruleSource?.overtimeEnabled),
+    overtimeStartAfterMinutes,
+    overtimeStartMinutes: (shiftEndMinutes ?? 0) + overtimeStartAfterMinutes,
+    overtimePayPerMinute: Math.max(0, Number(ruleSource?.overtimePayPerMinute) || 0),
   };
 }
 
@@ -2853,13 +3343,14 @@ app.use('/api/modules/:moduleId', async (req, res, next) => {
       return;
     }
     const moduleId = req.params.moduleId;
+    const accessModuleId = moduleId === 'attendance-penalty-adjustments' ? 'attendance-time' : moduleId;
     if (String(user.role || '').toLowerCase() === 'superadmin' && req.tenantId === 'master') {
       req.authUser = user;
       next();
       return;
     }
     const allowedModules = resolveUserAllowedModulesForTenant({ user, tenant: req.tenant, tenantId: req.tenantId, defaultEmployeeModules });
-    if (!allowedModules.includes(moduleId)) {
+    if (!allowedModules.includes(accessModuleId)) {
       res.status(403).json({ error: 'Forbidden: module not enabled for this tenant/user' });
       return;
     }
@@ -2890,9 +3381,10 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.json(cachedRecords);
       return;
     }
-    const isAttendanceClockPageRequest =
-      moduleId === 'attendance-time' && String(req.query?.mode || '').trim().toLowerCase() === 'clock-page';
-    const records = isAttendanceClockPageRequest
+    const attendanceMode = String(req.query?.mode || '').trim().toLowerCase();
+    const isAttendancePagedRequest =
+      moduleId === 'attendance-time' && ['clock-page', 'compliance-page', 'penalty-page'].includes(attendanceMode);
+    const records = isAttendancePagedRequest
       ? []
       : moduleId === 'employee-management'
         ? await collection.find({}).toArray()
@@ -2944,7 +3436,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.json(setHotReadCache(moduleCacheKey, payload));
       return;
     }
-    if (String(req.query?.mode || '').trim().toLowerCase() === 'clock-page') {
+    if (attendanceMode === 'clock-page') {
       const attendanceQuery = buildAttendanceClockRangeQuery(req.query, req.user);
       const [rangeRecords, settingsRecord, employees] = await Promise.all([
         collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
@@ -2979,6 +3471,263 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       const payload = {
         records: await Promise.all(clockPageView.records.map((row) => hydrateModuleRecordMedia(moduleId, row))),
         meta: clockPageView.meta,
+      };
+      res.json(setHotReadCache(moduleCacheKey, payload));
+      return;
+    }
+    if (attendanceMode === 'compliance-page') {
+      const attendanceQuery = buildAttendanceComplianceQuery(req.query, req.user);
+      const targetDate = String(req.query?.date || '').trim();
+      const leaveScopeClauses = getAttendanceEmployeeMatchClauses(req.user, {
+        idField: 'employeeId',
+        nameField: 'employee',
+      });
+      const leaveQuery = {
+        startDate: { $lte: targetDate },
+        endDate: { $gte: targetDate },
+        ...(leaveScopeClauses.length > 0 ? { $or: leaveScopeClauses } : {}),
+      };
+      const [rangeRecords, settingsRecord, employees, leaveRows] = await Promise.all([
+        collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
+        req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+        req.db.collection('employees').find(
+          {},
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              fullName: 1,
+              department: 1,
+              assignedShift: 1,
+              status: 1,
+              employmentState: 1,
+              basicPay: 1,
+              workingDays: 1,
+            },
+          }
+        ).toArray(),
+        req.db.collection('leaveRequests').find(leaveQuery, {
+          projection: {
+            id: 1,
+            employeeId: 1,
+            employee: 1,
+            type: 1,
+            status: 1,
+            startDate: 1,
+            endDate: 1,
+            attendanceExemptionScope: 1,
+            reason: 1,
+          },
+        }).toArray(),
+      ]);
+      const employeeById = new Map();
+      const employeeByEmployeeId = new Map();
+      const employeeByName = new Map();
+      for (const employee of employees) {
+        if (employee?.id) {
+          employeeById.set(String(employee.id), employee);
+        }
+        if (employee?.employeeId) {
+          employeeByEmployeeId.set(String(employee.employeeId), employee);
+        }
+        if (employee?.fullName) {
+          employeeByName.set(String(employee.fullName), employee);
+        }
+      }
+      const payrollEmployeeClauses = [];
+      const payrollSeenKeys = new Set();
+      rangeRecords.forEach((record) => {
+        const scopedEmployeeId = String(record?.employeeId || '').trim();
+        const scopedEmployeeName = String(record?.employee || '').trim();
+        if (scopedEmployeeId && !payrollSeenKeys.has(`id:${scopedEmployeeId}`)) {
+          payrollSeenKeys.add(`id:${scopedEmployeeId}`);
+          payrollEmployeeClauses.push({ employeeId: scopedEmployeeId });
+        }
+        if (scopedEmployeeName && !payrollSeenKeys.has(`name:${scopedEmployeeName}`)) {
+          payrollSeenKeys.add(`name:${scopedEmployeeName}`);
+          payrollEmployeeClauses.push({ employee: scopedEmployeeName });
+        }
+      });
+      const payrollRows = payrollEmployeeClauses.length > 0
+        ? await req.db.collection('payrollRecords').find(
+            { $or: payrollEmployeeClauses },
+            {
+              projection: {
+                employeeId: 1,
+                employee: 1,
+                basicPay: 1,
+                workingDays: 1,
+                updatedAt: 1,
+                createdAt: 1,
+              },
+            }
+          ).sort({ updatedAt: -1, createdAt: -1, _id: -1 }).toArray()
+        : [];
+      const payrollByEmployeeKey = new Map();
+      payrollRows.forEach((row) => {
+        const rowKey = getRecordEmployeeKey(row);
+        if (rowKey && !payrollByEmployeeKey.has(rowKey)) {
+          payrollByEmployeeKey.set(rowKey, row);
+        }
+      });
+      const settings = normalizeAttendanceSettings(settingsRecord?.value);
+      const compliancePageView = getAttendanceComplianceListView(
+        rangeRecords,
+        req.query,
+        {
+          settings,
+          leaveRows,
+          payrollByEmployeeKey,
+          employeeById,
+          employeeByEmployeeId,
+          employeeByName,
+        }
+      );
+      const payload = {
+        records: await Promise.all(compliancePageView.records.map((row) => hydrateModuleRecordMedia(moduleId, row))),
+        meta: compliancePageView.meta,
+      };
+      res.json(setHotReadCache(moduleCacheKey, payload));
+      return;
+    }
+    if (attendanceMode === 'penalty-page') {
+      const attendanceQuery = buildAttendanceComplianceQuery(req.query, req.user);
+      const targetDate = String(req.query?.date || '').trim();
+      const leaveScopeClauses = getAttendanceEmployeeMatchClauses(req.user, {
+        idField: 'employeeId',
+        nameField: 'employee',
+      });
+      const scopedOr = leaveScopeClauses.length > 0 ? { $or: leaveScopeClauses } : {};
+      const [rangeRecords, settingsRecord, employees, leaveRows, adjustmentRows] = await Promise.all([
+        collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
+        req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+        req.db.collection('employees').find(
+          {},
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              fullName: 1,
+              department: 1,
+              assignedShift: 1,
+              status: 1,
+              employmentState: 1,
+              basicPay: 1,
+              workingDays: 1,
+            },
+          }
+        ).toArray(),
+        req.db.collection('leaveRequests').find(
+          {
+            startDate: { $lte: targetDate },
+            endDate: { $gte: targetDate },
+            ...scopedOr,
+          },
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              employee: 1,
+              type: 1,
+              status: 1,
+              startDate: 1,
+              endDate: 1,
+              attendanceExemptionScope: 1,
+              reason: 1,
+            },
+          }
+        ).toArray(),
+        req.db.collection('attendancePenaltyAdjustments').find(
+          {
+            date: targetDate,
+            ...scopedOr,
+          },
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              employee: 1,
+              date: 1,
+              department: 1,
+              penaltyType: 1,
+              penaltyLabel: 1,
+              clearanceMode: 1,
+              clearedAmount: 1,
+              remark: 1,
+              actorUsername: 1,
+              actedOn: 1,
+              updatedAt: 1,
+            },
+          }
+        ).sort({ actedOn: -1, updatedAt: -1, _id: -1 }).toArray(),
+      ]);
+      const employeeById = new Map();
+      const employeeByEmployeeId = new Map();
+      const employeeByName = new Map();
+      for (const employee of employees) {
+        if (employee?.id) {
+          employeeById.set(String(employee.id), employee);
+        }
+        if (employee?.employeeId) {
+          employeeByEmployeeId.set(String(employee.employeeId), employee);
+        }
+        if (employee?.fullName) {
+          employeeByName.set(String(employee.fullName), employee);
+        }
+      }
+      const payrollEmployeeClauses = [];
+      const payrollSeenKeys = new Set();
+      rangeRecords.forEach((record) => {
+        const scopedEmployeeId = String(record?.employeeId || '').trim();
+        const scopedEmployeeName = String(record?.employee || '').trim();
+        if (scopedEmployeeId && !payrollSeenKeys.has(`id:${scopedEmployeeId}`)) {
+          payrollSeenKeys.add(`id:${scopedEmployeeId}`);
+          payrollEmployeeClauses.push({ employeeId: scopedEmployeeId });
+        }
+        if (scopedEmployeeName && !payrollSeenKeys.has(`name:${scopedEmployeeName}`)) {
+          payrollSeenKeys.add(`name:${scopedEmployeeName}`);
+          payrollEmployeeClauses.push({ employee: scopedEmployeeName });
+        }
+      });
+      const payrollRows = payrollEmployeeClauses.length > 0
+        ? await req.db.collection('payrollRecords').find(
+            { $or: payrollEmployeeClauses },
+            {
+              projection: {
+                employeeId: 1,
+                employee: 1,
+                basicPay: 1,
+                workingDays: 1,
+                updatedAt: 1,
+                createdAt: 1,
+              },
+            }
+          ).sort({ updatedAt: -1, createdAt: -1, _id: -1 }).toArray()
+        : [];
+      const payrollByEmployeeKey = new Map();
+      payrollRows.forEach((row) => {
+        const rowKey = getRecordEmployeeKey(row);
+        if (rowKey && !payrollByEmployeeKey.has(rowKey)) {
+          payrollByEmployeeKey.set(rowKey, row);
+        }
+      });
+      const settings = normalizeAttendanceSettings(settingsRecord?.value);
+      const penaltyPageView = getAttendancePenaltyListView(
+        rangeRecords,
+        adjustmentRows,
+        req.query,
+        {
+          settings,
+          leaveRows,
+          payrollByEmployeeKey,
+          employeeById,
+          employeeByEmployeeId,
+          employeeByName,
+        }
+      );
+      const payload = {
+        records: await Promise.all(penaltyPageView.records.map((row) => hydrateModuleRecordMedia(moduleId, row))),
+        meta: penaltyPageView.meta,
       };
       res.json(setHotReadCache(moduleCacheKey, payload));
       return;
@@ -3251,6 +4000,7 @@ async function start() {
       masterDb.collection('attendanceTime').createIndex({ employeeId: 1, date: -1 }),
       masterDb.collection('attendanceTime').createIndex({ employee: 1, date: -1 }),
       masterDb.collection('attendanceTime').createIndex({ date: -1 }),
+      masterDb.collection('attendancePenaltyAdjustments').createIndex({ employeeId: 1, date: -1, penaltyType: 1 }),
       masterDb.collection('loanRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
       masterDb.collection('leaveRequests').createIndex({ employeeId: 1, startDate: -1, endDate: -1 }),
       masterDb.collection('payrollRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
