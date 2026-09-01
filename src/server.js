@@ -40,6 +40,7 @@ const defaultEmployeeModules = ['dashboard', 'attendance-time', 'loan-records', 
 const allowedUserRoles = new Set(['employee', 'manager', 'hr', 'admin', 'tenant-admin', 'superadmin']);
 const blockedEmployeeStatusValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated']);
 const blockedEmployeeStageValues = new Set(['inactive', 'stopped', 'stoped', 'fired', 'resigned', 'terminated', 'expired']);
+const HOT_READ_CACHE_TTL_MS = 15000;
 
 const moduleCollections = {
   'employee-management': 'employees',
@@ -1790,6 +1791,70 @@ async function enrichAttendanceRecord(db, payload, options = {}) {
 
 let mongoClient;
 const tenantDbCache = new Map();
+const hotReadCache = new Map();
+
+function buildHotReadCacheKey(parts) {
+  return parts.map((part) => String(part || '')).join('::');
+}
+
+function getHotReadCache(key) {
+  const cached = hotReadCache.get(key);
+  if (!cached) {
+    return null;
+  }
+  if (cached.expiresAt <= Date.now()) {
+    hotReadCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function setHotReadCache(key, value, ttlMs = HOT_READ_CACHE_TTL_MS) {
+  hotReadCache.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+  return value;
+}
+
+function invalidateHotReadCache(predicate) {
+  for (const key of hotReadCache.keys()) {
+    if (predicate(key)) {
+      hotReadCache.delete(key);
+    }
+  }
+}
+
+function invalidateTenantReadCaches(tenantId, moduleId = '') {
+  const normalizedTenantId = String(tenantId || '').trim().toLowerCase();
+  invalidateHotReadCache((key) => {
+    if (!key.includes(`tenant:${normalizedTenantId}`)) {
+      return false;
+    }
+    if (!moduleId) {
+      return true;
+    }
+    return key.includes(`module:${moduleId}`) || key.includes('dashboard:summary') || key.includes('module:employee-management');
+  });
+}
+
+function serializeQueryForCache(query = {}) {
+  return Object.entries(query)
+    .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : String(value || '')}`)
+    .join('&');
+}
+
+function stripEmployeeHeavyFields(record) {
+  const next = {};
+  for (const [key, value] of Object.entries(record || {})) {
+    if (key.endsWith('Files') || key.endsWith('Preview') || key.endsWith('MediaUnavailable')) {
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
 
 async function connectToMongo() {
   if (!MONGO_URI) {
@@ -2193,6 +2258,7 @@ app.post('/api/settings/attendance', async (req, res) => {
       },
       { upsert: true }
     );
+    invalidateTenantReadCaches(req.tenantId || 'master');
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save attendance settings' });
@@ -2225,6 +2291,7 @@ app.post('/api/settings/general', async (req, res) => {
       },
       { upsert: true }
     );
+    invalidateTenantReadCaches(req.tenantId || 'master');
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ error: 'Failed to save general settings' });
@@ -2244,32 +2311,6 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
           tenantId: req.tenantId,
           defaultEmployeeModules,
         });
-    // #region debug-point B:dashboard-route-entry
-    (() => {
-      try {
-        const payload = JSON.stringify({
-          sessionId: 'dashboard-summary-load',
-          runId: 'post-fix',
-          hypothesisId: 'B',
-          location: 'backend/src/server.js:2079',
-          msg: '[DEBUG] Dashboard summary route entered',
-          data: {
-            tenantId: String(req.tenantId || ''),
-            role: normalizedRole,
-            selectedDate: String(req.query?.date || ''),
-            hasDashboardModule: allowedModules.includes('dashboard'),
-            employeeId: String(authUser?.employeeId || ''),
-          },
-          ts: Date.now(),
-        });
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-        }).catch(() => {});
-      } catch (_) {}
-    })();
-    // #endregion
     if (!allowedModules.includes('dashboard')) {
       res.status(403).json({ error: 'Forbidden: dashboard not enabled for this tenant/user' });
       return;
@@ -2277,6 +2318,19 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
 
     const selectedDate = normalizeIsoDateInput(req.query?.date);
     const monthStartDate = getMonthStartIsoDate(selectedDate);
+    const dashboardCacheKey = buildHotReadCacheKey([
+      'tenant',
+      req.tenantId,
+      'dashboard:summary',
+      normalizedRole,
+      authUser?.id || authUser?.username || '',
+      selectedDate,
+    ]);
+    const cachedSummary = getHotReadCache(dashboardCacheKey);
+    if (cachedSummary) {
+      res.json(cachedSummary);
+      return;
+    }
     const employeeId = String(authUser?.employeeId || '').trim();
     const employeeName = String(authUser?.fullName || '').trim();
     const employeeMatchQuery =
@@ -2361,35 +2415,7 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       const takeHomePay = latestPayrollRow
         ? Math.max(0, toNumberValue(latestPayrollRow?.netPayable))
         : Math.max(0, grossPayEstimate - monthToDateDeductionAmount);
-      // #region debug-point D:dashboard-employee-success
-      (() => {
-        try {
-          const payload = JSON.stringify({
-            sessionId: 'dashboard-summary-load',
-            runId: 'post-fix',
-            hypothesisId: 'D',
-            location: 'backend/src/server.js:2167',
-            msg: '[DEBUG] Dashboard summary employee payload ready',
-            data: {
-              employeeFound: Boolean(employeeRecord),
-              attendanceRows: dayAttendanceRows.length,
-              monthAttendanceRows: monthAttendanceRows.length,
-              loanRows: employeeLoanRows.length,
-              leaveRows: employeeLeaveRows.length,
-              hasLatestPayroll: Boolean(latestPayrollRow),
-            },
-            ts: Date.now(),
-          });
-          fetch('http://127.0.0.1:7777/event', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload,
-          }).catch(() => {});
-        } catch (_) {}
-      })();
-      // #endregion
-
-      res.json({
+      const payload = {
         view: 'employee',
         date: selectedDate,
         employee: {
@@ -2432,7 +2458,8 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
                 ''
             ).trim() || '',
         },
-      });
+      };
+      res.json(setHotReadCache(dashboardCacheKey, payload));
       return;
     }
 
@@ -2466,35 +2493,7 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       (row) => !isLeaveRejectedRecord(row) && !isLeaveFullyApprovedRecord(row)
     ).length;
     const approvedLeaveCount = leaveRows.filter(isLeaveFullyApprovedRecord).length;
-    // #region debug-point D:dashboard-admin-success
-    (() => {
-      try {
-        const payload = JSON.stringify({
-          sessionId: 'dashboard-summary-load',
-          runId: 'post-fix',
-          hypothesisId: 'D',
-          location: 'backend/src/server.js:2261',
-          msg: '[DEBUG] Dashboard summary admin payload ready',
-          data: {
-            employees: employeeRows.length,
-            attendanceRows: dayAttendanceRows.length,
-            monthAttendanceRows: monthAttendanceRows.length,
-            loanRows: loanRows.length,
-            leaveRows: leaveRows.length,
-            activeEmployees: activeEmployees.length,
-          },
-          ts: Date.now(),
-        });
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-        }).catch(() => {});
-      } catch (_) {}
-    })();
-    // #endregion
-
-    res.json({
+    const payload = {
       view: 'admin',
       date: selectedDate,
       workforce: {
@@ -2519,31 +2518,9 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         pendingCount: pendingLeaveCount,
         approvedCount: approvedLeaveCount,
       },
-    });
+    };
+    res.json(setHotReadCache(dashboardCacheKey, payload));
   } catch (error) {
-    // #region debug-point B:dashboard-route-error
-    (() => {
-      try {
-        const payload = JSON.stringify({
-          sessionId: 'dashboard-summary-load',
-          runId: 'post-fix',
-          hypothesisId: 'B',
-          location: 'backend/src/server.js:2302',
-          msg: '[DEBUG] Dashboard summary route failed',
-          data: {
-            message: String(error?.message || ''),
-            stack: String(error?.stack || '').split('\n').slice(0, 6).join('\n'),
-          },
-          ts: Date.now(),
-        });
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-        }).catch(() => {});
-      } catch (_) {}
-    })();
-    // #endregion
     res.status(500).json({ error: 'Failed to load dashboard summary' });
   }
 });
@@ -2592,6 +2569,18 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.status(404).json({ error: 'Unknown module' });
       return;
     }
+    const moduleCacheKey = buildHotReadCacheKey([
+      'tenant',
+      req.tenantId,
+      'module',
+      moduleId,
+      serializeQueryForCache(req.query),
+    ]);
+    const cachedRecords = getHotReadCache(moduleCacheKey);
+    if (cachedRecords) {
+      res.json(cachedRecords);
+      return;
+    }
     const records = await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
       if (moduleId === 'employee-management') {
@@ -2599,26 +2588,38 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         const userByEmployeeId = new Map(
           users.map((user) => [String(user.employeeId || '').trim(), user]).filter(([employeeId]) => employeeId)
         );
-        res.json({
+        const lookupMode = String(req.query?.mode || '').trim().toLowerCase() === 'lookup';
+        const payload = {
           records: await Promise.all(
             records.map((record) =>
-              hydrateModuleRecordMedia(
-                moduleId,
-                mergeEmployeeAuthAccess(
-                  record,
-                  userByEmployeeId.get(String(record?.id || '').trim()) || null,
-                  req.tenant,
-                  req.tenantId
-                )
-              )
+              lookupMode
+                ? stripEmployeeHeavyFields(
+                    mergeEmployeeAuthAccess(
+                      record,
+                      userByEmployeeId.get(String(record?.id || '').trim()) || null,
+                      req.tenant,
+                      req.tenantId
+                    )
+                  )
+                : hydrateModuleRecordMedia(
+                    moduleId,
+                    mergeEmployeeAuthAccess(
+                      record,
+                      userByEmployeeId.get(String(record?.id || '').trim()) || null,
+                      req.tenant,
+                      req.tenantId
+                    )
+                  )
             )
           ),
-        });
+        };
+        res.json(setHotReadCache(moduleCacheKey, payload));
         return;
       }
-      res.json({
+      const payload = {
         records: await Promise.all(records.map((record) => hydrateModuleRecordMedia(moduleId, record))),
-      });
+      };
+      res.json(setHotReadCache(moduleCacheKey, payload));
       return;
     }
     const [settingsRecord, employees] = await Promise.all([
@@ -2648,10 +2649,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         employeeByName,
       }).map((row) => hydrateModuleRecordMedia(moduleId, row))
     );
-    // #region debug-point C:attendance-get
-    fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"C",location:"backend/src/server.js:/api/modules/:moduleId GET attendance-time",msg:"[DEBUG] attendance records loaded",data:{rawCount:records.length,mergedCount:normalizedRecords.length,sample:normalizedRecords.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0}))},ts:Date.now()})}).catch(()=>{});
-    // #endregion
-    res.json({ records: normalizedRecords });
+    res.json(setHotReadCache(moduleCacheKey, { records: normalizedRecords }));
   } catch (error) {
     res.status(500).json({ error: 'Failed to load records' });
   }
@@ -2756,6 +2754,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
           }
         );
         const updated = await collection.findOne({ _id: existingAttendance._id });
+        invalidateTenantReadCaches(req.tenantId, moduleId);
         res.json({ record: await hydrateModuleRecordMedia(moduleId, updated) });
         return;
       }
@@ -2779,6 +2778,7 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     if (moduleId === 'employee-management' && inserted) {
       await syncEmployeeUser(req.db, inserted);
     }
+    invalidateTenantReadCaches(req.tenantId, moduleId);
     res.status(201).json({ record: await hydrateModuleRecordMedia(moduleId, inserted) });
   } catch (error) {
     res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to create record' });
@@ -2827,6 +2827,7 @@ app.put('/api/modules/:moduleId/:recordId', async (req, res) => {
     if (moduleId === 'employee-management') {
       await syncEmployeeUser(req.db, updated);
     }
+    invalidateTenantReadCaches(req.tenantId, moduleId);
     res.json({ record: await hydrateModuleRecordMedia(moduleId, updated) });
   } catch (error) {
     console.error('Failed to update record', error);
@@ -2851,6 +2852,7 @@ app.delete('/api/modules/:moduleId/:recordId', async (req, res) => {
     if (moduleId === 'employee-management' && result.deletedCount > 0) {
       await deleteEmployeeUserAccess(req.db, recordId);
     }
+    invalidateTenantReadCaches(req.tenantId, moduleId);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete record' });
@@ -2882,6 +2884,16 @@ async function start() {
       { upsert: true }
     );
     await ensureSuperAdmin(masterDb);
+    await Promise.all([
+      masterDb.collection('employees').createIndex({ id: 1 }, { unique: true }),
+      masterDb.collection('employees').createIndex({ fullName: 1 }),
+      masterDb.collection('attendanceTime').createIndex({ employeeId: 1, date: -1 }),
+      masterDb.collection('attendanceTime').createIndex({ employee: 1, date: -1 }),
+      masterDb.collection('attendanceTime').createIndex({ date: -1 }),
+      masterDb.collection('loanRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
+      masterDb.collection('leaveRequests').createIndex({ employeeId: 1, startDate: -1, endDate: -1 }),
+      masterDb.collection('payrollRecords').createIndex({ employeeId: 1, updatedAt: -1 }),
+    ]);
     app.listen(PORT, () => {
       console.log(`Connected to MongoDB Atlas database "${MONGO_MASTER_DB_NAME}"`);
       console.log(`HR backend listening on port ${PORT}`);
