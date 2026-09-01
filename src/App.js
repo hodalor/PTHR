@@ -976,6 +976,9 @@ function App({ initialModuleId }) {
   const employeeModuleLoadingRef = useRef(false);
   const generalSettingsLoadedRef = useRef(false);
   const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
+  const moduleRowsFetchMetaRef = useRef({});
+  const moduleRowsVariantRef = useRef({});
+  const dashboardSummaryFetchMetaRef = useRef({});
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -1570,7 +1573,20 @@ function App({ initialModuleId }) {
     ) {
       return;
     }
+    const existingRows = moduleRowsState[activeModuleId];
+    const now = Date.now();
+    const fullFetchKey = `${activeModuleId}:full`;
+    const lastFetchAt = Number(moduleRowsFetchMetaRef.current[fullFetchKey] || 0);
+    if (
+      Array.isArray(existingRows) &&
+      existingRows.length > 0 &&
+      moduleRowsVariantRef.current[activeModuleId] === 'full' &&
+      now - lastFetchAt < 15000
+    ) {
+      return;
+    }
     let cancelled = false;
+    moduleRowsFetchMetaRef.current[fullFetchKey] = now;
     const loadModuleRows = async () => {
       try {
         const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`), {
@@ -1584,24 +1600,26 @@ function App({ initialModuleId }) {
           return;
         }
         const records = Array.isArray(data.records) ? data.records : [];
-        // #region debug-point D:attendance-fetch
-        if (activeModuleId === 'attendance-time') { fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"D",location:"frontend/src/App.js:loadModuleRows",msg:"[DEBUG] attendance records fetched",data:{recordCount:records.length,sample:records.slice(0,8).map((row)=>({id:String(row?.id||""),employeeId:String(row?.employeeId||""),employee:String(row?.employee||""),date:String(row?.date||""),checkIn:String(row?.checkIn||""),checkOut:String(row?.checkOut||""),clockings:Array.isArray(row?.clockings)?row.clockings.length:0}))},ts:Date.now()})}).catch(()=>{}); }
-        // #endregion
+        moduleRowsVariantRef.current[activeModuleId] = 'full';
         setModuleRowsState((prev) => ({
           ...prev,
           [activeModuleId]: records,
         }));
       } catch (error) {
+        moduleRowsFetchMetaRef.current[fullFetchKey] = 0;
       }
     };
     loadModuleRows();
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, authHeaders, authToken, currentUser, isSettingsPage]);
+  }, [activeModuleId, authHeaders, authToken, currentUser, isSettingsPage, moduleRowsState]);
   const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
   useEffect(() => {
     if (!currentUser) {
+      return;
+    }
+    if (!allowedModulesByRole.has('employee-management')) {
       return;
     }
     if (employeeRowsCount > 0) {
@@ -1614,7 +1632,7 @@ function App({ initialModuleId }) {
     employeeModuleLoadingRef.current = true;
     const loadEmployees = async () => {
       try {
-        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'), {
+        const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management?mode=lookup'), {
           headers: authHeaders,
         });
         if (!response.ok) {
@@ -1625,6 +1643,8 @@ function App({ initialModuleId }) {
           return;
         }
         const records = Array.isArray(data.records) ? data.records : [];
+        moduleRowsFetchMetaRef.current['employee-management:lookup'] = Date.now();
+        moduleRowsVariantRef.current['employee-management'] = 'lookup';
         setModuleRowsState((prev) => ({
           ...prev,
           'employee-management': records,
@@ -1638,7 +1658,7 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [authHeaders, currentUser, employeeRowsCount]);
+  }, [allowedModulesByRole, authHeaders, currentUser, employeeRowsCount]);
 
   useEffect(() => {
     if (!authToken) {
@@ -1927,105 +1947,37 @@ function App({ initialModuleId }) {
     if (!authToken || !currentUser || activeModuleId !== 'dashboard') {
       return undefined;
     }
+    const dashboardCacheKey = `${String(currentUser?.id || currentUser?.username || '')}::${dashboardDate}`;
+    const cachedSummary = dashboardSummaryFetchMetaRef.current[dashboardCacheKey];
+    if (cachedSummary && Date.now() - cachedSummary.fetchedAt < 15000 && dashboardRefreshCounter === 0) {
+      setDashboardSummary(cachedSummary.payload);
+      setDashboardLoading(false);
+      setDashboardError('');
+      return undefined;
+    }
     let cancelled = false;
     const fetchDashboardSummary = async () => {
       try {
         setDashboardLoading(true);
         setDashboardError('');
-        // #region debug-point A:dashboard-fetch-start
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: 'dashboard-summary-load',
-            runId: 'post-fix',
-            hypothesisId: 'A',
-            location: 'frontend/src/App.js:1734',
-            msg: '[DEBUG] Dashboard summary request started',
-            data: {
-              date: dashboardDate,
-              activeModuleId,
-              hasAuthToken: Boolean(authToken),
-              hasAuthorizationHeader: Boolean(authHeaders?.Authorization),
-              userRole: String(currentUser?.role || '').trim().toLowerCase(),
-            },
-            ts: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         const response = await fetch(
           toApiUrl(`http://localhost:8000/api/dashboard/summary?date=${encodeURIComponent(dashboardDate)}`),
           {
             headers: authHeaders,
           }
         );
-        // #region debug-point C:dashboard-fetch-response
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: 'dashboard-summary-load',
-            runId: 'post-fix',
-            hypothesisId: response.ok ? 'D' : 'C',
-            location: 'frontend/src/App.js:1753',
-            msg: `[DEBUG] Dashboard summary response received (${response.status})`,
-            data: {
-              ok: response.ok,
-              status: response.status,
-              statusText: response.statusText,
-              contentType: response.headers.get('content-type') || '',
-              requestUrl: response.url || '',
-            },
-            ts: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         if (!response.ok) {
           throw new Error('Failed to load dashboard summary');
         }
         const data = await response.json();
-        // #region debug-point D:dashboard-fetch-payload
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: 'dashboard-summary-load',
-            runId: 'post-fix',
-            hypothesisId: 'D',
-            location: 'frontend/src/App.js:1771',
-            msg: '[DEBUG] Dashboard summary payload parsed',
-            data: {
-              view: String(data?.view || ''),
-              topLevelKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 12) : [],
-              hasAttendance: Boolean(data?.attendance),
-              hasMonthToDate: Boolean(data?.monthToDate),
-            },
-            ts: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         if (!cancelled) {
+          dashboardSummaryFetchMetaRef.current[dashboardCacheKey] = {
+            fetchedAt: Date.now(),
+            payload: data || null,
+          };
           setDashboardSummary(data || null);
         }
       } catch (error) {
-        // #region debug-point E:dashboard-fetch-error
-        fetch('http://127.0.0.1:7777/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: 'dashboard-summary-load',
-            runId: 'post-fix',
-            hypothesisId: 'E',
-            location: 'frontend/src/App.js:1788',
-            msg: '[DEBUG] Dashboard summary request failed',
-            data: {
-              message: String(error?.message || ''),
-              name: String(error?.name || ''),
-            },
-            ts: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         if (!cancelled) {
           setDashboardError('Unable to load dashboard summary right now.');
         }
