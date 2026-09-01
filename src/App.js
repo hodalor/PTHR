@@ -978,7 +978,10 @@ function App({ initialModuleId }) {
   const lastAttendanceShiftAutoEmployeeIdRef = useRef('');
   const moduleRowsFetchMetaRef = useRef({});
   const moduleRowsVariantRef = useRef({});
+  const moduleRowsRequestKeyRef = useRef({});
   const dashboardSummaryFetchMetaRef = useRef({});
+  const [employeeLookupRows, setEmployeeLookupRows] = useState([]);
+  const [moduleTableMetaState, setModuleTableMetaState] = useState({});
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -1573,23 +1576,39 @@ function App({ initialModuleId }) {
     ) {
       return;
     }
+    const isServerPagedRequest = activeModuleId === 'employee-management';
     const existingRows = moduleRowsState[activeModuleId];
     const now = Date.now();
-    const fullFetchKey = `${activeModuleId}:full`;
-    const lastFetchAt = Number(moduleRowsFetchMetaRef.current[fullFetchKey] || 0);
+    const requestParams = isServerPagedRequest
+      ? new URLSearchParams({
+          page: String(tablePage),
+          pageSize: String(tablePageSize),
+          search: searchText,
+          filterValue,
+          statusFilterValue,
+          employmentStageFilterValue,
+          employeeDirectoryTab,
+          expiryFilterValue,
+          sortByValue,
+        }).toString()
+      : '';
+    const requestKey = isServerPagedRequest ? `${activeModuleId}:paged:${requestParams}` : `${activeModuleId}:full`;
+    const lastFetchAt = Number(moduleRowsFetchMetaRef.current[requestKey] || 0);
     if (
       Array.isArray(existingRows) &&
-      existingRows.length > 0 &&
-      moduleRowsVariantRef.current[activeModuleId] === 'full' &&
+      moduleRowsRequestKeyRef.current[activeModuleId] === requestKey &&
       now - lastFetchAt < 15000
     ) {
       return;
     }
     let cancelled = false;
-    moduleRowsFetchMetaRef.current[fullFetchKey] = now;
+    moduleRowsFetchMetaRef.current[requestKey] = now;
     const loadModuleRows = async () => {
       try {
-        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/${activeModuleId}`), {
+        const url = isServerPagedRequest
+          ? `http://localhost:8000/api/modules/${activeModuleId}?${requestParams}`
+          : `http://localhost:8000/api/modules/${activeModuleId}`;
+        const response = await fetch(toApiUrl(url), {
           headers: authHeaders,
         });
         if (!response.ok) {
@@ -1600,21 +1619,44 @@ function App({ initialModuleId }) {
           return;
         }
         const records = Array.isArray(data.records) ? data.records : [];
-        moduleRowsVariantRef.current[activeModuleId] = 'full';
+        moduleRowsVariantRef.current[activeModuleId] = isServerPagedRequest ? 'paged' : 'full';
+        moduleRowsRequestKeyRef.current[activeModuleId] = requestKey;
         setModuleRowsState((prev) => ({
           ...prev,
           [activeModuleId]: records,
         }));
+        if (isServerPagedRequest) {
+          setModuleTableMetaState((prev) => ({
+            ...prev,
+            [activeModuleId]: data?.meta || null,
+          }));
+        }
       } catch (error) {
-        moduleRowsFetchMetaRef.current[fullFetchKey] = 0;
+        moduleRowsFetchMetaRef.current[requestKey] = 0;
       }
     };
     loadModuleRows();
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, authHeaders, authToken, currentUser, isSettingsPage, moduleRowsState]);
-  const employeeRowsCount = (moduleRowsState['employee-management'] || []).length;
+  }, [
+    activeModuleId,
+    authHeaders,
+    authToken,
+    currentUser,
+    employeeDirectoryTab,
+    employmentStageFilterValue,
+    expiryFilterValue,
+    filterValue,
+    isSettingsPage,
+    moduleRowsState,
+    searchText,
+    sortByValue,
+    statusFilterValue,
+    tablePage,
+    tablePageSize,
+  ]);
+  const employeeRowsCount = employeeLookupRows.length;
   useEffect(() => {
     if (!currentUser) {
       return;
@@ -1644,11 +1686,7 @@ function App({ initialModuleId }) {
         }
         const records = Array.isArray(data.records) ? data.records : [];
         moduleRowsFetchMetaRef.current['employee-management:lookup'] = Date.now();
-        moduleRowsVariantRef.current['employee-management'] = 'lookup';
-        setModuleRowsState((prev) => ({
-          ...prev,
-          'employee-management': records,
-        }));
+        setEmployeeLookupRows(records);
       } catch (error) {
       } finally {
         employeeModuleLoadingRef.current = false;
@@ -2153,6 +2191,8 @@ function App({ initialModuleId }) {
     }
     return baseRows;
   }, [activeModuleConfig, activeModuleId, appSettings, loanRowsScopedByRole, moduleRowsState]);
+  const isServerPagedEmployeeModule = activeModuleId === 'employee-management';
+  const employeeModuleTableMeta = moduleTableMetaState['employee-management'] || null;
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
   const modalRow = rows.find((row) => row.id === modalState.rowId) || null;
@@ -2515,17 +2555,26 @@ function App({ initialModuleId }) {
     if (!isEmployeeModule) {
       return ['All'];
     }
+    if (isServerPagedEmployeeModule) {
+      return ['All', ...(employeeModuleTableMeta?.statusOptions || [])];
+    }
     return ['All', ...new Set(rows.map((row) => String(row.status || '').trim()).filter(Boolean))];
-  }, [isEmployeeModule, rows]);
+  }, [employeeModuleTableMeta, isEmployeeModule, isServerPagedEmployeeModule, rows]);
   const employeeStageOptions = useMemo(() => {
     if (!isEmployeeModule) {
       return ['All'];
     }
+    if (isServerPagedEmployeeModule) {
+      return ['All', ...(employeeModuleTableMeta?.employmentStageOptions || [])];
+    }
     return ['All', ...new Set(rows.map((row) => String(row.employmentState || '').trim()).filter(Boolean))];
-  }, [isEmployeeModule, rows]);
+  }, [employeeModuleTableMeta, isEmployeeModule, isServerPagedEmployeeModule, rows]);
   const employeeDirectoryCounts = useMemo(() => {
     if (!isEmployeeModule) {
       return { active: 0, inactive: 0 };
+    }
+    if (isServerPagedEmployeeModule && employeeModuleTableMeta?.directoryCounts) {
+      return employeeModuleTableMeta.directoryCounts;
     }
     return rows.reduce(
       (accumulator, row) => {
@@ -2538,7 +2587,7 @@ function App({ initialModuleId }) {
       },
       { active: 0, inactive: 0 }
     );
-  }, [isEmployeeModule, rows]);
+  }, [employeeModuleTableMeta, isEmployeeModule, isServerPagedEmployeeModule, rows]);
   const leaveRows = useMemo(() => moduleRowsState['leave-management'] || [], [moduleRowsState]);
   const employeeLeaveRequests = useMemo(() => {
     if (!isEmployeeModule || !modalRow) {
@@ -2588,7 +2637,20 @@ function App({ initialModuleId }) {
     formValues.interestPercent,
     formValues.tenorMonths,
   ]);
-  const employeeBaseRows = useMemo(() => moduleRowsState['employee-management'] || [], [moduleRowsState]);
+  const employeeBaseRows = useMemo(() => {
+    const mergedById = new Map();
+    (employeeLookupRows || []).forEach((row) => {
+      if (row?.id) {
+        mergedById.set(String(row.id), row);
+      }
+    });
+    (moduleRowsState['employee-management'] || []).forEach((row) => {
+      if (row?.id) {
+        mergedById.set(String(row.id), row);
+      }
+    });
+    return Array.from(mergedById.values());
+  }, [employeeLookupRows, moduleRowsState]);
   const normalizeAttendanceClockings = useCallback((row) => {
     if (!row) {
       return [];
@@ -5053,13 +5115,19 @@ function App({ initialModuleId }) {
     if (!activeModuleConfig) {
       return ['All'];
     }
+    if (isServerPagedEmployeeModule) {
+      return ['All', ...(employeeModuleTableMeta?.filterOptions || [])];
+    }
     const optionValues = [...new Set(rows.map((row) => row[activeFilterField]).filter(Boolean))];
     return ['All', ...optionValues];
-  }, [activeFilterField, activeModuleConfig, rows]);
+  }, [activeFilterField, activeModuleConfig, employeeModuleTableMeta, isServerPagedEmployeeModule, rows]);
 
   const filteredRows = useMemo(() => {
     if (!activeModuleConfig) {
       return [];
+    }
+    if (isServerPagedEmployeeModule) {
+      return rows;
     }
     const query = searchText.trim().toLowerCase();
     const filtered = rows.filter((row) => {
@@ -5117,8 +5185,18 @@ function App({ initialModuleId }) {
     searchText,
     sortByValue,
     statusFilterValue,
+    isServerPagedEmployeeModule,
   ]);
   const paginatedFilteredRows = useMemo(() => {
+    if (isServerPagedEmployeeModule && employeeModuleTableMeta) {
+      return {
+        rows,
+        totalRows: Math.max(0, Number(employeeModuleTableMeta.totalRows) || 0),
+        totalPages: Math.max(1, Number(employeeModuleTableMeta.totalPages) || 1),
+        page: Math.max(1, Number(employeeModuleTableMeta.page) || 1),
+        pageSize: Math.max(1, Number(employeeModuleTableMeta.pageSize) || tablePageSize || 25),
+      };
+    }
     const safePageSize = Math.max(1, Number(tablePageSize) || 25);
     const totalPages = Math.max(1, Math.ceil(filteredRows.length / safePageSize));
     const safePage = Math.min(totalPages, Math.max(1, Number(tablePage) || 1));
@@ -5130,7 +5208,7 @@ function App({ initialModuleId }) {
       page: safePage,
       pageSize: safePageSize,
     };
-  }, [filteredRows, tablePage, tablePageSize]);
+  }, [employeeModuleTableMeta, filteredRows, isServerPagedEmployeeModule, rows, tablePage, tablePageSize]);
   useEffect(() => {
     setTablePage(1);
   }, [searchText, filterValue, statusFilterValue, employmentStageFilterValue, expiryFilterValue, sortByValue, employeeDirectoryTab, activeModuleId]);
@@ -6291,6 +6369,17 @@ function App({ initialModuleId }) {
         headers: authHeaders,
       }).catch(() => {});
     }
+    if (activeModuleId === 'employee-management') {
+      setEmployeeLookupRows((prev) => prev.filter((employeeRow) => String(employeeRow.id || '') !== String(rowId)));
+      const requestKey = moduleRowsRequestKeyRef.current['employee-management'];
+      if (requestKey) {
+        moduleRowsFetchMetaRef.current[requestKey] = 0;
+      }
+      setModuleTableMetaState((prev) => ({
+        ...prev,
+        'employee-management': null,
+      }));
+    }
     setModuleRowsState((prev) => {
       const currentRows = prev[activeModuleId] || [];
       return {
@@ -6654,7 +6743,7 @@ function App({ initialModuleId }) {
 
       if (activeModuleId === 'employee-management' && editRowId === 'new') {
         const prefix = getDepartmentPrefix(normalizedPayload.department, appSettings.departments);
-        const currentEmployeeRows = moduleRowsState['employee-management'] || [];
+        const currentEmployeeRows = employeeBaseRows;
         const highestSequenceForDepartment = currentEmployeeRows
           .filter((row) => row.department === normalizedPayload.department)
           .reduce((acc, row) => {
@@ -6700,26 +6789,21 @@ function App({ initialModuleId }) {
           }
           const data = await response.json().catch(() => null);
           const saved = data?.record || rowWithId;
-          let nextRecords = null;
           if (activeModuleId === 'employee-management') {
-            try {
-              const refreshResponse = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management'), {
-                headers: authHeaders,
-              });
-              if (refreshResponse.ok) {
-                const refreshData = await refreshResponse.json().catch(() => null);
-                nextRecords = Array.isArray(refreshData?.records) ? refreshData.records : null;
-              }
-            } catch (error) {
+            setEmployeeLookupRows((prev) => {
+              const withoutSaved = prev.filter((employeeRow) => String(employeeRow.id || '') !== String(saved.id || ''));
+              return [saved, ...withoutSaved];
+            });
+            const requestKey = moduleRowsRequestKeyRef.current['employee-management'];
+            if (requestKey) {
+              moduleRowsFetchMetaRef.current[requestKey] = 0;
             }
+            setModuleTableMetaState((prev) => ({
+              ...prev,
+              'employee-management': null,
+            }));
           }
           setModuleRowsState((prev) => {
-            if (Array.isArray(nextRecords)) {
-              return {
-                ...prev,
-                [activeModuleId]: nextRecords,
-              };
-            }
             const currentRows = prev[activeModuleId] || [];
             if (editRowId === 'new') {
               return {
@@ -6729,7 +6813,10 @@ function App({ initialModuleId }) {
             }
             return {
               ...prev,
-              [activeModuleId]: currentRows.map((row) => (row.id === rowWithId.id ? saved : row)),
+              [activeModuleId]:
+                activeModuleId === 'employee-management' && !currentRows.some((row) => row.id === rowWithId.id)
+                  ? [saved, ...currentRows]
+                  : currentRows.map((row) => (row.id === rowWithId.id ? saved : row)),
             };
           });
           showToast(
@@ -9600,7 +9687,9 @@ function App({ initialModuleId }) {
                   <h2>{activeModuleConfig.title}</h2>
                   <p>
                     {showMainModuleTable
-                      ? `${activeModuleConfig.entityLabel} registry and operations table • ${filteredRows.length} visible row(s)`
+                      ? `${activeModuleConfig.entityLabel} registry and operations table • ${
+                          isServerPagedEmployeeModule ? paginatedFilteredRows.totalRows : filteredRows.length
+                        } visible row(s)`
                       : `${activeModuleConfig.entityLabel} registry and operations table`}
                   </p>
                 </div>
