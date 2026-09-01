@@ -36,6 +36,11 @@ export default function LoanManagementPage({
         <h4>Loan System</h4>
         <span>Request list • Department approval • HR approval • Manager approval</span>
       </div>
+      {loanPageLoading && loanRequestFilteredRows.length > 0 ? (
+        <div style={{ marginBottom: 10, color: '#607098', fontSize: 13 }}>
+          Refreshing loan records...
+        </div>
+      ) : null}
       {loanViewTab === 'requests' ? (
         <div className="attendance-ops-actions" style={{ justifyContent: 'flex-end' }}>
           <button type="button" className="primary-btn" onClick={startCreate}>

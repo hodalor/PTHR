@@ -814,6 +814,12 @@ function App({ initialModuleId }) {
   const [attendancePerformanceRankMetric, setAttendancePerformanceRankMetric] = useState('perfect-attendance');
   const [attendancePerformanceDepartmentFilter, setAttendancePerformanceDepartmentFilter] = useState('All');
   const [attendancePerformanceSearchText, setAttendancePerformanceSearchText] = useState('');
+  const [attendancePerformanceSort, setAttendancePerformanceSort] = useState({ key: 'attendanceScore', direction: 'desc' });
+  const [attendancePerformancePage, setAttendancePerformancePage] = useState(1);
+  const [attendancePerformancePageSize, setAttendancePerformancePageSize] = useState(25);
+  const [attendancePerformancePageRows, setAttendancePerformancePageRows] = useState([]);
+  const [attendancePerformancePageMeta, setAttendancePerformancePageMeta] = useState(null);
+  const [attendancePerformancePageLoading, setAttendancePerformancePageLoading] = useState(false);
   const [selectedPerformanceEmployeeId, setSelectedPerformanceEmployeeId] = useState('');
   const [attendanceDetailModal, setAttendanceDetailModal] = useState({ type: '', key: '' });
   const [attendancePhotoPreview, setAttendancePhotoPreview] = useState({ open: false, src: '', title: '' });
@@ -1833,6 +1839,8 @@ function App({ initialModuleId }) {
       return;
     }
     let cancelled = false;
+    const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
+    const tenantCacheKey = String(currentUser?.tenantId || 'master');
     const requestParams = new URLSearchParams({
       mode: 'page',
       page: String(loanPage),
@@ -1841,6 +1849,16 @@ function App({ initialModuleId }) {
       search: loanSearchText,
       statusFilter: loanStatusFilter,
     }).toString();
+    const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::loan-records::page::${requestParams}`;
+    const warmCachedPayload = readWarmCache(warmCacheScope);
+    if (warmCachedPayload?.payload) {
+      setLoanPageRows(Array.isArray(warmCachedPayload.payload.records) ? warmCachedPayload.payload.records : []);
+      setLoanPageMeta(warmCachedPayload.payload.meta || null);
+      if (loanPageRefreshCounter === 0 && Date.now() - Number(warmCachedPayload.fetchedAt || 0) < 15000) {
+        setLoanPageLoading(false);
+        return;
+      }
+    }
     const fetchLoanPage = async () => {
       try {
         setLoanPageLoading(true);
@@ -1854,6 +1872,10 @@ function App({ initialModuleId }) {
         if (cancelled) {
           return;
         }
+        writeWarmCache(warmCacheScope, {
+          records: Array.isArray(data?.records) ? data.records : [],
+          meta: data?.meta || null,
+        });
         setLoanPageRows(Array.isArray(data?.records) ? data.records : []);
         setLoanPageMeta(data?.meta || null);
       } catch (error) {
@@ -1946,6 +1968,81 @@ function App({ initialModuleId }) {
     authToken,
     currentUser,
     moduleRowsState,
+  ]);
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'performance') {
+      return;
+    }
+    let cancelled = false;
+    const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
+    const tenantCacheKey = String(currentUser?.tenantId || 'master');
+    const requestParams = new URLSearchParams({
+      mode: 'performance-page',
+      startDate: attendancePerformanceRange.startDate,
+      endDate: attendancePerformanceRange.endDate,
+      rankMetric: attendancePerformanceRankMetric,
+      departmentFilter: attendancePerformanceDepartmentFilter,
+      search: attendancePerformanceSearchText,
+      page: String(attendancePerformancePage),
+      pageSize: String(attendancePerformancePageSize),
+      sortKey: String(attendancePerformanceSort.key || 'attendanceScore'),
+      sortDirection: String(attendancePerformanceSort.direction || 'desc'),
+    }).toString();
+    const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::attendance-time::performance-page::${requestParams}`;
+    const warmCachedPayload = readWarmCache(warmCacheScope);
+    if (warmCachedPayload?.payload) {
+      setAttendancePerformancePageRows(Array.isArray(warmCachedPayload.payload.records) ? warmCachedPayload.payload.records : []);
+      setAttendancePerformancePageMeta(warmCachedPayload.payload.meta || null);
+      if (Date.now() - Number(warmCachedPayload.fetchedAt || 0) < 15000) {
+        setAttendancePerformancePageLoading(false);
+        return;
+      }
+    }
+    const fetchAttendancePerformancePage = async () => {
+      try {
+        setAttendancePerformancePageLoading(true);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/attendance-time?${requestParams}`), {
+          headers: authHeaders,
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        writeWarmCache(warmCacheScope, {
+          records: Array.isArray(data?.records) ? data.records : [],
+          meta: data?.meta || null,
+        });
+        setAttendancePerformancePageRows(Array.isArray(data?.records) ? data.records : []);
+        setAttendancePerformancePageMeta(data?.meta || null);
+      } catch (error) {
+      } finally {
+        if (!cancelled) {
+          setAttendancePerformancePageLoading(false);
+        }
+      }
+    };
+    fetchAttendancePerformancePage();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModuleId,
+    attendancePerformanceDepartmentFilter,
+    attendancePerformancePage,
+    attendancePerformancePageSize,
+    attendancePerformanceRange.endDate,
+    attendancePerformanceRange.startDate,
+    attendancePerformanceRankMetric,
+    attendancePerformanceSearchText,
+    attendancePerformanceSort.direction,
+    attendancePerformanceSort.key,
+    attendanceViewTab,
+    authHeaders,
+    authToken,
+    currentUser,
   ]);
   useEffect(() => {
     if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'compliance') {
@@ -2573,6 +2670,7 @@ function App({ initialModuleId }) {
   const isServerPagedEmployeeModule = activeModuleId === 'employee-management';
   const employeeModuleTableMeta = moduleTableMetaState['employee-management'] || null;
   const employeeModulePageLoading = Boolean(modulePageLoadingState['employee-management']);
+  const leaveModulePageLoading = Boolean(modulePageLoadingState['leave-management']);
   const activeLoanPageRows = activeModuleId === 'loan-records' ? loanPageRows : [];
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
@@ -10189,6 +10287,7 @@ function App({ initialModuleId }) {
                   openDetails={openDetails}
                   getApprovalBadgeClass={getApprovalBadgeClass}
                   leaveBalanceFilteredRows={leaveBalanceFilteredRows}
+                  leaveLoading={leaveModulePageLoading}
                   leaveApprovalDrafts={leaveApprovalDrafts}
                   setLeaveApprovalDrafts={setLeaveApprovalDrafts}
                 />

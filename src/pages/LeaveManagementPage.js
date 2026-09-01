@@ -1,5 +1,3 @@
-import React from 'react';
-
 export default function LeaveManagementPage({
   appSettings,
   selectedRowId,
@@ -22,8 +20,7 @@ export default function LeaveManagementPage({
   openDetails,
   getApprovalBadgeClass,
   leaveBalanceFilteredRows,
-  leaveApprovalDrafts,
-  setLeaveApprovalDrafts,
+  leaveLoading,
 }) {
   return (
     <div className="attendance-ops-card">
@@ -31,6 +28,11 @@ export default function LeaveManagementPage({
         <h4>Leave System</h4>
         <span>Request list • Department approval • HR approval • Manager approval</span>
       </div>
+      {leaveLoading ? (
+        <div style={{ marginBottom: 10, color: '#607098', fontSize: 13 }}>
+          Loading leave records...
+        </div>
+      ) : null}
       <div className="attendance-audit-filters">
         <label>
           <span>Department</span>
@@ -195,7 +197,7 @@ export default function LeaveManagementPage({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={10}>No leave requests for the selected filters.</td>
+                    <td colSpan={10}>{leaveLoading ? 'Loading leave requests...' : 'No leave requests for the selected filters.'}</td>
                   </tr>
                 )}
               </tbody>
@@ -245,7 +247,7 @@ export default function LeaveManagementPage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={11}>No leave balance rows for the selected filters.</td>
+                    <td colSpan={11}>{leaveLoading ? 'Loading leave balance...' : 'No leave balance rows for the selected filters.'}</td>
                   </tr>
                 )}
               </tbody>
