@@ -76,6 +76,14 @@ export default function AttendanceTimePage({
   setAttendancePerformanceSearchText,
   attendancePerformanceRange,
   attendancePerformanceRows,
+  attendancePerformanceSort,
+  setAttendancePerformanceSort,
+  attendancePerformancePage,
+  setAttendancePerformancePage,
+  attendancePerformancePageSize,
+  setAttendancePerformancePageSize,
+  attendancePerformancePageMeta,
+  attendancePerformancePageLoading,
   selectedPerformanceEmployeeId,
   setSelectedPerformanceEmployeeId,
   getCurrentClockValue,
@@ -147,6 +155,15 @@ export default function AttendanceTimePage({
   const effectivePenaltyPageSize = Number(attendancePenaltyPageSize) || penaltyPageSize;
   const effectiveSetPenaltyPageSize =
     typeof setAttendancePenaltyPageSize === 'function' ? setAttendancePenaltyPageSize : setPenaltyPageSize;
+  const effectivePerformanceSort = attendancePerformanceSort || performanceSort;
+  const effectiveSetPerformanceSort =
+    typeof setAttendancePerformanceSort === 'function' ? setAttendancePerformanceSort : setPerformanceSort;
+  const effectivePerformancePage = Number(attendancePerformancePage) || performancePage;
+  const effectiveSetPerformancePage =
+    typeof setAttendancePerformancePage === 'function' ? setAttendancePerformancePage : setPerformancePage;
+  const effectivePerformancePageSize = Number(attendancePerformancePageSize) || performancePageSize;
+  const effectiveSetPerformancePageSize =
+    typeof setAttendancePerformancePageSize === 'function' ? setAttendancePerformancePageSize : setPerformancePageSize;
   const effectiveClockPage = Number(attendanceClockPage) || clockPage;
   const effectiveSetClockPage = typeof setAttendanceClockPage === 'function' ? setAttendanceClockPage : setClockPage;
   const effectiveClockPageSize = Number(attendanceClockPageSize) || clockPageSize;
@@ -286,7 +303,7 @@ export default function AttendanceTimePage({
     effectiveSetPenaltyPage(1);
   }, [attendancePenaltyStatusFilter, effectivePenaltySort, effectiveSetPenaltyPage]);
   useEffect(() => {
-    setPerformancePage(1);
+    effectiveSetPerformancePage(1);
   }, [
     attendancePerformancePeriod,
     attendancePerformanceStartDate,
@@ -294,7 +311,8 @@ export default function AttendanceTimePage({
     attendancePerformanceRankMetric,
     attendancePerformanceDepartmentFilter,
     attendancePerformanceSearchText,
-    performanceSort,
+    effectivePerformanceSort,
+    effectiveSetPerformancePage,
   ]);
   useEffect(() => {
     setShiftAssignmentPage(1);
@@ -361,9 +379,9 @@ export default function AttendanceTimePage({
   }, [attendancePenaltyFilteredRows, compareValues, effectivePenaltySort]);
   const sortedPerformanceRows = useMemo(() => {
     return [...attendancePerformanceRows].sort((a, b) =>
-      compareValues(a?.[performanceSort.key], b?.[performanceSort.key], performanceSort.direction)
+      compareValues(a?.[effectivePerformanceSort.key], b?.[effectivePerformanceSort.key], effectivePerformanceSort.direction)
     );
-  }, [attendancePerformanceRows, compareValues, performanceSort]);
+  }, [attendancePerformanceRows, compareValues, effectivePerformanceSort]);
   const shiftAssignmentDepartmentOptions = useMemo(() => {
     const departments = new Set(
       (employeeBaseRows || [])
@@ -425,7 +443,15 @@ export default function AttendanceTimePage({
         pageSize: Math.max(1, Number(attendancePenaltyPageMeta.pageSize) || effectivePenaltyPageSize),
       }
     : buildPaginationState(sortedPenaltyRows, effectivePenaltyPage, effectivePenaltyPageSize);
-  const paginatedPerformanceRows = buildPaginationState(sortedPerformanceRows, performancePage, performancePageSize);
+  const paginatedPerformanceRows = attendancePerformancePageMeta
+    ? {
+        rows: attendancePerformanceRows,
+        totalRows: Math.max(0, Number(attendancePerformancePageMeta.totalRows) || 0),
+        totalPages: Math.max(1, Number(attendancePerformancePageMeta.totalPages) || 1),
+        page: Math.max(1, Number(attendancePerformancePageMeta.page) || effectivePerformancePage),
+        pageSize: Math.max(1, Number(attendancePerformancePageMeta.pageSize) || effectivePerformancePageSize),
+      }
+    : buildPaginationState(sortedPerformanceRows, effectivePerformancePage, effectivePerformancePageSize);
   const paginatedShiftAssignmentRows = buildPaginationState(shiftAssignmentRows, shiftAssignmentPage, shiftAssignmentPageSize);
   const attendanceClockSummary = attendanceClockPageMeta || {
     totalRows: attendanceClockRangeRows.length,
@@ -1482,10 +1508,15 @@ export default function AttendanceTimePage({
               <span>Period Range</span>
             </article>
             <article className="attendance-stat">
-              <strong>{attendancePerformanceRows.length}</strong>
+              <strong>{attendancePerformancePageMeta?.totalRows || attendancePerformanceRows.length}</strong>
               <span>Employees</span>
             </article>
           </div>
+          {attendancePerformancePageLoading && attendancePerformanceRows.length > 0 ? (
+            <div style={{ marginBottom: 10, color: '#607098', fontSize: 13 }}>
+              Refreshing performance records...
+            </div>
+          ) : null}
           <div className="attendance-audit-table">
             <table>
               <thead>
@@ -1495,54 +1526,54 @@ export default function AttendanceTimePage({
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'employee')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'employee')}
                     >
-                      Employee{sortArrow(performanceSort, 'employee')}
+                      Employee{sortArrow(effectivePerformanceSort, 'employee')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'department')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'department')}
                     >
-                      Department{sortArrow(performanceSort, 'department')}
+                      Department{sortArrow(effectivePerformanceSort, 'department')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'onTimeCompleteDays')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'onTimeCompleteDays')}
                     >
-                      On Time{sortArrow(performanceSort, 'onTimeCompleteDays')}
+                      On Time{sortArrow(effectivePerformanceSort, 'onTimeCompleteDays')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'lateDays')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'lateDays')}
                     >
-                      Late{sortArrow(performanceSort, 'lateDays')}
+                      Late{sortArrow(effectivePerformanceSort, 'lateDays')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'absentDays')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'absentDays')}
                     >
-                      Absent{sortArrow(performanceSort, 'absentDays')}
+                      Absent{sortArrow(effectivePerformanceSort, 'absentDays')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPerformanceSort, 'attendanceScore')}
+                      onClick={() => toggleSort(effectiveSetPerformanceSort, 'attendanceScore')}
                     >
-                      Score{sortArrow(performanceSort, 'attendanceScore')}
+                      Score{sortArrow(effectivePerformanceSort, 'attendanceScore')}
                     </button>
                   </th>
                 </tr>
@@ -1568,13 +1599,15 @@ export default function AttendanceTimePage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={7}>No performance records for the selected filters.</td>
+                    <td colSpan={7}>
+                      {attendancePerformancePageLoading ? 'Loading performance records...' : 'No performance records for the selected filters.'}
+                    </td>
                   </tr>
                 )}
                 <PaginationControls
                   state={paginatedPerformanceRows}
-                  setPage={setPerformancePage}
-                  setPageSize={setPerformancePageSize}
+                  setPage={effectiveSetPerformancePage}
+                  setPageSize={effectiveSetPerformancePageSize}
                   colSpan={7}
                   label="employees"
                 />

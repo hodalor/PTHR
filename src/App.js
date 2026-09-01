@@ -495,22 +495,6 @@ const isLoanCountableRecord = (row) => {
   return status === 'active' || status === 'approved';
 };
 
-const overlapDaysInclusive = (startA, endA, startB, endB) => {
-  const start = parseIsoDateValue(startA);
-  const end = parseIsoDateValue(endA);
-  const rangeStart = parseIsoDateValue(startB);
-  const rangeEnd = parseIsoDateValue(endB);
-  if (!start || !end || !rangeStart || !rangeEnd) {
-    return 0;
-  }
-  const overlapStart = Math.max(start.getTime(), rangeStart.getTime());
-  const overlapEnd = Math.min(end.getTime(), rangeEnd.getTime());
-  if (overlapEnd < overlapStart) {
-    return 0;
-  }
-  return Math.floor((overlapEnd - overlapStart) / DAY_IN_MS) + 1;
-};
-
 const getInclusiveDaysBetween = (startDateValue, endDateValue) => {
   const start = parseIsoDateValue(startDateValue);
   const end = parseIsoDateValue(endDateValue);
@@ -1976,10 +1960,33 @@ function App({ initialModuleId }) {
     let cancelled = false;
     const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
     const tenantCacheKey = String(currentUser?.tenantId || 'master');
+    const todayDate = new Date();
+    const todayIsoValue = toIsoDateString(todayDate);
+    const derivedPerformanceRange =
+      attendancePerformancePeriod === 'weekly'
+        ? {
+            startDate: toIsoDateString(new Date(todayDate.getTime() - 6 * DAY_IN_MS)),
+            endDate: toIsoDateString(todayDate),
+          }
+        : attendancePerformancePeriod === 'monthly'
+          ? {
+              startDate: toIsoDateString(new Date(todayDate.getFullYear(), todayDate.getMonth(), 1)),
+              endDate: toIsoDateString(todayDate),
+            }
+          : attendancePerformancePeriod === 'yearly'
+            ? {
+                startDate: toIsoDateString(new Date(todayDate.getFullYear(), 0, 1)),
+                endDate: toIsoDateString(todayDate),
+              }
+            : (() => {
+                const startDate = attendancePerformanceStartDate || todayIsoValue;
+                const endDate = attendancePerformanceEndDate || startDate;
+                return startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate };
+              })();
     const requestParams = new URLSearchParams({
       mode: 'performance-page',
-      startDate: attendancePerformanceRange.startDate,
-      endDate: attendancePerformanceRange.endDate,
+      startDate: derivedPerformanceRange.startDate,
+      endDate: derivedPerformanceRange.endDate,
       rankMetric: attendancePerformanceRankMetric,
       departmentFilter: attendancePerformanceDepartmentFilter,
       search: attendancePerformanceSearchText,
@@ -2030,13 +2037,14 @@ function App({ initialModuleId }) {
     };
   }, [
     activeModuleId,
+    attendancePerformanceEndDate,
     attendancePerformanceDepartmentFilter,
     attendancePerformancePage,
     attendancePerformancePageSize,
-    attendancePerformanceRange.endDate,
-    attendancePerformanceRange.startDate,
+    attendancePerformancePeriod,
     attendancePerformanceRankMetric,
     attendancePerformanceSearchText,
+    attendancePerformanceStartDate,
     attendancePerformanceSort.direction,
     attendancePerformanceSort.key,
     attendanceViewTab,
@@ -5035,223 +5043,23 @@ function App({ initialModuleId }) {
     attendancePerformanceStartDate,
     todayIsoDate,
   ]);
-  const attendancePerformanceRows = useMemo(() => {
+  const attendancePerformanceRows = useMemo(() => [], []);
+  const attendancePerformanceDisplayRows = useMemo(() => {
     if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'performance') {
-      return [];
+      return attendancePerformanceRows;
     }
-    const nowMinutes = toMinutesFromClock(getCurrentClockValue()) || 0;
-    const rangeStart = attendancePerformanceRange.startDate;
-    const rangeEnd = attendancePerformanceRange.endDate;
-    const periodDays = Math.max(
-      1,
-      Math.floor(
-        ((parseIsoDateValue(rangeEnd)?.getTime() || 0) - (parseIsoDateValue(rangeStart)?.getTime() || 0)) / DAY_IN_MS
-      ) + 1
-    );
-    const scopedEmployees = employeeBaseRows.filter((employee) => {
-      if (currentUser && currentUser.role === 'employee') {
-        const employeeId = String(currentUser.employeeId || '').trim();
-        const employeeName = String(currentUser.fullName || '').trim();
-        const rowEmployeeId = String(employee.id || '').trim();
-        const rowEmployeeName = String(employee.fullName || '').trim();
-        if (employeeId) {
-          return rowEmployeeId === employeeId;
-        }
-        if (employeeName) {
-          return rowEmployeeName === employeeName;
-        }
-        return false;
-      }
-      return true;
-    });
-    return scopedEmployees
-      .map((employee) => {
-        const employeeStatus = String(employee.status || '').toLowerCase();
-        const employeeStage = String(employee.employmentState || '').toLowerCase();
-        const isOffDuty = employeeStatus !== 'active' || employeeStage === 'terminated' || employeeStage === 'suspended';
-        const leaveApplications = leaveRows.filter((leaveRow) => {
-          const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
-          const leaveEmployeeName = String(leaveRow.employee || '').trim();
-          const matches =
-            leaveEmployeeId === String(employee.id || '') || leaveEmployeeName === String(employee.fullName || '');
-          return matches && String(leaveRow.startDate || '') >= rangeStart && String(leaveRow.startDate || '') <= rangeEnd;
-        });
-        const leaveDays = leaveRows.reduce((total, leaveRow) => {
-          const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
-          const leaveEmployeeName = String(leaveRow.employee || '').trim();
-          const leaveStatus = String(leaveRow.status || '').toLowerCase();
-          const matches =
-            leaveEmployeeId === String(employee.id || '') || leaveEmployeeName === String(employee.fullName || '');
-          if (!matches || !['approved', 'active', 'planned'].includes(leaveStatus)) {
-            return total;
-          }
-          return total + overlapDaysInclusive(leaveRow.startDate, leaveRow.endDate, rangeStart, rangeEnd);
-        }, 0);
-        let expectedWorkDays = 0;
-        let onTimeCompleteDays = 0;
-        let lateDays = 0;
-        let absentDays = 0;
-        let clockedOnceDays = 0;
-        let leftEarlyDays = 0;
-        let noClockInDays = 0;
-        let noClockOutDays = 0;
-        for (let cursor = parseIsoDateValue(rangeStart); cursor && cursor <= (parseIsoDateValue(rangeEnd) || cursor); ) {
-          const currentDate = toIsoDateString(cursor);
-          const isPastDate = currentDate < todayIsoDate;
-          const leaveOnDate = leaveRows.find((leaveRow) => {
-            const leaveEmployeeId = String(leaveRow.employeeId || '').trim();
-            const leaveEmployeeName = String(leaveRow.employee || '').trim();
-            const leaveStatus = String(leaveRow.status || '').toLowerCase();
-            const matches =
-              leaveEmployeeId === String(employee.id || '') || leaveEmployeeName === String(employee.fullName || '');
-            return (
-              matches &&
-              ['approved', 'active', 'planned'].includes(leaveStatus) &&
-              String(leaveRow.startDate || '') <= currentDate &&
-              String(leaveRow.endDate || '') >= currentDate
-            );
-          });
-          if (!isOffDuty && !leaveOnDate) {
-            expectedWorkDays += 1;
-            const attendanceRow = findAttendanceRowForEmployeeOnDate(employee, currentDate);
-            const attendanceSummary = getAttendanceClockSummary(attendanceRow);
-            const shiftSchedule = getShiftScheduleForAttendance({ attendanceRow, employee });
-            const checkInMinutes = toMinutesFromClock(attendanceSummary.checkIn);
-            const checkOutRaw = String(attendanceSummary.checkOut || '');
-            const checkOutMinutes = toMinutesFromClock(checkOutRaw);
-            const hasClockIn = checkInMinutes !== null;
-            const hasClockOut =
-              checkOutRaw !== '00:00' &&
-              checkOutRaw !== '24:00' &&
-              checkOutMinutes !== null &&
-              checkOutMinutes > (checkInMinutes ?? 0);
-            const isLate = hasClockIn && checkInMinutes > shiftSchedule.lateAfterMinutes;
-            const leftEarly =
-              hasClockOut &&
-              shiftSchedule.shiftEndMinutes > 0 &&
-              checkOutMinutes < shiftSchedule.shiftEndMinutes;
-            if (isLate) {
-              lateDays += 1;
-            }
-            if (leftEarly) {
-              leftEarlyDays += 1;
-            }
-            const missingClockIn =
-              !hasClockIn &&
-              (isPastDate || (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.lateAfterMinutes));
-            const missingClockOut =
-              !hasClockOut &&
-              (isPastDate ||
-                (currentDate === todayIsoDate && nowMinutes >= shiftSchedule.shiftEndWithGraceMinutes));
-            if (missingClockIn) {
-              noClockInDays += 1;
-            }
-            if (missingClockOut) {
-              noClockOutDays += 1;
-            }
-            if (missingClockIn && missingClockOut) {
-              absentDays += 1;
-            } else if (missingClockIn || missingClockOut) {
-              clockedOnceDays += 1;
-            }
-            if (hasClockIn && hasClockOut && !isLate && !leftEarly) {
-              onTimeCompleteDays += 1;
-            }
-          }
-          cursor = new Date(cursor.getTime() + DAY_IN_MS);
-        }
-        const perfectAttendance =
-          expectedWorkDays > 0 &&
-          onTimeCompleteDays === expectedWorkDays &&
-          leaveApplications.length === 0 &&
-          absentDays === 0 &&
-          lateDays === 0 &&
-          clockedOnceDays === 0 &&
-          leftEarlyDays === 0;
-        const attendanceScore = expectedWorkDays > 0 ? (onTimeCompleteDays / expectedWorkDays) * 100 : 0;
-        return {
-          employeeId: employee.id,
-          employee: employee.fullName,
-          department: employee.department || 'Unassigned',
-          periodStart: rangeStart,
-          periodEnd: rangeEnd,
-          periodDays,
-          expectedWorkDays,
-          onTimeCompleteDays,
-          lateDays,
-          absentDays,
-          clockedOnceDays,
-          leftEarlyDays,
-          leaveDays,
-          leaveApplications: leaveApplications.length,
-          perfectAttendance,
-          attendanceScore,
-          noClockInDays,
-          noClockOutDays,
-        };
-      })
-      .filter((row) => {
-        const matchesDepartment =
-          attendancePerformanceDepartmentFilter === 'All' ||
-          String(row.department || '') === String(attendancePerformanceDepartmentFilter);
-        if (!matchesDepartment) {
-          return false;
-        }
-        const query = attendancePerformanceSearchText.trim().toLowerCase();
-        if (!query) {
-          return true;
-        }
-        return (
-          String(row.employee || '').toLowerCase().includes(query) ||
-          String(row.employeeId || '').toLowerCase().includes(query) ||
-          String(row.department || '').toLowerCase().includes(query)
-        );
-      })
-      .sort((a, b) => {
-        if (attendancePerformanceRankMetric === 'least-leave-applications') {
-          return a.leaveApplications - b.leaveApplications || b.attendanceScore - a.attendanceScore;
-        }
-        if (attendancePerformanceRankMetric === 'most-leave-applications') {
-          return b.leaveApplications - a.leaveApplications || a.attendanceScore - b.attendanceScore;
-        }
-        if (attendancePerformanceRankMetric === 'least-absent') {
-          return a.absentDays - b.absentDays || b.attendanceScore - a.attendanceScore;
-        }
-        if (attendancePerformanceRankMetric === 'most-absent') {
-          return b.absentDays - a.absentDays || a.attendanceScore - b.attendanceScore;
-        }
-        if (attendancePerformanceRankMetric === 'least-late') {
-          return a.lateDays - b.lateDays || b.attendanceScore - a.attendanceScore;
-        }
-        if (attendancePerformanceRankMetric === 'most-late') {
-          return b.lateDays - a.lateDays || a.attendanceScore - b.attendanceScore;
-        }
-        return b.attendanceScore - a.attendanceScore || Number(b.perfectAttendance) - Number(a.perfectAttendance);
-      });
-  }, [
-    activeModuleId,
-    currentUser,
-    attendancePerformanceRange,
-    attendancePerformanceRankMetric,
-    attendancePerformanceDepartmentFilter,
-    attendancePerformanceSearchText,
-    attendanceViewTab,
-    employeeBaseRows,
-    findAttendanceRowForEmployeeOnDate,
-    getShiftScheduleForAttendance,
-    getAttendanceClockSummary,
-    leaveRows,
-    todayIsoDate,
-  ]);
+    return attendancePerformancePageRows;
+  }, [activeModuleId, attendancePerformancePageRows, attendancePerformanceRows, attendanceViewTab]);
   const attendancePerformanceDepartmentOptions = useMemo(() => {
     const options = [...new Set(employeeBaseRows.map((row) => String(row.department || '').trim()).filter(Boolean))];
     return ['All', ...options.sort((a, b) => a.localeCompare(b))];
   }, [employeeBaseRows]);
   const selectedPerformanceRow = useMemo(
     () =>
+      attendancePerformancePageRows.find((row) => String(row.employeeId || '') === String(selectedPerformanceEmployeeId || '')) ||
       attendancePerformanceRows.find((row) => String(row.employeeId || '') === String(selectedPerformanceEmployeeId || '')) ||
       null,
-    [attendancePerformanceRows, selectedPerformanceEmployeeId]
+    [attendancePerformancePageRows, attendancePerformanceRows, selectedPerformanceEmployeeId]
   );
   const selectedComplianceAttendanceRow = useMemo(() => {
     if (!selectedComplianceRow) {
@@ -10235,7 +10043,15 @@ function App({ initialModuleId }) {
                   attendancePerformanceSearchText={attendancePerformanceSearchText}
                   setAttendancePerformanceSearchText={setAttendancePerformanceSearchText}
                   attendancePerformanceRange={attendancePerformanceRange}
-                  attendancePerformanceRows={attendancePerformanceRows}
+                  attendancePerformanceRows={attendancePerformanceDisplayRows}
+                  attendancePerformanceSort={attendancePerformanceSort}
+                  setAttendancePerformanceSort={setAttendancePerformanceSort}
+                  attendancePerformancePage={attendancePerformancePage}
+                  setAttendancePerformancePage={setAttendancePerformancePage}
+                  attendancePerformancePageSize={attendancePerformancePageSize}
+                  setAttendancePerformancePageSize={setAttendancePerformancePageSize}
+                  attendancePerformancePageMeta={attendancePerformancePageMeta}
+                  attendancePerformancePageLoading={attendancePerformancePageLoading}
                   selectedPerformanceEmployeeId={selectedPerformanceEmployeeId}
                   setSelectedPerformanceEmployeeId={setSelectedPerformanceEmployeeId}
                   getCurrentClockValue={getCurrentClockValue}
