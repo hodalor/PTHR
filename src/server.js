@@ -312,6 +312,204 @@ function isLoanCountableRecord(record) {
   return status === 'active' || status === 'approved';
 }
 
+function getLoanViewStatusForTab(record, viewTab = 'requests') {
+  if (viewTab === 'department') {
+    return String(record?.departmentApproval || 'Pending').trim() || 'Pending';
+  }
+  if (viewTab === 'hr') {
+    return String(record?.hrApproval || 'Pending').trim() || 'Pending';
+  }
+  if (viewTab === 'manager') {
+    return String(record?.managerApproval || 'Pending').trim() || 'Pending';
+  }
+  return String(record?.status || 'Pending').trim() || 'Pending';
+}
+
+function getLoanListView(records, query = {}, authUser = null) {
+  const normalizedRole = String(authUser?.role || '').trim().toLowerCase();
+  const employeeId = String(authUser?.employeeId || '').trim();
+  const employeeName = String(authUser?.fullName || '').trim();
+  const viewTab = String(query.viewTab || 'requests').trim().toLowerCase();
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const statusFilter = String(query.statusFilter || 'All').trim();
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+
+  let scopedRows = Array.isArray(records) ? records : [];
+  if (normalizedRole === 'employee') {
+    scopedRows = scopedRows.filter((row) => {
+      const rowEmployeeId = String(row?.employeeId || '').trim();
+      const rowEmployeeName = String(row?.employee || '').trim();
+      if (employeeId) {
+        return rowEmployeeId === employeeId;
+      }
+      if (employeeName) {
+        return rowEmployeeName === employeeName;
+      }
+      return false;
+    });
+  }
+  if (viewTab === 'hr') {
+    scopedRows = scopedRows.filter((row) => String(row?.departmentApproval || '').trim() === 'Approved');
+  } else if (viewTab === 'manager') {
+    scopedRows = scopedRows.filter(
+      (row) =>
+        String(row?.departmentApproval || '').trim() === 'Approved' &&
+        String(row?.hrApproval || '').trim() === 'Approved'
+    );
+  }
+
+  const statusOptions = [
+    ...new Set(
+      scopedRows
+        .map((row) => getLoanViewStatusForTab(row, viewTab))
+        .filter((value) => String(value || '').trim().length > 0)
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+
+  const filteredRows = scopedRows.filter((row) => {
+    const statusLabel = getLoanViewStatusForTab(row, viewTab);
+    const matchesStatus = statusFilter === 'All' || statusLabel === statusFilter;
+    if (!matchesStatus) {
+      return false;
+    }
+    if (!searchText) {
+      return true;
+    }
+    return (
+      String(row?.employee || '').toLowerCase().includes(searchText) ||
+      String(row?.employeeId || '').toLowerCase().includes(searchText) ||
+      String(row?.type || '').toLowerCase().includes(searchText) ||
+      String(row?.department || '').toLowerCase().includes(searchText) ||
+      String(row?.status || '').toLowerCase().includes(searchText)
+    );
+  });
+
+  const sortedRows = [...filteredRows].sort((left, right) => {
+    const dateCompare = String(right?.issuedOn || '').localeCompare(String(left?.issuedOn || ''));
+    if (dateCompare !== 0) {
+      return dateCompare;
+    }
+    return String(right?._id || '').localeCompare(String(left?._id || ''));
+  });
+
+  const summary = filteredRows.reduce(
+    (accumulator, row) => {
+      const statusLabel = getLoanViewStatusForTab(row, viewTab).toLowerCase();
+      accumulator.totalRequests += 1;
+      if (statusLabel.includes('pending')) {
+        accumulator.pendingCount += 1;
+      } else if (statusLabel === 'approved') {
+        accumulator.approvedCount += 1;
+      } else if (statusLabel === 'rejected') {
+        accumulator.rejectedCount += 1;
+      }
+      return accumulator;
+    },
+    { totalRequests: 0, pendingCount: 0, approvedCount: 0, rejectedCount: 0 }
+  );
+
+  const totalRows = sortedRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  return {
+    records: sortedRows.slice(start, start + pageSize),
+    meta: {
+      totalRows,
+      totalPages,
+      page: safePage,
+      pageSize,
+      statusOptions,
+      summary,
+    },
+  };
+}
+
+function buildAttendanceClockRangeQuery(query = {}, authUser = null) {
+  const normalizedRole = String(authUser?.role || '').trim().toLowerCase();
+  const employeeId = String(authUser?.employeeId || '').trim();
+  const employeeName = String(authUser?.fullName || '').trim();
+  const startDate = String(query.startDate || '').trim();
+  const endDate = String(query.endDate || '').trim();
+  const mongoQuery = {};
+  if (/^\d{4}-\d{2}-\d{2}$/.test(startDate) && /^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    mongoQuery.date = startDate <= endDate ? { $gte: startDate, $lte: endDate } : { $gte: endDate, $lte: startDate };
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    mongoQuery.date = startDate;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    mongoQuery.date = endDate;
+  }
+  if (normalizedRole === 'employee') {
+    const employeeOr = [];
+    if (employeeId) {
+      employeeOr.push({ employeeId });
+    }
+    if (employeeName) {
+      employeeOr.push({ employee: employeeName });
+    }
+    if (employeeOr.length > 0) {
+      mongoQuery.$or = employeeOr;
+    }
+  }
+  return mongoQuery;
+}
+
+function getAttendanceClockListView(records, query = {}, context = {}) {
+  const searchText = String(query.search || '').trim().toLowerCase();
+  const pageSize = Math.min(250, Math.max(1, Number(query.pageSize) || 25));
+  const page = Math.max(1, Number(query.page) || 1);
+  const mergedRows = mergeDuplicateAttendanceRecords(records, context)
+    .filter((row) => {
+      if (!searchText) {
+        return true;
+      }
+      return (
+        String(row?.employee || '').toLowerCase().includes(searchText) ||
+        String(row?.employeeId || '').toLowerCase().includes(searchText) ||
+        String(row?.department || '').toLowerCase().includes(searchText)
+      );
+    })
+    .sort((left, right) => {
+      const dateCompare = String(right?.date || '').localeCompare(String(left?.date || ''));
+      if (dateCompare !== 0) {
+        return dateCompare;
+      }
+      return String(left?.employee || '').localeCompare(String(right?.employee || ''));
+    });
+
+  const summary = mergedRows.reduce(
+    (accumulator, row) => {
+      const isLate = String(row?.status || '').trim().toLowerCase() === 'late';
+      accumulator.totalRows += 1;
+      accumulator.lateCount += isLate ? 1 : 0;
+      accumulator.totalLateMinutes += Math.max(0, toNumberValue(row?.lateMinutes));
+      accumulator.totalDeductionAmount += Math.max(0, toNumberValue(row?.deductionAmount));
+      return accumulator;
+    },
+    {
+      totalRows: 0,
+      lateCount: 0,
+      totalLateMinutes: 0,
+      totalDeductionAmount: 0,
+    }
+  );
+  summary.onTimeCount = Math.max(0, summary.totalRows - summary.lateCount);
+
+  const totalPages = Math.max(1, Math.ceil(summary.totalRows / pageSize));
+  const safePage = Math.min(totalPages, page);
+  const start = (safePage - 1) * pageSize;
+  return {
+    records: mergedRows.slice(start, start + pageSize),
+    meta: {
+      ...summary,
+      page: safePage,
+      pageSize,
+      totalPages,
+    },
+  };
+}
+
 function summarizeAttendanceByEmployee(records = []) {
   const summaryByEmployee = new Map();
   records.forEach((record) => {
@@ -1739,9 +1937,6 @@ function enrichAttendanceRecordWithContext(payload, context) {
       : Number.isFinite(existingDeduction) && existingDeduction > 0
         ? existingDeduction
         : computedDeduction;
-  // #region debug-point A:attendance-enrich-summary
-  (()=>{const fs=require('fs'),p='.dbg/attendance-compliance-tabs.env';let u='http://192.168.1.176:7778/event',s='attendance-compliance-tabs';try{const e=fs.readFileSync(p,'utf8');u=e.match(/DEBUG_SERVER_URL=(.+)/)?.[1]||u;s=e.match(/DEBUG_SESSION_ID=(.+)/)?.[1]||s}catch{}fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:s,runId:'pre-fix',hypothesisId:'A',location:'backend/src/server.js:enrichAttendanceRecordWithContext',msg:'[DEBUG] Attendance enriched',data:{employeeId,employeeName,date:String(source.date||''),checkIn,checkOut,lateMinutes,rawLateMinutes:String(source.lateMinutes||''),rawDeductionAmount:String(source.deductionAmount||''),deductionRate,deductionAmount,clockingsCount:Array.isArray(clockings)?clockings.length:0,clockingPhotos:Array.isArray(clockings)?clockings.filter((c)=>Boolean(String(c?.photoDataUrl||'').trim())).length:0,fallbackClockingsUsed:!(Array.isArray(source?.clockings)&&source.clockings.length>0),shift:shiftSchedule.shiftName,status,ruleKey:shiftSchedule.ruleKey,isWorkingDay:shiftSchedule.isWorkingDay},ts:Date.now()})}).catch(()=>{})})();
-  // #endregion
   return {
     ...source,
     shift: shiftSchedule.shiftName,
@@ -1778,9 +1973,6 @@ async function enrichAttendanceRecord(db, payload, options = {}) {
       $or: [{ id: employeeId }, { employeeId }, { fullName: employeeName }],
     }),
   ]);
-  // #region debug-point A:attendance-enrich
-  fetch("http://192.168.1.176:7777/event",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:"attendance-photo-clock",runId:"pre-fix",hypothesisId:"A",location:"backend/src/server.js:enrichAttendanceRecord",msg:"[DEBUG] enrich attendance payload",data:{tenantId:options.tenantId||"master",employeeId,employeeName,date:String(payloadSource.date||"").trim(),incomingClockings:Array.isArray(payloadSource.clockings)?payloadSource.clockings.length:0,incomingPhotos:Array.isArray(payloadSource.clockings)?payloadSource.clockings.filter((clocking)=>Boolean(String(clocking?.photoDataUrl||"").trim())).length:0,requireWebClockInPhoto:Boolean(settingsRecord?.value?.requireWebClockInPhoto)},ts:Date.now()})}).catch(()=>{});
-  // #endregion
   return enrichAttendanceRecordWithContext(source, {
     settings: normalizeAttendanceSettings(settingsRecord?.value),
     employeeById: new Map(employee?.id ? [[String(employee.id), employee]] : []),
@@ -2698,11 +2890,19 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       res.json(cachedRecords);
       return;
     }
-    const records =
-      moduleId === 'employee-management'
+    const isAttendanceClockPageRequest =
+      moduleId === 'attendance-time' && String(req.query?.mode || '').trim().toLowerCase() === 'clock-page';
+    const records = isAttendanceClockPageRequest
+      ? []
+      : moduleId === 'employee-management'
         ? await collection.find({}).toArray()
         : await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
+      if (moduleId === 'loan-records' && String(req.query?.mode || '').trim().toLowerCase() === 'page') {
+        const payload = getLoanListView(records, req.query, req.user);
+        res.json(setHotReadCache(moduleCacheKey, payload));
+        return;
+      }
       if (moduleId === 'employee-management') {
         const users = await req.db.collection('users').find({ employeeId: { $ne: '' } }).toArray();
         const userByEmployeeId = new Map(
@@ -2740,6 +2940,45 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       }
       const payload = {
         records: await Promise.all(records.map((record) => hydrateModuleRecordMedia(moduleId, record))),
+      };
+      res.json(setHotReadCache(moduleCacheKey, payload));
+      return;
+    }
+    if (String(req.query?.mode || '').trim().toLowerCase() === 'clock-page') {
+      const attendanceQuery = buildAttendanceClockRangeQuery(req.query, req.user);
+      const [rangeRecords, settingsRecord, employees] = await Promise.all([
+        collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
+        req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
+        req.db.collection('employees').find({}).toArray(),
+      ]);
+      const employeeById = new Map();
+      const employeeByEmployeeId = new Map();
+      const employeeByName = new Map();
+      for (const employee of employees) {
+        if (employee?.id) {
+          employeeById.set(String(employee.id), employee);
+        }
+        if (employee?.employeeId) {
+          employeeByEmployeeId.set(String(employee.employeeId), employee);
+        }
+        if (employee?.fullName) {
+          employeeByName.set(String(employee.fullName), employee);
+        }
+      }
+      const settings = normalizeAttendanceSettings(settingsRecord?.value);
+      const clockPageView = getAttendanceClockListView(
+        rangeRecords,
+        req.query,
+        {
+          settings,
+          employeeById,
+          employeeByEmployeeId,
+          employeeByName,
+        }
+      );
+      const payload = {
+        records: await Promise.all(clockPageView.records.map((row) => hydrateModuleRecordMedia(moduleId, row))),
+        meta: clockPageView.meta,
       };
       res.json(setHotReadCache(moduleCacheKey, payload));
       return;
