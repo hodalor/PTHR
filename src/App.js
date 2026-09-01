@@ -104,6 +104,51 @@ const googleTileBaseUrl = googleMapsTileKey
 
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const SESSION_WARM_CACHE_PREFIX = 'pthr:warm-cache';
+const SESSION_WARM_CACHE_TTL_MS = 1000 * 60 * 5;
+
+const buildWarmCacheStorageKey = (scope) => `${SESSION_WARM_CACHE_PREFIX}:${scope}`;
+
+const readWarmCache = (scope) => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(buildWarmCacheStorageKey(scope));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    if (Number(parsed.expiresAt || 0) <= Date.now()) {
+      window.sessionStorage.removeItem(buildWarmCacheStorageKey(scope));
+      return null;
+    }
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const writeWarmCache = (scope, payload, ttlMs = SESSION_WARM_CACHE_TTL_MS) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      buildWarmCacheStorageKey(scope),
+      JSON.stringify({
+        payload,
+        fetchedAt: Date.now(),
+        expiresAt: Date.now() + ttlMs,
+      })
+    );
+  } catch (_error) {
+  }
+};
+
 const ATTENDANCE_DAY_RULE_META = [
   { key: 'monday', label: 'Mon', defaultEnabled: true },
   { key: 'tuesday', label: 'Tue', defaultEnabled: true },
@@ -747,6 +792,19 @@ function App({ initialModuleId }) {
   const [attendanceAuditDate, setAttendanceAuditDate] = useState(getTodayIsoDate());
   const [attendanceAuditFilter, setAttendanceAuditFilter] = useState('All');
   const [attendanceAuditSearchText, setAttendanceAuditSearchText] = useState('');
+  const [attendanceComplianceSort, setAttendanceComplianceSort] = useState({ key: 'employee', direction: 'asc' });
+  const [attendanceCompliancePage, setAttendanceCompliancePage] = useState(1);
+  const [attendanceCompliancePageSize, setAttendanceCompliancePageSize] = useState(25);
+  const [attendanceCompliancePageRows, setAttendanceCompliancePageRows] = useState([]);
+  const [attendanceCompliancePageMeta, setAttendanceCompliancePageMeta] = useState(null);
+  const [attendanceCompliancePageLoading, setAttendanceCompliancePageLoading] = useState(false);
+  const [attendancePenaltySort, setAttendancePenaltySort] = useState({ key: 'date', direction: 'desc' });
+  const [attendancePenaltyPage, setAttendancePenaltyPage] = useState(1);
+  const [attendancePenaltyPageSize, setAttendancePenaltyPageSize] = useState(25);
+  const [attendancePenaltyPageRows, setAttendancePenaltyPageRows] = useState([]);
+  const [attendancePenaltyPageMeta, setAttendancePenaltyPageMeta] = useState(null);
+  const [attendancePenaltyPageLoading, setAttendancePenaltyPageLoading] = useState(false);
+  const [attendancePenaltyPageRefreshCounter, setAttendancePenaltyPageRefreshCounter] = useState(0);
   const [attendancePenaltyStatusFilter, setAttendancePenaltyStatusFilter] = useState('Outstanding');
   const [selectedPenaltyKey, setSelectedPenaltyKey] = useState('');
   const [selectedComplianceKey, setSelectedComplianceKey] = useState('');
@@ -810,6 +868,7 @@ function App({ initialModuleId }) {
     amount: '',
     remark: '',
   });
+  const [penaltyActionSaving, setPenaltyActionSaving] = useState(false);
   const [fingerprintDraft, setFingerprintDraft] = useState({
     employeeId: '',
     deviceUserId: '',
@@ -993,6 +1052,7 @@ function App({ initialModuleId }) {
   const dashboardSummaryFetchMetaRef = useRef({});
   const [employeeLookupRows, setEmployeeLookupRows] = useState([]);
   const [moduleTableMetaState, setModuleTableMetaState] = useState({});
+  const [modulePageLoadingState, setModulePageLoadingState] = useState({});
   const [moduleRowsState, setModuleRowsState] = useState(() => ({
     'attendance-penalty-adjustments': [],
   }));
@@ -1590,6 +1650,8 @@ function App({ initialModuleId }) {
     const isServerPagedRequest = activeModuleId === 'employee-management';
     const existingRows = moduleRowsState[activeModuleId];
     const now = Date.now();
+    const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
+    const tenantCacheKey = String(currentUser?.tenantId || 'master');
     const requestParams = isServerPagedRequest
       ? new URLSearchParams({
           page: String(tablePage),
@@ -1604,7 +1666,25 @@ function App({ initialModuleId }) {
         }).toString()
       : '';
     const requestKey = isServerPagedRequest ? `${activeModuleId}:paged:${requestParams}` : `${activeModuleId}:full`;
+    const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::${requestKey}`;
+    const warmCachedPayload = readWarmCache(warmCacheScope);
     const lastFetchAt = Number(moduleRowsFetchMetaRef.current[requestKey] || 0);
+    if (warmCachedPayload?.payload && moduleRowsRequestKeyRef.current[activeModuleId] !== requestKey) {
+      const cachedRecords = Array.isArray(warmCachedPayload.payload.records) ? warmCachedPayload.payload.records : [];
+      moduleRowsVariantRef.current[activeModuleId] = isServerPagedRequest ? 'paged' : 'full';
+      moduleRowsRequestKeyRef.current[activeModuleId] = requestKey;
+      moduleRowsFetchMetaRef.current[requestKey] = Number(warmCachedPayload.fetchedAt || Date.now());
+      setModuleRowsState((prev) => ({
+        ...prev,
+        [activeModuleId]: cachedRecords,
+      }));
+      if (isServerPagedRequest) {
+        setModuleTableMetaState((prev) => ({
+          ...prev,
+          [activeModuleId]: warmCachedPayload.payload.meta || null,
+        }));
+      }
+    }
     if (
       Array.isArray(existingRows) &&
       moduleRowsRequestKeyRef.current[activeModuleId] === requestKey &&
@@ -1612,10 +1692,27 @@ function App({ initialModuleId }) {
     ) {
       return;
     }
+    if (
+      warmCachedPayload?.payload &&
+      moduleRowsRequestKeyRef.current[activeModuleId] === requestKey &&
+      now - Number(warmCachedPayload.fetchedAt || 0) < 15000
+    ) {
+      setModulePageLoadingState((prev) => ({
+        ...prev,
+        [activeModuleId]: false,
+      }));
+      return;
+    }
     let cancelled = false;
     moduleRowsFetchMetaRef.current[requestKey] = now;
     const loadModuleRows = async () => {
       try {
+        if (!cancelled) {
+          setModulePageLoadingState((prev) => ({
+            ...prev,
+            [activeModuleId]: true,
+          }));
+        }
         const url = isServerPagedRequest
           ? `http://localhost:8000/api/modules/${activeModuleId}?${requestParams}`
           : `http://localhost:8000/api/modules/${activeModuleId}`;
@@ -1632,6 +1729,10 @@ function App({ initialModuleId }) {
         const records = Array.isArray(data.records) ? data.records : [];
         moduleRowsVariantRef.current[activeModuleId] = isServerPagedRequest ? 'paged' : 'full';
         moduleRowsRequestKeyRef.current[activeModuleId] = requestKey;
+        writeWarmCache(warmCacheScope, {
+          records,
+          meta: isServerPagedRequest ? data?.meta || null : null,
+        });
         setModuleRowsState((prev) => ({
           ...prev,
           [activeModuleId]: records,
@@ -1644,6 +1745,13 @@ function App({ initialModuleId }) {
         }
       } catch (error) {
         moduleRowsFetchMetaRef.current[requestKey] = 0;
+      } finally {
+        if (!cancelled) {
+          setModulePageLoadingState((prev) => ({
+            ...prev,
+            [activeModuleId]: false,
+          }));
+        }
       }
     };
     loadModuleRows();
@@ -1681,6 +1789,17 @@ function App({ initialModuleId }) {
     if (employeeModuleLoadingRef.current) {
       return;
     }
+    const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
+    const tenantCacheKey = String(currentUser?.tenantId || 'master');
+    const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::employee-management:lookup`;
+    const warmCachedPayload = readWarmCache(warmCacheScope);
+    if (Array.isArray(warmCachedPayload?.payload?.records) && warmCachedPayload.payload.records.length > 0) {
+      setEmployeeLookupRows(warmCachedPayload.payload.records);
+      moduleRowsFetchMetaRef.current['employee-management:lookup'] = Number(warmCachedPayload.fetchedAt || Date.now());
+      if (Date.now() - Number(warmCachedPayload.fetchedAt || 0) < 15000) {
+        return;
+      }
+    }
     let cancelled = false;
     employeeModuleLoadingRef.current = true;
     const loadEmployees = async () => {
@@ -1697,6 +1816,7 @@ function App({ initialModuleId }) {
         }
         const records = Array.isArray(data.records) ? data.records : [];
         moduleRowsFetchMetaRef.current['employee-management:lookup'] = Date.now();
+        writeWarmCache(warmCacheScope, { records });
         setEmployeeLookupRows(records);
       } catch (error) {
       } finally {
@@ -1764,6 +1884,8 @@ function App({ initialModuleId }) {
       return;
     }
     let cancelled = false;
+    const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
+    const tenantCacheKey = String(currentUser?.tenantId || 'master');
     const requestParams = new URLSearchParams({
       mode: 'clock-page',
       startDate: attendanceClockRangeStartDate,
@@ -1772,6 +1894,16 @@ function App({ initialModuleId }) {
       page: String(attendanceClockPage),
       pageSize: String(attendanceClockPageSize),
     }).toString();
+    const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::attendance-time::clock-page::${requestParams}`;
+    const warmCachedPayload = readWarmCache(warmCacheScope);
+    if (warmCachedPayload?.payload) {
+      setAttendanceClockPageRows(Array.isArray(warmCachedPayload.payload.records) ? warmCachedPayload.payload.records : []);
+      setAttendanceClockPageMeta(warmCachedPayload.payload.meta || null);
+      if (Date.now() - Number(warmCachedPayload.fetchedAt || 0) < 15000) {
+        setAttendanceClockPageLoading(false);
+        return;
+      }
+    }
     const fetchAttendanceClockPage = async () => {
       try {
         setAttendanceClockPageLoading(true);
@@ -1785,6 +1917,10 @@ function App({ initialModuleId }) {
         if (cancelled) {
           return;
         }
+        writeWarmCache(warmCacheScope, {
+          records: Array.isArray(data?.records) ? data.records : [],
+          meta: data?.meta || null,
+        });
         setAttendanceClockPageRows(Array.isArray(data?.records) ? data.records : []);
         setAttendanceClockPageMeta(data?.meta || null);
       } catch (error) {
@@ -1810,6 +1946,118 @@ function App({ initialModuleId }) {
     authToken,
     currentUser,
     moduleRowsState,
+  ]);
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'compliance') {
+      return;
+    }
+    let cancelled = false;
+    const requestParams = new URLSearchParams({
+      mode: 'compliance-page',
+      date: attendanceAuditDate,
+      filter: attendanceAuditFilter,
+      search: attendanceAuditSearchText,
+      page: String(attendanceCompliancePage),
+      pageSize: String(attendanceCompliancePageSize),
+      sortKey: String(attendanceComplianceSort.key || 'employee'),
+      sortDirection: String(attendanceComplianceSort.direction || 'asc'),
+    }).toString();
+    const fetchAttendanceCompliancePage = async () => {
+      try {
+        setAttendanceCompliancePageLoading(true);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/attendance-time?${requestParams}`), {
+          headers: authHeaders,
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        setAttendanceCompliancePageRows(Array.isArray(data?.records) ? data.records : []);
+        setAttendanceCompliancePageMeta(data?.meta || null);
+      } catch (error) {
+      } finally {
+        if (!cancelled) {
+          setAttendanceCompliancePageLoading(false);
+        }
+      }
+    };
+    fetchAttendanceCompliancePage();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModuleId,
+    attendanceAuditDate,
+    attendanceAuditFilter,
+    attendanceAuditSearchText,
+    attendanceCompliancePage,
+    attendanceCompliancePageSize,
+    attendanceComplianceSort.direction,
+    attendanceComplianceSort.key,
+    attendanceViewTab,
+    authHeaders,
+    authToken,
+    currentUser,
+    moduleRowsState,
+  ]);
+  useEffect(() => {
+    if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalties') {
+      return;
+    }
+    let cancelled = false;
+    const requestParams = new URLSearchParams({
+      mode: 'penalty-page',
+      date: attendanceAuditDate,
+      search: attendanceAuditSearchText,
+      statusFilter: attendancePenaltyStatusFilter,
+      page: String(attendancePenaltyPage),
+      pageSize: String(attendancePenaltyPageSize),
+      sortKey: String(attendancePenaltySort.key || 'date'),
+      sortDirection: String(attendancePenaltySort.direction || 'desc'),
+    }).toString();
+    const fetchAttendancePenaltyPage = async () => {
+      try {
+        setAttendancePenaltyPageLoading(true);
+        const response = await fetch(toApiUrl(`http://localhost:8000/api/modules/attendance-time?${requestParams}`), {
+          headers: authHeaders,
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (cancelled) {
+          return;
+        }
+        setAttendancePenaltyPageRows(Array.isArray(data?.records) ? data.records : []);
+        setAttendancePenaltyPageMeta(data?.meta || null);
+      } catch (error) {
+      } finally {
+        if (!cancelled) {
+          setAttendancePenaltyPageLoading(false);
+        }
+      }
+    };
+    fetchAttendancePenaltyPage();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeModuleId,
+    attendanceAuditDate,
+    attendanceAuditSearchText,
+    attendancePenaltyPage,
+    attendancePenaltyPageRefreshCounter,
+    attendancePenaltyPageSize,
+    attendancePenaltySort.direction,
+    attendancePenaltySort.key,
+    attendancePenaltyStatusFilter,
+    attendanceViewTab,
+    authHeaders,
+    authToken,
+    currentUser,
   ]);
 
   useEffect(() => {
@@ -2099,10 +2347,26 @@ function App({ initialModuleId }) {
     if (!authToken || !currentUser || activeModuleId !== 'dashboard') {
       return undefined;
     }
-    const dashboardCacheKey = `${String(currentUser?.id || currentUser?.username || '')}::${dashboardDate}`;
+    const dashboardCacheKey = `${String(currentUser?.tenantId || 'master')}::${String(currentUser?.id || currentUser?.username || '')}::${dashboardDate}`;
     const cachedSummary = dashboardSummaryFetchMetaRef.current[dashboardCacheKey];
-    if (cachedSummary && Date.now() - cachedSummary.fetchedAt < 15000 && dashboardRefreshCounter === 0) {
-      setDashboardSummary(cachedSummary.payload);
+    const warmCachedSummary = readWarmCache(`dashboard::${dashboardCacheKey}`);
+    const effectiveCachedSummary = cachedSummary || (warmCachedSummary?.payload
+      ? {
+          fetchedAt: Number(warmCachedSummary.fetchedAt || Date.now()),
+          payload: warmCachedSummary.payload,
+        }
+      : null);
+    if (warmCachedSummary?.payload && dashboardRefreshCounter === 0) {
+      setDashboardSummary(warmCachedSummary.payload);
+      setDashboardLoading(false);
+      setDashboardError('');
+      dashboardSummaryFetchMetaRef.current[dashboardCacheKey] = {
+        fetchedAt: Number(warmCachedSummary.fetchedAt || Date.now()),
+        payload: warmCachedSummary.payload,
+      };
+    }
+    if (effectiveCachedSummary && Date.now() - effectiveCachedSummary.fetchedAt < 15000 && dashboardRefreshCounter === 0) {
+      setDashboardSummary(effectiveCachedSummary.payload);
       setDashboardLoading(false);
       setDashboardError('');
       return undefined;
@@ -2127,6 +2391,7 @@ function App({ initialModuleId }) {
             fetchedAt: Date.now(),
             payload: data || null,
           };
+          writeWarmCache(`dashboard::${dashboardCacheKey}`, data || null);
           setDashboardSummary(data || null);
         }
       } catch (error) {
@@ -2307,6 +2572,7 @@ function App({ initialModuleId }) {
   }, [activeModuleConfig, activeModuleId, appSettings, loanRowsScopedByRole, moduleRowsState]);
   const isServerPagedEmployeeModule = activeModuleId === 'employee-management';
   const employeeModuleTableMeta = moduleTableMetaState['employee-management'] || null;
+  const employeeModulePageLoading = Boolean(modulePageLoadingState['employee-management']);
   const activeLoanPageRows = activeModuleId === 'loan-records' ? loanPageRows : [];
   const isModalOpen = modalState.mode !== null;
   const isFormModal = modalState.mode === 'form';
@@ -4128,14 +4394,8 @@ function App({ initialModuleId }) {
     () => employeeBaseRows.find((employee) => employee.id === fingerprintDraft.employeeId) || null,
     [employeeBaseRows, fingerprintDraft.employeeId]
   );
-  const penaltyAdjustmentRows = useMemo(() => moduleRowsState['attendance-penalty-adjustments'] || [], [moduleRowsState]);
   const attendanceComplianceRows = useMemo(() => {
-    if (
-      activeModuleId !== 'attendance-time' ||
-      (attendanceViewTab !== 'compliance' &&
-        attendanceViewTab !== 'penalty' &&
-        attendanceViewTab !== 'performance')
-    ) {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'performance') {
       return [];
     }
     const targetDate = attendanceAuditDate || todayIsoDate;
@@ -4364,9 +4624,6 @@ function App({ initialModuleId }) {
       }
       rowsFromAttendance.push(buildComplianceRow(matchedEmployee, attendanceRow));
     });
-    if (attendanceViewTab === 'compliance') {
-      return rowsFromAttendance;
-    }
     const missingEmployeeRows = scopedEmployees
       .filter((employee) => !usedEmployeeIds.has(String(employee.id || '').trim()))
       .map((employee) => buildComplianceRow(employee, findAttendanceRowForEmployeeOnDate(employee, targetDate)));
@@ -4489,6 +4746,23 @@ function App({ initialModuleId }) {
       return matchesFilter && matchesSearch;
     });
   }, [attendanceAuditFilter, attendanceAuditSearchText, attendanceComplianceRows]);
+  const attendanceComplianceDisplayRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'compliance') {
+      return attendanceComplianceFilteredRows;
+    }
+    return attendanceCompliancePageRows;
+  }, [
+    activeModuleId,
+    attendanceComplianceFilteredRows,
+    attendanceCompliancePageRows,
+    attendanceViewTab,
+  ]);
+  const attendancePenaltyFilteredRows = useMemo(() => {
+    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalties') {
+      return [];
+    }
+    return attendancePenaltyPageRows;
+  }, [activeModuleId, attendancePenaltyPageRows, attendanceViewTab]);
   const downloadCsv = (fileName, headers, rowsToExport) => {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
       return;
@@ -4585,9 +4859,20 @@ function App({ initialModuleId }) {
     downloadCsv(
       `attendance-compliance-${attendanceAuditDate}.csv`,
       headers,
-      getAttendanceComplianceExportRows(attendanceComplianceFilteredRows)
+      getAttendanceComplianceExportRows(
+        attendanceViewTab === 'compliance' && attendanceCompliancePageMeta
+          ? attendanceCompliancePageRows
+          : attendanceComplianceFilteredRows
+      )
     );
-  }, [attendanceAuditDate, attendanceComplianceFilteredRows, getAttendanceComplianceExportRows]);
+  }, [
+    attendanceAuditDate,
+    attendanceComplianceFilteredRows,
+    attendanceCompliancePageMeta,
+    attendanceCompliancePageRows,
+    attendanceViewTab,
+    getAttendanceComplianceExportRows,
+  ]);
   const exportAttendanceAuditPdf = useCallback(() => {
     const headers = [
       { key: 'Date', label: 'Date' },
@@ -4604,91 +4889,30 @@ function App({ initialModuleId }) {
     downloadPdf(
       `Daily Compliance - ${attendanceAuditDate}`,
       headers,
-      getAttendanceComplianceExportRows(attendanceComplianceFilteredRows)
+      getAttendanceComplianceExportRows(
+        attendanceViewTab === 'compliance' && attendanceCompliancePageMeta
+          ? attendanceCompliancePageRows
+          : attendanceComplianceFilteredRows
+      )
     );
-  }, [attendanceAuditDate, attendanceComplianceFilteredRows, getAttendanceComplianceExportRows]);
-  const attendancePenaltyLedgerRows = useMemo(() => {
-    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalty') {
-      return [];
-    }
-    const scopedComplianceRows = attendanceComplianceRows.filter((row) => {
-      if (currentUser && currentUser.role === 'employee') {
-        const employeeId = String(currentUser.employeeId || '').trim();
-        const employeeName = String(currentUser.fullName || '').trim();
-        const rowEmployeeId = String(row.employeeId || '').trim();
-        const rowEmployeeName = String(row.employee || '').trim();
-        if (employeeId) {
-          return rowEmployeeId === employeeId;
-        }
-        if (employeeName) {
-          return rowEmployeeName === employeeName;
-        }
-        return false;
-      }
-      return true;
-    });
-    const ledger = [];
-    scopedComplianceRows.forEach((row) => {
-      row.penalties.forEach((penalty) => {
-        const adjustments = penaltyAdjustmentRows.filter(
-          (item) =>
-            String(item.employeeId || '') === String(row.employeeId || '') &&
-            String(item.date || '') === String(row.date || '') &&
-            String(item.penaltyType || '') === String(penalty.type || '')
-        );
-        const clearedAmount = adjustments.reduce((total, item) => total + toNumberValue(item.clearedAmount), 0);
-        const outstandingAmount = Math.max(0, penalty.amount - clearedAmount);
-        ledger.push({
-          key: `${row.employeeId}|${row.date}|${penalty.type}`,
-          employeeId: row.employeeId,
-          employee: row.employee,
-          department: row.department,
-          date: row.date,
-          penaltyType: penalty.type,
-          penaltyLabel: penalty.label,
-          baseAmount: penalty.amount,
-          clearedAmount,
-          outstandingAmount,
-          adjustments,
-        });
-      });
-    });
-    return ledger;
-  }, [activeModuleId, attendanceComplianceRows, attendanceViewTab, currentUser, penaltyAdjustmentRows]);
-  const attendancePenaltyFilteredRows = useMemo(() => {
-    if (activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalty') {
-      return [];
-    }
-    const query = attendanceAuditSearchText.trim().toLowerCase();
-    return attendancePenaltyLedgerRows.filter((row) => {
-      const matchesDate = String(row.date || '') === String(attendanceAuditDate || todayIsoDate);
-      const matchesStatus =
-        attendancePenaltyStatusFilter === 'All' ||
-        (attendancePenaltyStatusFilter === 'Outstanding' && row.outstandingAmount > 0) ||
-        (attendancePenaltyStatusFilter === 'Cleared' && row.outstandingAmount <= 0);
-      const matchesSearch =
-        !query ||
-        String(row.employee || '').toLowerCase().includes(query) ||
-        String(row.employeeId || '').toLowerCase().includes(query) ||
-        String(row.department || '').toLowerCase().includes(query);
-      return matchesDate && matchesStatus && matchesSearch;
-    });
   }, [
     attendanceAuditDate,
-    attendanceAuditSearchText,
-    activeModuleId,
-    attendancePenaltyLedgerRows,
-    attendancePenaltyStatusFilter,
+    attendanceComplianceFilteredRows,
+    attendanceCompliancePageMeta,
+    attendanceCompliancePageRows,
     attendanceViewTab,
-    todayIsoDate,
+    getAttendanceComplianceExportRows,
   ]);
   const selectedPenaltyRow = useMemo(
-    () => attendancePenaltyLedgerRows.find((row) => String(row.key) === String(selectedPenaltyKey)) || null,
-    [attendancePenaltyLedgerRows, selectedPenaltyKey]
+    () => attendancePenaltyPageRows.find((row) => String(row.key) === String(selectedPenaltyKey)) || null,
+    [attendancePenaltyPageRows, selectedPenaltyKey]
   );
   const selectedComplianceRow = useMemo(
-    () => attendanceComplianceRows.find((row) => `${row.employeeId}-${row.date}` === selectedComplianceKey) || null,
-    [attendanceComplianceRows, selectedComplianceKey]
+    () =>
+      attendanceCompliancePageRows.find((row) => `${row.employeeId}-${row.date}` === selectedComplianceKey) ||
+      attendanceComplianceRows.find((row) => `${row.employeeId}-${row.date}` === selectedComplianceKey) ||
+      null,
+    [attendanceCompliancePageRows, attendanceComplianceRows, selectedComplianceKey]
   );
   const attendancePerformanceRange = useMemo(() => {
     const todayDate = parseIsoDateValue(todayIsoDate) || new Date();
@@ -6289,13 +6513,14 @@ function App({ initialModuleId }) {
         : 'Branch manager approved the loan request.'
     );
   };
-  const handlePenaltyActionSave = () => {
+  const handlePenaltyActionSave = async () => {
     if (!selectedPenaltyRow || selectedPenaltyRow.outstandingAmount <= 0) {
       return;
     }
     const actor = String(appSettings.penaltyActorUsername || '').trim();
     const remark = String(penaltyActionDraft.remark || '').trim();
     if (!actor || !remark) {
+      showToast('Actor name and remark are required before saving a penalty clearance.', 'error');
       return;
     }
     const isFull = penaltyActionDraft.mode === 'full';
@@ -6304,34 +6529,57 @@ function App({ initialModuleId }) {
       : Math.max(0, toNumberValue(penaltyActionDraft.amount || 0));
     const clearedAmount = Math.min(selectedPenaltyRow.outstandingAmount, requestedAmount);
     if (clearedAmount <= 0) {
+      showToast('Enter a valid clearance amount before saving.', 'error');
       return;
     }
     const actionId = `PCLR-${Date.now().toString().slice(-7)}`;
-    setModuleRowsState((prev) => ({
-      ...prev,
-      'attendance-penalty-adjustments': [
-        {
-          id: actionId,
-          employeeId: selectedPenaltyRow.employeeId,
-          employee: selectedPenaltyRow.employee,
-          date: selectedPenaltyRow.date,
-          department: selectedPenaltyRow.department,
-          penaltyType: selectedPenaltyRow.penaltyType,
-          penaltyLabel: selectedPenaltyRow.penaltyLabel,
-          clearanceMode: penaltyActionDraft.mode,
-          clearedAmount,
-          remark,
-          actorUsername: actor,
-          actedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
-        },
-        ...(prev['attendance-penalty-adjustments'] || []),
-      ],
-    }));
-    setPenaltyActionDraft({
-      mode: 'partial',
-      amount: '',
-      remark: '',
-    });
+    const nextAdjustment = {
+      id: actionId,
+      employeeId: selectedPenaltyRow.employeeId,
+      employee: selectedPenaltyRow.employee,
+      date: selectedPenaltyRow.date,
+      department: selectedPenaltyRow.department,
+      penaltyType: selectedPenaltyRow.penaltyType,
+      penaltyLabel: selectedPenaltyRow.penaltyLabel,
+      clearanceMode: penaltyActionDraft.mode,
+      clearedAmount,
+      remark,
+      actorUsername: actor,
+      actedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
+    };
+    setPenaltyActionSaving(true);
+    try {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/modules/attendance-penalty-adjustments'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(nextAdjustment),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        showToast(data?.error || 'Failed to save penalty clearance.', 'error');
+        return;
+      }
+      const data = await response.json().catch(() => null);
+      const savedAdjustment = data?.record || nextAdjustment;
+      setModuleRowsState((prev) => ({
+        ...prev,
+        'attendance-penalty-adjustments': [
+          savedAdjustment,
+          ...(prev['attendance-penalty-adjustments'] || []).filter((row) => String(row.id || '') !== String(savedAdjustment.id || '')),
+        ],
+      }));
+      setPenaltyActionDraft({
+        mode: 'partial',
+        amount: '',
+        remark: '',
+      });
+      setAttendancePenaltyPageRefreshCounter((prev) => prev + 1);
+      showToast(`Penalty clearance saved for ${selectedPenaltyRow.employee}.`, 'success');
+    } catch (error) {
+      showToast('Failed to save penalty clearance.', 'error');
+    } finally {
+      setPenaltyActionSaving(false);
+    }
   };
 
   const openDetails = (rowId) => {
@@ -9800,6 +10048,11 @@ function App({ initialModuleId }) {
                         } visible row(s)`
                       : `${activeModuleConfig.entityLabel} registry and operations table`}
                   </p>
+                  {isEmployeeModule && employeeModulePageLoading ? (
+                    <span style={{ display: 'inline-block', marginTop: 6, fontSize: 12, color: '#607098' }}>
+                      Loading employees...
+                    </span>
+                  ) : null}
                 </div>
                 {activeModuleId !== 'attendance-time' && activeModuleId !== 'user-management' ? (
                   <div className="panel-title-actions">
@@ -9839,18 +10092,35 @@ function App({ initialModuleId }) {
                   setAttendanceAuditFilter={setAttendanceAuditFilter}
                   attendanceAuditSearchText={attendanceAuditSearchText}
                   setAttendanceAuditSearchText={setAttendanceAuditSearchText}
-                  attendanceComplianceFilteredRows={attendanceComplianceFilteredRows}
+                  attendanceComplianceFilteredRows={attendanceComplianceDisplayRows}
+                  attendanceComplianceSort={attendanceComplianceSort}
+                  setAttendanceComplianceSort={setAttendanceComplianceSort}
+                  attendanceCompliancePage={attendanceCompliancePage}
+                  setAttendanceCompliancePage={setAttendanceCompliancePage}
+                  attendanceCompliancePageSize={attendanceCompliancePageSize}
+                  setAttendanceCompliancePageSize={setAttendanceCompliancePageSize}
+                  attendanceCompliancePageMeta={attendanceCompliancePageMeta}
+                  attendanceCompliancePageLoading={attendanceCompliancePageLoading}
                   setAttendanceDetailModal={setAttendanceDetailModal}
                   selectedComplianceKey={selectedComplianceKey}
                   setSelectedComplianceKey={setSelectedComplianceKey}
                   attendancePenaltyStatusFilter={attendancePenaltyStatusFilter}
                   setAttendancePenaltyStatusFilter={setAttendancePenaltyStatusFilter}
                   attendancePenaltyFilteredRows={attendancePenaltyFilteredRows}
+                  attendancePenaltySort={attendancePenaltySort}
+                  setAttendancePenaltySort={setAttendancePenaltySort}
+                  attendancePenaltyPage={attendancePenaltyPage}
+                  setAttendancePenaltyPage={setAttendancePenaltyPage}
+                  attendancePenaltyPageSize={attendancePenaltyPageSize}
+                  setAttendancePenaltyPageSize={setAttendancePenaltyPageSize}
+                  attendancePenaltyPageMeta={attendancePenaltyPageMeta}
+                  attendancePenaltyPageLoading={attendancePenaltyPageLoading}
                   selectedPenaltyKey={selectedPenaltyKey}
                   setSelectedPenaltyKey={setSelectedPenaltyKey}
                   selectedPenaltyRow={selectedPenaltyRow}
                   penaltyActionDraft={penaltyActionDraft}
                   setPenaltyActionDraft={setPenaltyActionDraft}
+                  penaltyActionSaving={penaltyActionSaving}
                   handlePenaltyActionSave={handlePenaltyActionSave}
                   toNumberValue={toNumberValue}
                   attendancePerformancePeriod={attendancePerformancePeriod}
@@ -10189,7 +10459,11 @@ function App({ initialModuleId }) {
                     ) : (
                       <tr>
                         <td colSpan={tableColumns.length + 1}>
-                          <p className="empty-state">No matching records found.</p>
+                          <p className="empty-state">
+                            {isEmployeeModule && employeeModulePageLoading
+                              ? 'Loading employee records...'
+                              : 'No matching records found.'}
+                          </p>
                         </td>
                       </tr>
                     )}

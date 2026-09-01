@@ -31,17 +31,34 @@ export default function AttendanceTimePage({
   attendanceAuditSearchText,
   setAttendanceAuditSearchText,
   attendanceComplianceFilteredRows,
+  attendanceComplianceSort,
+  setAttendanceComplianceSort,
+  attendanceCompliancePage,
+  setAttendanceCompliancePage,
+  attendanceCompliancePageSize,
+  setAttendanceCompliancePageSize,
+  attendanceCompliancePageMeta,
+  attendanceCompliancePageLoading,
   setAttendanceDetailModal,
   selectedComplianceKey,
   setSelectedComplianceKey,
   attendancePenaltyStatusFilter,
   setAttendancePenaltyStatusFilter,
   attendancePenaltyFilteredRows,
+  attendancePenaltySort,
+  setAttendancePenaltySort,
+  attendancePenaltyPage,
+  setAttendancePenaltyPage,
+  attendancePenaltyPageSize,
+  setAttendancePenaltyPageSize,
+  attendancePenaltyPageMeta,
+  attendancePenaltyPageLoading,
   selectedPenaltyKey,
   setSelectedPenaltyKey,
   selectedPenaltyRow,
   penaltyActionDraft,
   setPenaltyActionDraft,
+  penaltyActionSaving,
   handlePenaltyActionSave,
   toNumberValue,
   attendancePerformancePeriod,
@@ -114,6 +131,22 @@ export default function AttendanceTimePage({
   const [performancePageSize, setPerformancePageSize] = useState(25);
   const [shiftAssignmentPage, setShiftAssignmentPage] = useState(1);
   const [shiftAssignmentPageSize, setShiftAssignmentPageSize] = useState(25);
+  const effectiveComplianceSort = attendanceComplianceSort || complianceSort;
+  const effectiveSetComplianceSort =
+    typeof setAttendanceComplianceSort === 'function' ? setAttendanceComplianceSort : setComplianceSort;
+  const effectiveCompliancePage = Number(attendanceCompliancePage) || compliancePage;
+  const effectiveSetCompliancePage =
+    typeof setAttendanceCompliancePage === 'function' ? setAttendanceCompliancePage : setCompliancePage;
+  const effectiveCompliancePageSize = Number(attendanceCompliancePageSize) || compliancePageSize;
+  const effectiveSetCompliancePageSize =
+    typeof setAttendanceCompliancePageSize === 'function' ? setAttendanceCompliancePageSize : setCompliancePageSize;
+  const effectivePenaltySort = attendancePenaltySort || penaltySort;
+  const effectiveSetPenaltySort = typeof setAttendancePenaltySort === 'function' ? setAttendancePenaltySort : setPenaltySort;
+  const effectivePenaltyPage = Number(attendancePenaltyPage) || penaltyPage;
+  const effectiveSetPenaltyPage = typeof setAttendancePenaltyPage === 'function' ? setAttendancePenaltyPage : setPenaltyPage;
+  const effectivePenaltyPageSize = Number(attendancePenaltyPageSize) || penaltyPageSize;
+  const effectiveSetPenaltyPageSize =
+    typeof setAttendancePenaltyPageSize === 'function' ? setAttendancePenaltyPageSize : setPenaltyPageSize;
   const effectiveClockPage = Number(attendanceClockPage) || clockPage;
   const effectiveSetClockPage = typeof setAttendanceClockPage === 'function' ? setAttendanceClockPage : setClockPage;
   const effectiveClockPageSize = Number(attendanceClockPageSize) || clockPageSize;
@@ -241,11 +274,17 @@ export default function AttendanceTimePage({
     effectiveSetClockPage(1);
   }, [attendanceClockRangeStartDate, attendanceClockRangeEndDate, attendanceClockRangeSearchText, effectiveSetClockPage]);
   useEffect(() => {
-    setCompliancePage(1);
-  }, [attendanceAuditDate, attendanceAuditFilter, attendanceAuditSearchText, complianceSort]);
+    effectiveSetCompliancePage(1);
+  }, [
+    attendanceAuditDate,
+    attendanceAuditFilter,
+    attendanceAuditSearchText,
+    effectiveComplianceSort,
+    effectiveSetCompliancePage,
+  ]);
   useEffect(() => {
-    setPenaltyPage(1);
-  }, [attendancePenaltyStatusFilter, penaltySort]);
+    effectiveSetPenaltyPage(1);
+  }, [attendancePenaltyStatusFilter, effectivePenaltySort, effectiveSetPenaltyPage]);
   useEffect(() => {
     setPerformancePage(1);
   }, [
@@ -304,22 +343,22 @@ export default function AttendanceTimePage({
   }, [attendancePhotoModal.src, attendancePhotoModal.title]);
   const sortedComplianceRows = useMemo(() => {
     return [...attendanceComplianceFilteredRows].sort((a, b) => {
-      if (complianceSort.key === 'lateFlag') {
-        return compareValues(Number(Boolean(a.isLate)), Number(Boolean(b.isLate)), complianceSort.direction);
+      if (effectiveComplianceSort.key === 'lateFlag') {
+        return compareValues(Number(Boolean(a.isLate)), Number(Boolean(b.isLate)), effectiveComplianceSort.direction);
       }
-      return compareValues(a?.[complianceSort.key], b?.[complianceSort.key], complianceSort.direction);
+      return compareValues(a?.[effectiveComplianceSort.key], b?.[effectiveComplianceSort.key], effectiveComplianceSort.direction);
     });
-  }, [attendanceComplianceFilteredRows, compareValues, complianceSort]);
+  }, [attendanceComplianceFilteredRows, compareValues, effectiveComplianceSort]);
   const sortedPenaltyRows = useMemo(() => {
     return [...attendancePenaltyFilteredRows].sort((a, b) => {
-      if (penaltySort.key === 'status') {
+      if (effectivePenaltySort.key === 'status') {
         const leftStatus = a.outstandingAmount > 0 ? 'Outstanding' : 'Cleared';
         const rightStatus = b.outstandingAmount > 0 ? 'Outstanding' : 'Cleared';
-        return compareValues(leftStatus, rightStatus, penaltySort.direction);
+        return compareValues(leftStatus, rightStatus, effectivePenaltySort.direction);
       }
-      return compareValues(a?.[penaltySort.key], b?.[penaltySort.key], penaltySort.direction);
+      return compareValues(a?.[effectivePenaltySort.key], b?.[effectivePenaltySort.key], effectivePenaltySort.direction);
     });
-  }, [attendancePenaltyFilteredRows, compareValues, penaltySort]);
+  }, [attendancePenaltyFilteredRows, compareValues, effectivePenaltySort]);
   const sortedPerformanceRows = useMemo(() => {
     return [...attendancePerformanceRows].sort((a, b) =>
       compareValues(a?.[performanceSort.key], b?.[performanceSort.key], performanceSort.direction)
@@ -368,8 +407,24 @@ export default function AttendanceTimePage({
         pageSize: Math.max(1, Number(attendanceClockPageMeta.pageSize) || effectiveClockPageSize),
       }
     : buildPaginationState(attendanceClockRangeRows, effectiveClockPage, effectiveClockPageSize);
-  const paginatedComplianceRows = buildPaginationState(sortedComplianceRows, compliancePage, compliancePageSize);
-  const paginatedPenaltyRows = buildPaginationState(sortedPenaltyRows, penaltyPage, penaltyPageSize);
+  const paginatedComplianceRows = attendanceCompliancePageMeta
+    ? {
+        rows: attendanceComplianceFilteredRows,
+        totalRows: Math.max(0, Number(attendanceCompliancePageMeta.totalRows) || 0),
+        totalPages: Math.max(1, Number(attendanceCompliancePageMeta.totalPages) || 1),
+        page: Math.max(1, Number(attendanceCompliancePageMeta.page) || effectiveCompliancePage),
+        pageSize: Math.max(1, Number(attendanceCompliancePageMeta.pageSize) || effectiveCompliancePageSize),
+      }
+    : buildPaginationState(sortedComplianceRows, effectiveCompliancePage, effectiveCompliancePageSize);
+  const paginatedPenaltyRows = attendancePenaltyPageMeta
+    ? {
+        rows: attendancePenaltyFilteredRows,
+        totalRows: Math.max(0, Number(attendancePenaltyPageMeta.totalRows) || 0),
+        totalPages: Math.max(1, Number(attendancePenaltyPageMeta.totalPages) || 1),
+        page: Math.max(1, Number(attendancePenaltyPageMeta.page) || effectivePenaltyPage),
+        pageSize: Math.max(1, Number(attendancePenaltyPageMeta.pageSize) || effectivePenaltyPageSize),
+      }
+    : buildPaginationState(sortedPenaltyRows, effectivePenaltyPage, effectivePenaltyPageSize);
   const paginatedPerformanceRows = buildPaginationState(sortedPerformanceRows, performancePage, performancePageSize);
   const paginatedShiftAssignmentRows = buildPaginationState(shiftAssignmentRows, shiftAssignmentPage, shiftAssignmentPageSize);
   const attendanceClockSummary = attendanceClockPageMeta || {
@@ -952,48 +1007,48 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'date')}>
-                      Date{sortArrow(complianceSort, 'date')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'date')}>
+                      Date{sortArrow(effectiveComplianceSort, 'date')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'employee')}>
-                      Employee{sortArrow(complianceSort, 'employee')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'employee')}>
+                      Employee{sortArrow(effectiveComplianceSort, 'employee')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'shift')}>
-                      Shift{sortArrow(complianceSort, 'shift')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'shift')}>
+                      Shift{sortArrow(effectiveComplianceSort, 'shift')}
                     </button>
                   </th>
                   <th>Photos</th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'checkIn')}>
-                      Clock In{sortArrow(complianceSort, 'checkIn')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'checkIn')}>
+                      Clock In{sortArrow(effectiveComplianceSort, 'checkIn')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'checkOut')}>
-                      Clock Out{sortArrow(complianceSort, 'checkOut')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'checkOut')}>
+                      Clock Out{sortArrow(effectiveComplianceSort, 'checkOut')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'dailyStatus')}>
-                      Status{sortArrow(complianceSort, 'dailyStatus')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'dailyStatus')}>
+                      Status{sortArrow(effectiveComplianceSort, 'dailyStatus')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setComplianceSort, 'lateMinutes')}>
-                      Minutes Late{sortArrow(complianceSort, 'lateMinutes')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetComplianceSort, 'lateMinutes')}>
+                      Minutes Late{sortArrow(effectiveComplianceSort, 'lateMinutes')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setComplianceSort, 'deductionAmount')}
+                      onClick={() => toggleSort(effectiveSetComplianceSort, 'deductionAmount')}
                     >
-                      Late Deduction{sortArrow(complianceSort, 'deductionAmount')}
+                      Late Deduction{sortArrow(effectiveComplianceSort, 'deductionAmount')}
                     </button>
                   </th>
                 </tr>
@@ -1136,7 +1191,9 @@ export default function AttendanceTimePage({
                     <td colSpan={9}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                         <span>
-                          {attendanceAuditFilter !== 'All' || attendanceAuditSearchText.trim()
+                          {attendanceCompliancePageLoading
+                            ? 'Loading compliance records...'
+                            : attendanceAuditFilter !== 'All' || attendanceAuditSearchText.trim()
                             ? 'No records match the current compliance filters.'
                             : 'No compliance records are available for the selected date.'}
                         </span>
@@ -1158,8 +1215,8 @@ export default function AttendanceTimePage({
                 )}
                 <PaginationControls
                   state={paginatedComplianceRows}
-                  setPage={setCompliancePage}
-                  setPageSize={setCompliancePageSize}
+                  setPage={effectiveSetCompliancePage}
+                  setPageSize={effectiveSetCompliancePageSize}
                   colSpan={9}
                   label="records"
                 />
@@ -1192,32 +1249,32 @@ export default function AttendanceTimePage({
               <thead>
                 <tr>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'employee')}>
-                      Employee{sortArrow(penaltySort, 'employee')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetPenaltySort, 'employee')}>
+                      Employee{sortArrow(effectivePenaltySort, 'employee')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'date')}>
-                      Date{sortArrow(penaltySort, 'date')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetPenaltySort, 'date')}>
+                      Date{sortArrow(effectivePenaltySort, 'date')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'penaltyLabel')}>
-                      Penalty{sortArrow(penaltySort, 'penaltyLabel')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetPenaltySort, 'penaltyLabel')}>
+                      Penalty{sortArrow(effectivePenaltySort, 'penaltyLabel')}
                     </button>
                   </th>
                   <th>
                     <button
                       type="button"
                       className="neutral-btn"
-                      onClick={() => toggleSort(setPenaltySort, 'outstandingAmount')}
+                      onClick={() => toggleSort(effectiveSetPenaltySort, 'outstandingAmount')}
                     >
-                      Amount{sortArrow(penaltySort, 'outstandingAmount')}
+                      Amount{sortArrow(effectivePenaltySort, 'outstandingAmount')}
                     </button>
                   </th>
                   <th>
-                    <button type="button" className="neutral-btn" onClick={() => toggleSort(setPenaltySort, 'status')}>
-                      Status{sortArrow(penaltySort, 'status')}
+                    <button type="button" className="neutral-btn" onClick={() => toggleSort(effectiveSetPenaltySort, 'status')}>
+                      Status{sortArrow(effectivePenaltySort, 'status')}
                     </button>
                   </th>
                   <th>Actions</th>
@@ -1260,13 +1317,13 @@ export default function AttendanceTimePage({
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={6}>No penalties for the selected filters.</td>
+                    <td colSpan={6}>{attendancePenaltyPageLoading ? 'Loading penalties...' : 'No penalties for the selected filters.'}</td>
                   </tr>
                 )}
                 <PaginationControls
                   state={paginatedPenaltyRows}
-                  setPage={setPenaltyPage}
-                  setPageSize={setPenaltyPageSize}
+                  setPage={effectiveSetPenaltyPage}
+                  setPageSize={effectiveSetPenaltyPageSize}
                   colSpan={6}
                   label="penalties"
                 />
@@ -1328,8 +1385,8 @@ export default function AttendanceTimePage({
                   />
                 </label>
                 <div className="attendance-ops-actions">
-                  <button type="button" className="primary-btn" onClick={handlePenaltyActionSave}>
-                    Save Action
+                  <button type="button" className="primary-btn" onClick={handlePenaltyActionSave} disabled={penaltyActionSaving}>
+                    {penaltyActionSaving ? 'Saving...' : 'Save Action'}
                   </button>
                 </div>
               </div>
