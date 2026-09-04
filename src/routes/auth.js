@@ -465,12 +465,13 @@ async function recordTenantPayment(masterDb, payload) {
     updatedAt: now,
     appliedAt: payload?.appliedAt || null,
   };
+  const { createdAt, ...recordWithoutCreatedAt } = record;
   await masterDb.collection(TENANT_PAYMENTS_COLLECTION).updateOne(
     { reference: record.reference },
     {
-      $set: record,
+      $set: recordWithoutCreatedAt,
       $setOnInsert: {
-        createdAt: record.createdAt,
+        createdAt,
       },
     },
     { upsert: true }

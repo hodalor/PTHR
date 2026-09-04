@@ -2009,6 +2009,45 @@ function normalizeAttendanceSettings(payload) {
   };
 }
 
+async function syncEmployeeShiftAssignmentsForSettings(db, previousSettings, nextSettings) {
+  const previousShifts = Array.isArray(previousSettings?.shifts) ? previousSettings.shifts : [];
+  const nextShifts = Array.isArray(nextSettings?.shifts) ? nextSettings.shifts : [];
+  const nextShiftNameById = new Map(
+    nextShifts.map((shift) => [String(shift?.id || '').trim(), String(shift?.name || '').trim()])
+  );
+  const nextShiftNames = new Set(nextShifts.map((shift) => String(shift?.name || '').trim()).filter(Boolean));
+  const fallbackShiftName = String(nextShifts[0]?.name || '').trim();
+  const shiftUpdates = [];
+
+  previousShifts.forEach((shift) => {
+    const shiftId = String(shift?.id || '').trim();
+    const previousName = String(shift?.name || '').trim();
+    const nextName = shiftId ? String(nextShiftNameById.get(shiftId) || '').trim() : '';
+    if (!previousName) {
+      return;
+    }
+    if (nextName && nextName !== previousName) {
+      shiftUpdates.push({ from: previousName, to: nextName });
+      return;
+    }
+    if (!nextName && !nextShiftNames.has(previousName) && fallbackShiftName && fallbackShiftName !== previousName) {
+      shiftUpdates.push({ from: previousName, to: fallbackShiftName });
+    }
+  });
+
+  for (const update of shiftUpdates) {
+    await db.collection('employees').updateMany(
+      { assignedShift: update.from },
+      {
+        $set: {
+          assignedShift: update.to,
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    );
+  }
+}
+
 function toMinutesFromClock(value) {
   const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!match) {
@@ -3386,6 +3425,8 @@ app.get('/api/settings/attendance', async (req, res) => {
 
 app.post('/api/settings/attendance', async (req, res) => {
   try {
+    const existingRecord = await req.db.collection('appSettings').findOne({ _id: 'attendance-rules' });
+    const existingSettings = normalizeAttendanceSettings(existingRecord?.value);
     const settings = normalizeAttendanceSettings(req.body);
     await req.db.collection('appSettings').updateOne(
       { _id: 'attendance-rules' },
@@ -3400,6 +3441,7 @@ app.post('/api/settings/attendance', async (req, res) => {
       },
       { upsert: true }
     );
+    await syncEmployeeShiftAssignmentsForSettings(req.db, existingSettings, settings);
     invalidateTenantReadCaches(req.tenantId || 'master');
     res.json({ ok: true, settings });
   } catch (error) {
@@ -3784,12 +3826,50 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       return;
     }
     const attendanceMode = String(req.query?.mode || '').trim().toLowerCase();
+    const employeeMode = String(req.query?.mode || '').trim().toLowerCase();
     const isAttendancePagedRequest =
       moduleId === 'attendance-time' && ['clock-page', 'compliance-page', 'penalty-page', 'performance-page'].includes(attendanceMode);
+    const isEmployeeLookupRequest = moduleId === 'employee-management' && employeeMode === 'lookup';
     const records = isAttendancePagedRequest
       ? []
       : moduleId === 'employee-management'
-        ? await collection.find({}).toArray()
+        ? await collection.find(
+            {},
+            isEmployeeLookupRequest
+              ? {
+                  projection: {
+                    id: 1,
+                    employeeId: 1,
+                    staffId: 1,
+                    fullName: 1,
+                    firstName: 1,
+                    lastName: 1,
+                    department: 1,
+                    position: 1,
+                    email: 1,
+                    phonePrimary: 1,
+                    phoneSecondary: 1,
+                    phone: 1,
+                    contactNumber: 1,
+                    mobileMoneyNumber: 1,
+                    mobileMoneyNetwork: 1,
+                    bankName: 1,
+                    bankAccountNumber: 1,
+                    bankAccountName: 1,
+                    idCardNumber: 1,
+                    taxId: 1,
+                    pensionId: 1,
+                    nhimaNumber: 1,
+                    assignedShift: 1,
+                    status: 1,
+                    employmentState: 1,
+                    role: 1,
+                    allowedModules: 1,
+                    contractEndDate: 1,
+                  },
+                }
+              : {}
+          ).toArray()
         : await collection.find({}).sort({ _id: -1 }).limit(500).toArray();
     if (moduleId !== 'attendance-time') {
       if (moduleId === 'loan-records' && String(req.query?.mode || '').trim().toLowerCase() === 'page') {
@@ -3798,11 +3878,20 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         return;
       }
       if (moduleId === 'employee-management') {
-        const users = await req.db.collection('users').find({ employeeId: { $ne: '' } }).toArray();
+        const users = await req.db.collection('users').find(
+          { employeeId: { $ne: '' } },
+          {
+            projection: {
+              employeeId: 1,
+              role: 1,
+              isActive: 1,
+            },
+          }
+        ).toArray();
         const userByEmployeeId = new Map(
           users.map((user) => [String(user.employeeId || '').trim(), user]).filter(([employeeId]) => employeeId)
         );
-        const lookupMode = String(req.query?.mode || '').trim().toLowerCase() === 'lookup';
+        const lookupMode = isEmployeeLookupRequest;
         const employeeListView = lookupMode ? null : getEmployeeListView(records, req.query);
         const payload = {
           records: await Promise.all(
@@ -3843,7 +3932,20 @@ app.get('/api/modules/:moduleId', async (req, res) => {
       const [rangeRecords, settingsRecord, employees] = await Promise.all([
         collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
         req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
-        req.db.collection('employees').find({}).toArray(),
+        req.db.collection('employees').find(
+          {},
+          {
+            projection: {
+              id: 1,
+              employeeId: 1,
+              fullName: 1,
+              assignedShift: 1,
+              department: 1,
+              status: 1,
+              employmentState: 1,
+            },
+          }
+        ).toArray(),
       ]);
       const employeeById = new Map();
       const employeeByEmployeeId = new Map();
