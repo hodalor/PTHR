@@ -3035,6 +3035,88 @@ function getEmployeeListView(records, query = {}) {
   };
 }
 
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildEmployeeListQuery(query = {}) {
+  const searchText = String(query.search || '').trim();
+  const departmentFilter = String(query.filterValue || 'All').trim();
+  const statusFilter = String(query.statusFilterValue || 'All').trim();
+  const employmentStageFilter = String(query.employmentStageFilterValue || 'All').trim();
+  const directoryTab = String(query.employeeDirectoryTab || 'active').trim().toLowerCase();
+  const expiryFilter = String(query.expiryFilterValue || 'All').trim();
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const within30Iso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const mongoQuery = {};
+  if (searchText) {
+    const safePattern = escapeRegex(searchText);
+    mongoQuery.$or = [
+      { id: { $regex: safePattern, $options: 'i' } },
+      { employeeId: { $regex: safePattern, $options: 'i' } },
+      { fullName: { $regex: safePattern, $options: 'i' } },
+      { department: { $regex: safePattern, $options: 'i' } },
+      { position: { $regex: safePattern, $options: 'i' } },
+      { email: { $regex: safePattern, $options: 'i' } },
+      { assignedShift: { $regex: safePattern, $options: 'i' } },
+      { employmentState: { $regex: safePattern, $options: 'i' } },
+      { status: { $regex: safePattern, $options: 'i' } },
+    ];
+  }
+  if (departmentFilter !== 'All') {
+    mongoQuery.department = departmentFilter;
+  }
+  if (statusFilter !== 'All') {
+    mongoQuery.status = statusFilter;
+  }
+  if (employmentStageFilter !== 'All') {
+    mongoQuery.employmentState = employmentStageFilter;
+  }
+  if (directoryTab === 'inactive') {
+    mongoQuery.$or = [
+      ...(Array.isArray(mongoQuery.$or) ? mongoQuery.$or : []),
+      { status: { $in: Array.from(blockedEmployeeStatusValues) } },
+      { employmentState: { $in: Array.from(blockedEmployeeStageValues) } },
+    ];
+  } else {
+    mongoQuery.status = {
+      ...(typeof mongoQuery.status === 'object' && mongoQuery.status !== null ? mongoQuery.status : {}),
+      $nin: Array.from(blockedEmployeeStatusValues),
+    };
+    mongoQuery.employmentState = {
+      ...(typeof mongoQuery.employmentState === 'object' && mongoQuery.employmentState !== null ? mongoQuery.employmentState : {}),
+      $nin: Array.from(blockedEmployeeStageValues),
+    };
+  }
+  if (expiryFilter === 'within30') {
+    mongoQuery.contractEndDate = { $gte: todayIso, $lte: within30Iso };
+  } else if (expiryFilter === 'after30') {
+    mongoQuery.contractEndDate = { $gt: within30Iso };
+  } else if (expiryFilter === 'expired') {
+    mongoQuery.contractEndDate = { $lt: todayIso };
+  } else if (expiryFilter === 'no-end-date') {
+    mongoQuery.$and = [...(Array.isArray(mongoQuery.$and) ? mongoQuery.$and : []), {
+      $or: [
+        { contractEndDate: { $exists: false } },
+        { contractEndDate: '' },
+        { contractEndDate: null },
+      ],
+    }];
+  }
+  return mongoQuery;
+}
+
+function buildEmployeeListSort(query = {}) {
+  const sortBy = String(query.sortByValue || 'default').trim();
+  if (sortBy === 'closest-expiry') {
+    return { contractEndDate: 1, fullName: 1, _id: -1 };
+  }
+  if (sortBy === 'expiry-priority') {
+    return { contractEndDate: 1, fullName: 1, _id: -1 };
+  }
+  return { _id: -1 };
+}
+
 async function connectToMongo() {
   if (!MONGO_URI) {
     throw new Error('MONGO_URI is not configured');
@@ -3892,31 +3974,77 @@ app.get('/api/modules/:moduleId', async (req, res) => {
           users.map((user) => [String(user.employeeId || '').trim(), user]).filter(([employeeId]) => employeeId)
         );
         const lookupMode = isEmployeeLookupRequest;
-        const employeeListView = lookupMode ? null : getEmployeeListView(records, req.query);
+        if (!lookupMode) {
+          const employeeQuery = buildEmployeeListQuery(req.query);
+          const employeeSort = buildEmployeeListSort(req.query);
+          const pageSize = Math.min(250, Math.max(1, Number(req.query.pageSize) || 25));
+          const page = Math.max(1, Number(req.query.page) || 1);
+          const skip = (page - 1) * pageSize;
+          const [pagedRecords, totalRows, directoryCounts, filterOptionRows, statusOptionRows, stageOptionRows] = await Promise.all([
+            collection.find(employeeQuery).sort(employeeSort).skip(skip).limit(pageSize).toArray(),
+            collection.countDocuments(employeeQuery),
+            Promise.all([
+              collection.countDocuments({
+                status: { $nin: Array.from(blockedEmployeeStatusValues) },
+                employmentState: { $nin: Array.from(blockedEmployeeStageValues) },
+              }),
+              collection.countDocuments({
+                $or: [
+                  { status: { $in: Array.from(blockedEmployeeStatusValues) } },
+                  { employmentState: { $in: Array.from(blockedEmployeeStageValues) } },
+                ],
+              }),
+            ]),
+            collection.distinct('department', {}),
+            collection.distinct('status', {}),
+            collection.distinct('employmentState', {}),
+          ]);
+          const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+          const safePage = Math.min(totalPages, page);
+          const payload = {
+            records: await Promise.all(
+              pagedRecords.map((record) =>
+                hydrateModuleRecordMedia(
+                  moduleId,
+                  mergeEmployeeAuthAccess(
+                    record,
+                    userByEmployeeId.get(String(record?.id || '').trim()) || null,
+                    req.tenant,
+                    req.tenantId
+                  )
+                )
+              )
+            ),
+            meta: {
+              totalRows,
+              totalPages,
+              page: safePage,
+              pageSize,
+              directoryCounts: {
+                active: Number(directoryCounts?.[0] || 0),
+                inactive: Number(directoryCounts?.[1] || 0),
+              },
+              filterOptions: (filterOptionRows || []).map((value) => String(value || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+              statusOptions: (statusOptionRows || []).map((value) => String(value || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+              employmentStageOptions: (stageOptionRows || []).map((value) => String(value || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+            },
+          };
+          res.json(setHotReadCache(moduleCacheKey, payload));
+          return;
+        }
         const payload = {
           records: await Promise.all(
-            (lookupMode ? records : employeeListView.records).map((record) =>
-              lookupMode
-                ? stripEmployeeHeavyFields(
-                    mergeEmployeeAuthAccess(
-                      record,
-                      userByEmployeeId.get(String(record?.id || '').trim()) || null,
-                      req.tenant,
-                      req.tenantId
-                    )
-                  )
-                : hydrateModuleRecordMedia(
-                    moduleId,
-                    mergeEmployeeAuthAccess(
-                      record,
-                      userByEmployeeId.get(String(record?.id || '').trim()) || null,
-                      req.tenant,
-                      req.tenantId
-                    )
-                  )
+            records.map((record) =>
+              stripEmployeeHeavyFields(
+                mergeEmployeeAuthAccess(
+                  record,
+                  userByEmployeeId.get(String(record?.id || '').trim()) || null,
+                  req.tenant,
+                  req.tenantId
+                )
+              )
             )
           ),
-          ...(employeeListView ? { meta: employeeListView.meta } : {}),
         };
         res.json(setHotReadCache(moduleCacheKey, payload));
         return;
