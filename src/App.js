@@ -106,6 +106,9 @@ const googleTileBaseUrl = googleMapsTileKey
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const SESSION_WARM_CACHE_PREFIX = 'pthr:warm-cache';
 const SESSION_WARM_CACHE_TTL_MS = 1000 * 60 * 5;
+const SETTINGS_FETCH_DELAY_MS = 1200;
+const SUBSCRIPTION_STATUS_FETCH_DELAY_MS = 2500;
+const EMPLOYEE_LOOKUP_DEFERRED_DELAY_MS = 900;
 
 const buildWarmCacheStorageKey = (scope) => `${SESSION_WARM_CACHE_PREFIX}:${scope}`;
 
@@ -1445,6 +1448,11 @@ function App({ initialModuleId }) {
     if (!authToken) {
       return undefined;
     }
+    const shouldEagerLoadGeneralSettings =
+      isSettingsPage ||
+      ['employee-management', 'user-management', 'tenant-management', 'leave-management', 'loan-records', 'payroll-management'].includes(
+        String(activeModuleId || '')
+      );
     let cancelled = false;
     const fetchGeneralSettings = async () => {
       try {
@@ -1471,12 +1479,15 @@ function App({ initialModuleId }) {
         }
       }
     };
-
-    fetchGeneralSettings();
+    const timeoutId = window.setTimeout(
+      fetchGeneralSettings,
+      shouldEagerLoadGeneralSettings || generalSettingsLoadedRef.current ? 0 : SETTINGS_FETCH_DELAY_MS
+    );
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, [authHeaders, authToken, mergeGeneralSettingsIntoAppSettings]);
+  }, [activeModuleId, authHeaders, authToken, isSettingsPage, mergeGeneralSettingsIntoAppSettings]);
 
   useEffect(() => {
     if (!authToken) {
@@ -1617,10 +1628,11 @@ function App({ initialModuleId }) {
       } catch (error) {
       }
     };
-    refreshSubscriptionStatus();
+    const initialTimeoutId = window.setTimeout(refreshSubscriptionStatus, SUBSCRIPTION_STATUS_FETCH_DELAY_MS);
     const intervalId = window.setInterval(refreshSubscriptionStatus, 60000);
     return () => {
       cancelled = true;
+      window.clearTimeout(initialTimeoutId);
       window.clearInterval(intervalId);
     };
   }, [currentUser?.tenantId]);
@@ -1779,6 +1791,9 @@ function App({ initialModuleId }) {
     if (employeeModuleLoadingRef.current) {
       return;
     }
+    const shouldEagerLoadEmployeeLookup = ['employee-management', 'attendance-time', 'leave-management', 'loan-records', 'payroll-management'].includes(
+      String(activeModuleId || '')
+    );
     const userCacheKey = String(currentUser?.id || currentUser?.username || currentUser?.employeeId || 'anonymous');
     const tenantCacheKey = String(currentUser?.tenantId || 'master');
     const warmCacheScope = `${tenantCacheKey}::${userCacheKey}::employee-management:lookup`;
@@ -1791,8 +1806,8 @@ function App({ initialModuleId }) {
       }
     }
     let cancelled = false;
-    employeeModuleLoadingRef.current = true;
     const loadEmployees = async () => {
+      employeeModuleLoadingRef.current = true;
       try {
         const response = await fetch(toApiUrl('http://localhost:8000/api/modules/employee-management?mode=lookup'), {
           headers: authHeaders,
@@ -1813,11 +1828,15 @@ function App({ initialModuleId }) {
         employeeModuleLoadingRef.current = false;
       }
     };
-    loadEmployees();
+    const timeoutId = window.setTimeout(
+      loadEmployees,
+      shouldEagerLoadEmployeeLookup ? 0 : EMPLOYEE_LOOKUP_DEFERRED_DELAY_MS
+    );
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, [allowedModulesByRole, authHeaders, currentUser, employeeRowsCount]);
+  }, [activeModuleId, allowedModulesByRole, authHeaders, currentUser, employeeRowsCount]);
   useEffect(() => {
     if (!authToken || !currentUser || activeModuleId !== 'loan-records') {
       return;
@@ -2166,7 +2185,7 @@ function App({ initialModuleId }) {
   ]);
 
   useEffect(() => {
-    if (!authToken) {
+    if (!authToken || (!isSettingsPage && activeModuleId !== 'monitoring-tracking')) {
       return undefined;
     }
     const fetchTrackingSettings = async () => {
@@ -2247,10 +2266,10 @@ function App({ initialModuleId }) {
     };
 
     fetchTrackingSettings();
-  }, [authHeaders, authToken]);
+  }, [activeModuleId, authHeaders, authToken, isSettingsPage]);
 
   useEffect(() => {
-    if (!authToken) {
+    if (!authToken || (!isSettingsPage && activeModuleId !== 'attendance-time')) {
       return undefined;
     }
     const fetchAttendanceSettings = async () => {
@@ -2309,7 +2328,7 @@ function App({ initialModuleId }) {
     };
 
     fetchAttendanceSettings();
-  }, [authHeaders, authToken]);
+  }, [activeModuleId, authHeaders, authToken, isSettingsPage]);
 
   useLayoutEffect(() => {
     attendanceSettingsDraftRef.current = appSettings;
@@ -2353,6 +2372,33 @@ function App({ initialModuleId }) {
         }
         const data = await response.json();
         if (data?.settings) {
+          const previousShiftNameById = new Map(
+            (Array.isArray(appSettings.shifts) ? appSettings.shifts : []).map((shift) => [
+              String(shift?.id || '').trim(),
+              String(shift?.name || '').trim(),
+            ])
+          );
+          const nextShiftNameById = new Map(
+            (Array.isArray(data.settings.shifts) ? data.settings.shifts : []).map((shift) => [
+              String(shift?.id || '').trim(),
+              String(shift?.name || '').trim(),
+            ])
+          );
+          const replacementShiftMap = new Map();
+          const nextShiftNames = new Set(
+            (Array.isArray(data.settings.shifts) ? data.settings.shifts : [])
+              .map((shift) => String(shift?.name || '').trim())
+              .filter(Boolean)
+          );
+          const fallbackShiftName = String(data?.settings?.shifts?.[0]?.name || '').trim();
+          previousShiftNameById.forEach((previousName, shiftId) => {
+            const nextName = String(nextShiftNameById.get(shiftId) || '').trim();
+            if (previousName && nextName && previousName !== nextName) {
+              replacementShiftMap.set(previousName, nextName);
+            } else if (!nextName && previousName && !nextShiftNames.has(previousName) && fallbackShiftName) {
+              replacementShiftMap.set(previousName, fallbackShiftName);
+            }
+          });
           setAppSettings((prev) => ({
             ...prev,
             ...buildAttendanceSettingsPayload({
@@ -2360,6 +2406,25 @@ function App({ initialModuleId }) {
               ...data.settings,
             }),
           }));
+          if (replacementShiftMap.size > 0) {
+            setEmployeeLookupRows((prev) =>
+              prev.map((row) => {
+                const currentShift = String(row.assignedShift || '').trim();
+                return replacementShiftMap.has(currentShift)
+                  ? { ...row, assignedShift: replacementShiftMap.get(currentShift) || currentShift }
+                  : row;
+              })
+            );
+            setModuleRowsState((prev) => ({
+              ...prev,
+              'employee-management': (prev['employee-management'] || []).map((row) => {
+                const currentShift = String(row.assignedShift || '').trim();
+                return replacementShiftMap.has(currentShift)
+                  ? { ...row, assignedShift: replacementShiftMap.get(currentShift) || currentShift }
+                  : row;
+              }),
+            }));
+          }
         }
         setAttendanceSettingsSavedMessage('Attendance settings saved to backend');
       } catch (error) {
@@ -2414,7 +2479,7 @@ function App({ initialModuleId }) {
   }, [attendanceHolidayCalendarModal.selectedDates, saveAttendanceSettings]);
 
   useEffect(() => {
-    if (!authToken) {
+    if (!authToken || !isSettingsPage) {
       return undefined;
     }
     const fetchMobileSettings = async () => {
@@ -2446,7 +2511,7 @@ function App({ initialModuleId }) {
     };
 
     fetchMobileSettings();
-  }, [authHeaders, authToken]);
+  }, [authHeaders, authToken, isSettingsPage]);
 
   useEffect(() => {
     if (!authToken || !currentUser || activeModuleId !== 'dashboard') {
@@ -5500,6 +5565,11 @@ function App({ initialModuleId }) {
         ...existingEmployee,
         assignedShift: normalizedShiftName,
       };
+      setEmployeeLookupRows((prev) =>
+        prev.map((row) =>
+          String(row.id || '').trim() === normalizedEmployeeId ? { ...row, assignedShift: normalizedShiftName } : row
+        )
+      );
       setModuleRowsState((prev) => ({
         ...prev,
         'employee-management': (prev['employee-management'] || []).map((row) =>
@@ -5520,6 +5590,10 @@ function App({ initialModuleId }) {
         }
         const data = await response.json();
         const saved = data?.record || nextRow;
+        setEmployeeLookupRows((prev) => {
+          const withoutSaved = prev.filter((row) => String(row.id || '').trim() !== normalizedEmployeeId);
+          return [saved, ...withoutSaved];
+        });
         setModuleRowsState((prev) => ({
           ...prev,
           'employee-management': (prev['employee-management'] || []).map((row) =>
@@ -5529,6 +5603,9 @@ function App({ initialModuleId }) {
         showToast(`Shift updated for ${saved.fullName || normalizedEmployeeId}.`, 'success');
         return true;
       } catch (error) {
+        setEmployeeLookupRows((prev) =>
+          prev.map((row) => (String(row.id || '').trim() === normalizedEmployeeId ? existingEmployee : row))
+        );
         setModuleRowsState((prev) => ({
           ...prev,
           'employee-management': (prev['employee-management'] || []).map((row) =>
