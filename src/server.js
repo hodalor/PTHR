@@ -2062,7 +2062,7 @@ function toMinutesFromClock(value) {
 }
 
 function getShiftScheduleForAttendanceRecord(source, employee, settings) {
-  const shiftName = String(source?.shift || employee?.assignedShift || settings?.shifts?.[0]?.name || 'Default').trim();
+  const shiftName = String(employee?.assignedShift || source?.shift || settings?.shifts?.[0]?.name || 'Default').trim();
   const shiftConfig =
     settings?.shifts?.find(
       (shift) => String(shift?.name || '').trim().toLowerCase() === shiftName.toLowerCase()
