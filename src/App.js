@@ -24,6 +24,15 @@ import { toNumberValue } from './utils/number';
 import { useModuleAdapter } from './modules/adapters/useModuleAdapter';
 import { getModuleEnhancers } from './modules/adapters/moduleEnhancers';
 import { getEmployeePayrollProfile } from './utils/payrollProfile';
+import { readFileForStorage } from './utils/fileUpload';
+import {
+  ATTENDANCE_DAY_RULE_META,
+  buildDefaultShiftDayRules,
+  getAttendanceDayRuleKey,
+  normalizeShiftDayRules,
+  parseHolidayDateList,
+} from './utils/attendanceRules';
+import { readWarmCache, writeWarmCache } from './utils/warmCache';
 
 const getDepartmentPrefix = (department, availableDepartments) => {
   const normalizedDepartment = String(department || '').trim().toLowerCase();
@@ -56,40 +65,6 @@ const PHONE_FIELD_KEYS = new Set([
 
 const keepDigitsOnly = (value) => String(value || '').replace(/\D+/g, '');
 
-const readFileAsDataUrl = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error(`Unable to read ${String(file?.name || 'file')}`));
-    reader.readAsDataURL(file);
-  });
-
-const readFileForStorage = async (file) => {
-  if (!file?.type?.startsWith('image/')) {
-    return readFileAsDataUrl(file);
-  }
-  const sourceDataUrl = await readFileAsDataUrl(file);
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const maxEdge = 1400;
-      const scale = Math.min(1, maxEdge / Math.max(image.width || 1, image.height || 1));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round((image.width || 1) * scale));
-      canvas.height = Math.max(1, Math.round((image.height || 1) * scale));
-      const context = canvas.getContext('2d');
-      if (!context) {
-        resolve(sourceDataUrl);
-        return;
-      }
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
-    };
-    image.onerror = () => resolve(sourceDataUrl);
-    image.src = sourceDataUrl;
-  });
-};
-
 const shouldDisplayField = (field, currentValues) => {
   if (!field.showWhen) {
     return true;
@@ -104,64 +79,10 @@ const googleTileBaseUrl = googleMapsTileKey
 
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
-const SESSION_WARM_CACHE_PREFIX = 'pthr:warm-cache';
-const SESSION_WARM_CACHE_TTL_MS = 1000 * 60 * 5;
 const SETTINGS_FETCH_DELAY_MS = 1200;
 const SUBSCRIPTION_STATUS_FETCH_DELAY_MS = 2500;
 const EMPLOYEE_LOOKUP_DEFERRED_DELAY_MS = 900;
 
-const buildWarmCacheStorageKey = (scope) => `${SESSION_WARM_CACHE_PREFIX}:${scope}`;
-
-const readWarmCache = (scope) => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  try {
-    const raw = window.sessionStorage.getItem(buildWarmCacheStorageKey(scope));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return null;
-    }
-    if (Number(parsed.expiresAt || 0) <= Date.now()) {
-      window.sessionStorage.removeItem(buildWarmCacheStorageKey(scope));
-      return null;
-    }
-    return parsed;
-  } catch (_error) {
-    return null;
-  }
-};
-
-const writeWarmCache = (scope, payload, ttlMs = SESSION_WARM_CACHE_TTL_MS) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    window.sessionStorage.setItem(
-      buildWarmCacheStorageKey(scope),
-      JSON.stringify({
-        payload,
-        fetchedAt: Date.now(),
-        expiresAt: Date.now() + ttlMs,
-      })
-    );
-  } catch (_error) {
-  }
-};
-
-const ATTENDANCE_DAY_RULE_META = [
-  { key: 'monday', label: 'Mon', defaultEnabled: true },
-  { key: 'tuesday', label: 'Tue', defaultEnabled: true },
-  { key: 'wednesday', label: 'Wed', defaultEnabled: true },
-  { key: 'thursday', label: 'Thu', defaultEnabled: true },
-  { key: 'friday', label: 'Fri', defaultEnabled: true },
-  { key: 'saturday', label: 'Sat', defaultEnabled: false },
-  { key: 'sunday', label: 'Sun', defaultEnabled: false },
-  { key: 'holiday', label: 'Holiday', defaultEnabled: false },
-];
 const ATTENDANCE_PERMISSION_SCOPE_OPTIONS = [
   { value: 'all', label: 'All Attendance Deductions' },
   { value: 'late-only', label: 'Late Deduction Only' },
@@ -171,16 +92,6 @@ const ATTENDANCE_PERMISSION_SCOPE_OPTIONS = [
 ];
 const ATTENDANCE_CALENDAR_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const ATTENDANCE_CALENDAR_WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-const parseHolidayDateList = (value) => {
-  if (Array.isArray(value)) {
-    return value.filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item || '').trim()));
-  }
-  return String(value || '')
-    .split(/[\s,]+/)
-    .map((item) => String(item || '').trim())
-    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
-};
 
 const buildAttendanceCalendarMonthGrid = (year, monthIndex) => {
   const firstDay = new Date(year, monthIndex, 1);
@@ -207,60 +118,6 @@ const describeAttendanceShiftWorkingDays = (shift) => {
     .join(', ');
   const holidayRule = normalizedDayRules.holiday;
   return `${workingDays || 'No weekday rules'} • Holiday ${holidayRule?.enabled ? 'Working' : 'Off'}`;
-};
-
-const buildDefaultShiftDayRules = (base = {}) =>
-  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
-    accumulator[meta.key] = {
-      enabled: meta.defaultEnabled,
-      reportTime: String(base.reportTime || '08:00').trim(),
-      shiftEnd: String(base.shiftEnd || '17:00').trim(),
-      graceInMinutes: Math.max(0, Number(base.graceInMinutes) || 0),
-      graceOutMinutes: Math.max(0, Number(base.graceOutMinutes) || 0),
-      overtimeEnabled: Boolean(base.overtimeEnabled),
-      overtimeStartAfterMinutes: Math.max(0, Number(base.overtimeStartAfterMinutes) || 0),
-      overtimePayPerMinute: Math.max(0, Number(base.overtimePayPerMinute) || 0),
-    };
-    return accumulator;
-  }, {});
-
-const normalizeShiftDayRules = (dayRules, base = {}) =>
-  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
-    const source = dayRules?.[meta.key] || {};
-    accumulator[meta.key] = {
-      enabled: source.enabled === undefined ? meta.defaultEnabled : Boolean(source.enabled),
-      reportTime: String(source.reportTime || base.reportTime || '08:00').trim(),
-      shiftEnd: String(source.shiftEnd || base.shiftEnd || '17:00').trim(),
-      graceInMinutes:
-        source.graceInMinutes === undefined
-          ? Math.max(0, Number(base.graceInMinutes) || 0)
-          : Math.max(0, Number(source.graceInMinutes) || 0),
-      graceOutMinutes:
-        source.graceOutMinutes === undefined
-          ? Math.max(0, Number(base.graceOutMinutes) || 0)
-          : Math.max(0, Number(source.graceOutMinutes) || 0),
-      overtimeEnabled:
-        source.overtimeEnabled === undefined ? Boolean(base.overtimeEnabled) : Boolean(source.overtimeEnabled),
-      overtimeStartAfterMinutes:
-        source.overtimeStartAfterMinutes === undefined
-          ? Math.max(0, Number(base.overtimeStartAfterMinutes) || 0)
-          : Math.max(0, Number(source.overtimeStartAfterMinutes) || 0),
-      overtimePayPerMinute:
-        source.overtimePayPerMinute === undefined
-          ? Math.max(0, Number(base.overtimePayPerMinute) || 0)
-          : Math.max(0, Number(source.overtimePayPerMinute) || 0),
-    };
-    return accumulator;
-  }, {});
-
-const getAttendanceDayRuleKey = (dateValue, holidayDates = []) => {
-  const normalizedDate = String(dateValue || '').trim();
-  if (normalizedDate && holidayDates.includes(normalizedDate)) {
-    return 'holiday';
-  }
-  const parsed = parseIsoDateValue(normalizedDate);
-  const weekdayIndex = parsed?.getDay?.() ?? 1;
-  return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][weekdayIndex] || 'monday';
 };
 
 const isPermissionLeaveRecord = (row) => String(row?.type || '').trim().toLowerCase() === 'permission';
@@ -4215,8 +4072,8 @@ function App({ initialModuleId }) {
   const getShiftScheduleForAttendance = useCallback(
     ({ attendanceRow, employee }) => {
       const shiftName =
-        String(attendanceRow?.shift || '').trim() ||
         String(employee?.assignedShift || '').trim() ||
+        String(attendanceRow?.shift || '').trim() ||
         attendanceShiftOptions[0]?.name ||
         'Default';
       const shiftConfig = resolveShiftConfig(shiftName);

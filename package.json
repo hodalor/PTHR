@@ -17,6 +17,7 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "lint": "eslint src --max-warnings=0",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -24,6 +25,21 @@
       "react-app",
       "react-app/jest"
     ]
+  },
+  "jest": {
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "json-summary"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 13,
+        "functions": 15,
+        "lines": 25,
+        "statements": 24
+      }
+    }
   },
   "browserslist": {
     "production": [
@@ -36,9 +52,5 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-  },
-  "devDependencies": {
-    "csso": "^4.2.0",
-    "jsonpath": "^1.1.1"
   }
 }

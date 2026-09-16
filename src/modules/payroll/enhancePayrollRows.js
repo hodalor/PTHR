@@ -1,82 +1,13 @@
 import { toNumberValue } from '../../utils/number';
 import { resolveEmployeeKey } from '../../utils/employeeSearch';
+import {
+  buildDefaultShiftDayRules,
+  getAttendanceDayRuleKey,
+  normalizeShiftDayRules,
+  parseHolidayDateList,
+} from '../../utils/attendanceRules';
 
-const ATTENDANCE_DAY_RULE_META = [
-  { key: 'monday', defaultEnabled: true },
-  { key: 'tuesday', defaultEnabled: true },
-  { key: 'wednesday', defaultEnabled: true },
-  { key: 'thursday', defaultEnabled: true },
-  { key: 'friday', defaultEnabled: true },
-  { key: 'saturday', defaultEnabled: false },
-  { key: 'sunday', defaultEnabled: false },
-  { key: 'holiday', defaultEnabled: false },
-];
-
-const parseHolidayDateList = (value) => {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item || '').trim())
-      .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
-  }
-  return String(value || '')
-    .split(/[\s,]+/)
-    .map((item) => String(item || '').trim())
-    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
-};
-
-const buildDefaultShiftDayRules = (base = {}) =>
-  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
-    accumulator[meta.key] = {
-      enabled: meta.defaultEnabled,
-      reportTime: String(base.reportTime || '08:00').trim(),
-      shiftEnd: String(base.shiftEnd || '17:00').trim(),
-      graceInMinutes: Math.max(0, Number(base.graceInMinutes) || 0),
-      graceOutMinutes: Math.max(0, Number(base.graceOutMinutes) || 0),
-      overtimeEnabled: Boolean(base.overtimeEnabled),
-      overtimeStartAfterMinutes: Math.max(0, Number(base.overtimeStartAfterMinutes) || 0),
-      overtimePayPerMinute: Math.max(0, Number(base.overtimePayPerMinute) || 0),
-    };
-    return accumulator;
-  }, {});
-
-const normalizeShiftDayRules = (dayRules, base = {}) =>
-  ATTENDANCE_DAY_RULE_META.reduce((accumulator, meta) => {
-    const source = dayRules?.[meta.key] || {};
-    accumulator[meta.key] = {
-      enabled: source.enabled === undefined ? meta.defaultEnabled : Boolean(source.enabled),
-      reportTime: String(source.reportTime || base.reportTime || '08:00').trim(),
-      shiftEnd: String(source.shiftEnd || base.shiftEnd || '17:00').trim(),
-      graceInMinutes:
-        source.graceInMinutes === undefined
-          ? Math.max(0, Number(base.graceInMinutes) || 0)
-          : Math.max(0, Number(source.graceInMinutes) || 0),
-      graceOutMinutes:
-        source.graceOutMinutes === undefined
-          ? Math.max(0, Number(base.graceOutMinutes) || 0)
-          : Math.max(0, Number(source.graceOutMinutes) || 0),
-      overtimeEnabled:
-        source.overtimeEnabled === undefined ? Boolean(base.overtimeEnabled) : Boolean(source.overtimeEnabled),
-      overtimeStartAfterMinutes:
-        source.overtimeStartAfterMinutes === undefined
-          ? Math.max(0, Number(base.overtimeStartAfterMinutes) || 0)
-          : Math.max(0, Number(source.overtimeStartAfterMinutes) || 0),
-      overtimePayPerMinute:
-        source.overtimePayPerMinute === undefined
-          ? Math.max(0, Number(base.overtimePayPerMinute) || 0)
-          : Math.max(0, Number(source.overtimePayPerMinute) || 0),
-    };
-    return accumulator;
-  }, {});
-
-const getAttendanceDayRuleKey = (dateValue, holidayDates = []) => {
-  const normalizedDate = String(dateValue || '').trim();
-  if (normalizedDate && holidayDates.includes(normalizedDate)) {
-    return 'holiday';
-  }
-  const parsed = new Date(`${normalizedDate}T00:00:00`);
-  const weekdayIndex = Number.isNaN(parsed.getTime()) ? 1 : parsed.getDay();
-  return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][weekdayIndex] || 'monday';
-};
+export { getAttendanceDayRuleKey, normalizeShiftDayRules } from '../../utils/attendanceRules';
 
 const isPermissionLeaveRecord = (row) => String(row?.type || '').trim().toLowerCase() === 'permission';
 

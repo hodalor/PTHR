@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
+import ErrorBoundary from './components/ErrorBoundary';
+import { captureException } from './utils/errorTracking';
+import { logger } from './utils/logger';
 
 const originalFetch = window.fetch.bind(window);
 window.fetch = async (input, init = {}) => {
@@ -21,6 +24,7 @@ window.fetch = async (input, init = {}) => {
       headers,
     });
   } catch (error) {
+    captureException(error, { source: 'window.fetch-wrapper' });
     return originalFetch(input, init);
   }
 };
@@ -28,7 +32,9 @@ window.fetch = async (input, init = {}) => {
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 );
 
@@ -39,7 +45,9 @@ const isLocalhost =
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     if (process.env.NODE_ENV === 'production' && !isLocalhost) {
-      navigator.serviceWorker.register(`${process.env.PUBLIC_URL || ''}/sw.js`).catch(() => {});
+      navigator.serviceWorker
+        .register(`${process.env.PUBLIC_URL || ''}/sw.js`)
+        .catch((error) => captureException(error, { source: 'service-worker-register' }));
       return;
     }
 
@@ -47,13 +55,13 @@ if ('serviceWorker' in navigator) {
     // intercept CRA hot-reload requests and make the page look like it is stuck refreshing.
     navigator.serviceWorker.getRegistrations().then((registrations) => {
       registrations.forEach((registration) => {
-        registration.unregister().catch(() => {});
+        registration.unregister().catch((error) => captureException(error, { source: 'service-worker-unregister' }));
       });
     });
     if ('caches' in window) {
       caches.keys().then((keys) => {
         keys.forEach((key) => {
-          caches.delete(key).catch(() => {});
+          caches.delete(key).catch((error) => captureException(error, { source: 'cache-delete', key }));
         });
       });
     }
@@ -63,4 +71,6 @@ if ('serviceWorker' in navigator) {
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))
 // or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
-reportWebVitals();
+reportWebVitals((metric) => {
+  logger.debug('web-vitals', metric);
+});

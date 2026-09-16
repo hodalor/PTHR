@@ -3,3 +3,32 @@
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
+
+const createMatchMediaResult = (query) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addListener: jest.fn(),
+  removeListener: jest.fn(),
+  addEventListener: jest.fn(),
+  removeEventListener: jest.fn(),
+  dispatchEvent: jest.fn(),
+});
+
+const installMatchMediaMock = () => {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    configurable: true,
+    value: jest.fn().mockImplementation((query) => ({
+      ...createMatchMediaResult(query),
+    })),
+  });
+};
+
+installMatchMediaMock();
+
+beforeEach(() => {
+  installMatchMediaMock();
+  window.localStorage.clear();
+  jest.clearAllMocks();
+});

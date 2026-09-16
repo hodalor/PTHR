@@ -1,9 +1,28 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 
-test('renders login screen when not authenticated', () => {
+const createJsonResponse = (payload) =>
+  Promise.resolve({
+    ok: true,
+    json: async () => payload,
+  });
+
+beforeEach(() => {
+  global.fetch = jest.fn((url) => {
+    if (typeof url === 'string' && url.endsWith('/health')) {
+      return createJsonResponse({ status: 'ok', mongo: 'connected' });
+    }
+
+    return createJsonResponse({});
+  });
+});
+
+test('renders login screen when not authenticated', async () => {
   render(<App />);
   expect(screen.getByText(/sign in to continue/i)).toBeInTheDocument();
+  await waitFor(() => {
+    expect(global.fetch).toHaveBeenCalled();
+  });
 });
 
 const getTodayIsoDateForTest = () => {
@@ -66,24 +85,15 @@ test('employee sees only own leave requests', async () => {
 
   global.fetch = jest.fn((url) => {
     if (typeof url === 'string' && url.endsWith('/health')) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ status: 'ok', mongo: 'connected' }),
-      });
+      return createJsonResponse({ status: 'ok', mongo: 'connected' });
     }
     if (
       typeof url === 'string' &&
       url.endsWith('/api/modules/leave-management')
     ) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ records: leaveRecords }),
-      });
+      return createJsonResponse({ records: leaveRecords });
     }
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({}),
-    });
+    return createJsonResponse({});
   });
 
   render(<App initialModuleId="leave-management" />);
@@ -135,24 +145,28 @@ test('employee sees only own attendance logs for today', async () => {
 
   global.fetch = jest.fn((url) => {
     if (typeof url === 'string' && url.endsWith('/health')) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ status: 'ok', mongo: 'connected' }),
-      });
+      return createJsonResponse({ status: 'ok', mongo: 'connected' });
     }
     if (
       typeof url === 'string' &&
-      url.endsWith('/api/modules/attendance-time')
+      url.includes('/api/modules/attendance-time?') &&
+      url.includes('mode=clock-page')
     ) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ records: attendanceRecords }),
+      return createJsonResponse({
+        records: attendanceRecords.filter((row) => row.employeeId === employeeUser.employeeId),
+        meta: {
+          totalRows: 1,
+          totalPages: 1,
+          page: 1,
+          pageSize: 25,
+          lateCount: 0,
+          onTimeCount: 1,
+          totalLateMinutes: 0,
+          totalDeductionAmount: 0,
+        },
       });
     }
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({}),
-    });
+    return createJsonResponse({});
   });
 
   render(<App initialModuleId="attendance-time" />);
@@ -202,24 +216,15 @@ test('employee sees only own loan records', async () => {
 
   global.fetch = jest.fn((url) => {
     if (typeof url === 'string' && url.endsWith('/health')) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ status: 'ok', mongo: 'connected' }),
-      });
+      return createJsonResponse({ status: 'ok', mongo: 'connected' });
     }
     if (
       typeof url === 'string' &&
       url.endsWith('/api/modules/loan-records')
     ) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ records: loanRecords }),
-      });
+      return createJsonResponse({ records: loanRecords });
     }
-    return Promise.resolve({
-      ok: true,
-      json: async () => ({}),
-    });
+    return createJsonResponse({});
   });
 
   render(<App initialModuleId="loan-records" />);
