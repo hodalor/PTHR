@@ -345,6 +345,11 @@ function toNumberValue(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 function hasAttendanceClockIn(record) {
   if (!record) {
     return false;
@@ -1938,18 +1943,18 @@ function normalizeGeneralSettings(payload) {
       napsaMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.napsaMode || ''))
         ? String(source.statutoryRules.napsaMode)
         : defaultGeneralSettings.statutoryRules.napsaMode,
-      napsaValue: Math.max(0, Number(source?.statutoryRules?.napsaValue) || defaultGeneralSettings.statutoryRules.napsaValue),
+      napsaValue: Math.max(0, toFiniteNumber(source?.statutoryRules?.napsaValue, defaultGeneralSettings.statutoryRules.napsaValue)),
       nhimaMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.nhimaMode || ''))
         ? String(source.statutoryRules.nhimaMode)
         : defaultGeneralSettings.statutoryRules.nhimaMode,
-      nhimaValue: Math.max(0, Number(source?.statutoryRules?.nhimaValue) || defaultGeneralSettings.statutoryRules.nhimaValue),
+      nhimaValue: Math.max(0, toFiniteNumber(source?.statutoryRules?.nhimaValue, defaultGeneralSettings.statutoryRules.nhimaValue)),
       taxMode: ['percent-basic', 'percent-gross', 'fixed'].includes(String(source?.statutoryRules?.taxMode || ''))
         ? String(source.statutoryRules.taxMode)
         : defaultGeneralSettings.statutoryRules.taxMode,
-      taxValue: Math.max(0, Number(source?.statutoryRules?.taxValue) || defaultGeneralSettings.statutoryRules.taxValue),
+      taxValue: Math.max(0, toFiniteNumber(source?.statutoryRules?.taxValue, defaultGeneralSettings.statutoryRules.taxValue)),
       taxMinAmount: Math.max(
         0,
-        Number(source?.statutoryRules?.taxMinAmount) || defaultGeneralSettings.statutoryRules.taxMinAmount
+        toFiniteNumber(source?.statutoryRules?.taxMinAmount, defaultGeneralSettings.statutoryRules.taxMinAmount)
       ),
     },
     loanRules: {
