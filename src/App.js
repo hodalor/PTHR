@@ -735,10 +735,15 @@ function App({ initialModuleId }) {
   const [mobileSettingsSaving, setMobileSettingsSaving] = useState(false);
   const [mobileSettingsSavedMessage, setMobileSettingsSavedMessage] = useState('');
   const [dashboardDate, setDashboardDate] = useState(getTodayIsoDate());
+  const [dashboardMonthFrom, setDashboardMonthFrom] = useState(getTodayIsoDate().slice(0, 7));
+  const [dashboardMonthTo, setDashboardMonthTo] = useState(getTodayIsoDate().slice(0, 7));
+  const [dashboardEmployeeId, setDashboardEmployeeId] = useState('');
   const [dashboardRefreshCounter, setDashboardRefreshCounter] = useState(0);
   const [dashboardSummary, setDashboardSummary] = useState(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState('');
+  const [payrollAutoGenerateMessage, setPayrollAutoGenerateMessage] = useState('');
+  const [payrollAutoGenerateSaving, setPayrollAutoGenerateSaving] = useState(false);
   const [attendanceSettingsLoading, setAttendanceSettingsLoading] = useState(false);
   const [attendanceSettingsError, setAttendanceSettingsError] = useState('');
   const [attendanceSettingsSaving, setAttendanceSettingsSaving] = useState(false);
@@ -814,6 +819,12 @@ function App({ initialModuleId }) {
       },
     ],
     payrollWorkingDays: 26,
+    payrollAutoGenerate: {
+      enabled: false,
+      periodStartDay: 1,
+      periodEndDay: 30,
+      runHourUtc: 1,
+    },
     attendanceCalculationMode: 'auto',
     attendanceFixedDeductionPerMinute: 0.128,
     attendanceFixedScope: 'all',
@@ -1233,6 +1244,12 @@ function App({ initialModuleId }) {
       loanRules: {
         ...(next.loanRules || {}),
       },
+      payrollAutoGenerate: {
+        enabled: Boolean(next?.payrollAutoGenerate?.enabled),
+        periodStartDay: Math.max(1, Math.min(31, Number(next?.payrollAutoGenerate?.periodStartDay) || 1)),
+        periodEndDay: Math.max(1, Math.min(31, Number(next?.payrollAutoGenerate?.periodEndDay) || 30)),
+        runHourUtc: Math.max(0, Math.min(23, Number(next?.payrollAutoGenerate?.runHourUtc) || 1)),
+      },
       idCardDesign: {
         ...(next.idCardDesign || {}),
       },
@@ -1255,6 +1272,14 @@ function App({ initialModuleId }) {
       loanRules: {
         ...prev.loanRules,
         ...(next.loanRules || {}),
+      },
+      payrollAutoGenerate: {
+        enabled: false,
+        periodStartDay: 1,
+        periodEndDay: 30,
+        runHourUtc: 1,
+        ...(prev.payrollAutoGenerate || {}),
+        ...(next.payrollAutoGenerate || {}),
       },
       idCardDesign: {
         ...prev.idCardDesign,
@@ -2374,7 +2399,7 @@ function App({ initialModuleId }) {
     if (!authToken || !currentUser || activeModuleId !== 'dashboard') {
       return undefined;
     }
-    const dashboardCacheKey = `${String(currentUser?.tenantId || 'master')}::${String(currentUser?.id || currentUser?.username || '')}::${dashboardDate}`;
+    const dashboardCacheKey = `${String(currentUser?.tenantId || 'master')}::${String(currentUser?.id || currentUser?.username || '')}::${dashboardDate}::${dashboardMonthFrom}::${dashboardMonthTo}::${dashboardEmployeeId}`;
     const cachedSummary = dashboardSummaryFetchMetaRef.current[dashboardCacheKey];
     const warmCachedSummary = readWarmCache(`dashboard::${dashboardCacheKey}`);
     const effectiveCachedSummary = cachedSummary || (warmCachedSummary?.payload
@@ -2403,8 +2428,16 @@ function App({ initialModuleId }) {
       try {
         setDashboardLoading(true);
         setDashboardError('');
+        const params = new URLSearchParams({
+          date: dashboardDate,
+          monthFrom: dashboardMonthFrom,
+          monthTo: dashboardMonthTo,
+        });
+        if (dashboardEmployeeId) {
+          params.set('employeeId', dashboardEmployeeId);
+        }
         const response = await fetch(
-          toApiUrl(`http://localhost:8000/api/dashboard/summary?date=${encodeURIComponent(dashboardDate)}`),
+          toApiUrl(`http://localhost:8000/api/dashboard/summary?${params.toString()}`),
           {
             headers: authHeaders,
           }
@@ -2435,7 +2468,17 @@ function App({ initialModuleId }) {
     return () => {
       cancelled = true;
     };
-  }, [activeModuleId, authHeaders, authToken, currentUser, dashboardDate, dashboardRefreshCounter]);
+  }, [
+    activeModuleId,
+    authHeaders,
+    authToken,
+    currentUser,
+    dashboardDate,
+    dashboardEmployeeId,
+    dashboardMonthFrom,
+    dashboardMonthTo,
+    dashboardRefreshCounter,
+  ]);
 
   const handleSaveTrackingSettings = async () => {
     try {
@@ -9176,6 +9219,114 @@ function App({ initialModuleId }) {
                         }
                       />
                     </label>
+                    <h4 className="settings-subtitle">Automatic Payroll Period</h4>
+                    <p style={{ gridColumn: '1 / -1', margin: 0, color: '#607098', fontSize: 13 }}>
+                      Set the company payroll cycle (for example 1→30 or 26→25). On the end day the system
+                      auto-calculates and creates draft payroll rows. You can still edit any generated payroll.
+                    </p>
+                    <label>
+                      <span>Enable Auto Generate</span>
+                      <select
+                        className="filter-select"
+                        value={appSettings.payrollAutoGenerate?.enabled ? 'yes' : 'no'}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            payrollAutoGenerate: {
+                              ...(prev.payrollAutoGenerate || {}),
+                              enabled: event.target.value === 'yes',
+                            },
+                          }))
+                        }
+                      >
+                        <option value="no">Disabled</option>
+                        <option value="yes">Enabled</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Period Start Day</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={appSettings.payrollAutoGenerate?.periodStartDay ?? 1}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            payrollAutoGenerate: {
+                              ...(prev.payrollAutoGenerate || {}),
+                              periodStartDay: Math.max(1, Math.min(31, Number(event.target.value) || 1)),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Period End Day (generate on this day)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={appSettings.payrollAutoGenerate?.periodEndDay ?? 30}
+                        onChange={(event) =>
+                          setAppSettings((prev) => ({
+                            ...prev,
+                            payrollAutoGenerate: {
+                              ...(prev.payrollAutoGenerate || {}),
+                              periodEndDay: Math.max(1, Math.min(31, Number(event.target.value) || 30)),
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="attendance-ops-actions" style={{ gridColumn: '1 / -1' }}>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        disabled={payrollAutoGenerateSaving}
+                        onClick={async () => {
+                          setPayrollAutoGenerateMessage('');
+                          setPayrollAutoGenerateSaving(true);
+                          try {
+                            const saved = await saveGeneralSettings(appSettings, {
+                              successMessage: 'Payroll auto-generate settings saved',
+                            });
+                            if (!saved) {
+                              throw new Error('Unable to save settings');
+                            }
+                            const response = await fetch(toApiUrl('http://localhost:8000/api/payroll/auto-generate'), {
+                              method: 'POST',
+                              headers: jsonAuthHeaders,
+                              body: JSON.stringify({ force: true }),
+                            });
+                            const data = await response.json().catch(() => ({}));
+                            if (!response.ok) {
+                              throw new Error(data?.error || 'Failed to run payroll auto-generate');
+                            }
+                            if (data.skipped) {
+                              setPayrollAutoGenerateMessage(
+                                data.reason || 'Auto-generate skipped (enable settings and ensure period end day matches).'
+                              );
+                            } else {
+                              setPayrollAutoGenerateMessage(
+                                `Generated ${Number(data.created || 0)} new draft payroll row(s); skipped ${Number(
+                                  data.skippedExisting || 0
+                                )} existing. Period ${data?.period?.periodStart || ''} → ${data?.period?.periodEnd || ''}.`
+                              );
+                            }
+                          } catch (error) {
+                            setPayrollAutoGenerateMessage(
+                              error instanceof Error ? error.message : 'Unable to run payroll auto-generate'
+                            );
+                          } finally {
+                            setPayrollAutoGenerateSaving(false);
+                          }
+                        }}
+                      >
+                        {payrollAutoGenerateSaving ? 'Running...' : 'Save & Generate Now'}
+                      </button>
+                      {payrollAutoGenerateMessage ? <span className="settings-action-status">{payrollAutoGenerateMessage}</span> : null}
+                    </div>
                     <label>
                       <span>NAPSA Rule</span>
                       <div className="inline-field">
@@ -9872,6 +10023,12 @@ function App({ initialModuleId }) {
                 error={dashboardError}
                 dashboardDate={dashboardDate}
                 onDateChange={setDashboardDate}
+                monthFrom={dashboardMonthFrom}
+                monthTo={dashboardMonthTo}
+                onMonthFromChange={setDashboardMonthFrom}
+                onMonthToChange={setDashboardMonthTo}
+                selectedEmployeeId={dashboardEmployeeId}
+                onSelectedEmployeeChange={setDashboardEmployeeId}
                 onRefresh={() => setDashboardRefreshCounter((prev) => prev + 1)}
                 currency={appSettings.defaultCurrency}
               />
