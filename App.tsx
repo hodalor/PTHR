@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import { ActivityIndicator, SafeAreaView, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { ForgotPasswordScreen } from './src/screens/ForgotPasswordScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { TrackingScreen } from './src/screens/TrackingScreen';
 import { colors } from './src/theme';
 
 const AppContent = () => {
   const { authReady, session } = useAuth();
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   if (!authReady) {
     return (
@@ -16,7 +19,15 @@ const AppContent = () => {
     );
   }
 
-  return <>{session ? <TrackingScreen /> : <LoginScreen />}</>;
+  if (session) {
+    return <TrackingScreen />;
+  }
+
+  if (showForgotPassword) {
+    return <ForgotPasswordScreen onBackToLogin={() => setShowForgotPassword(false)} />;
+  }
+
+  return <LoginScreen onForgotPassword={() => setShowForgotPassword(true)} />;
 };
 
 export default function App() {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useTrackingController } from '../hooks/useTrackingController';
 import { StatCard } from '../components/StatCard';
@@ -16,7 +16,15 @@ import {
   submitLeaveRequest,
   submitLoanRequest,
 } from '../services/mobileModules';
-import { AttendanceRecord, EmployeeDashboardSummary, EmployeeProfile, LeaveRecord, LoanRecord, MobileSettings } from '../types/app';
+import {
+  AttendanceRecord,
+  DeductionItem,
+  EmployeeDashboardSummary,
+  EmployeeProfile,
+  LeaveRecord,
+  LoanRecord,
+  MobileSettings,
+} from '../types/app';
 
 const formatCoordinate = (value: number | undefined) => (typeof value === 'number' ? value.toFixed(6) : '—');
 const formatMoney = (value: number | undefined, currency = 'USD') =>
@@ -32,6 +40,96 @@ const moduleLabels: Record<string, string> = {
   'monitoring-tracking': 'Tracking',
 };
 const todayIso = () => new Date().toISOString().slice(0, 10);
+const currentMonthValue = () => new Date().toISOString().slice(0, 7);
+const toMoneyNumber = (value: string | number | undefined) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+const buildRecentMonthOptions = (count = 12) => {
+  const options: string[] = [];
+  const cursor = new Date();
+  cursor.setDate(1);
+  for (let index = 0; index < count; index += 1) {
+    const year = cursor.getFullYear();
+    const month = String(cursor.getMonth() + 1).padStart(2, '0');
+    options.push(`${year}-${month}`);
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+  return options;
+};
+const countInclusiveMonths = (fromMonth: string, toMonth: string) => {
+  const fromMatch = String(fromMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const toMatch = String(toMonth || '').match(/^(\d{4})-(\d{2})$/);
+  if (!fromMatch || !toMatch) {
+    return 1;
+  }
+  const fromIndex = Number(fromMatch[1]) * 12 + Number(fromMatch[2]);
+  const toIndex = Number(toMatch[1]) * 12 + Number(toMatch[2]);
+  return Math.max(1, toIndex - fromIndex + 1);
+};
+const formatMonthLabel = (monthValue: string) => {
+  const match = String(monthValue || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return monthValue;
+  }
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, 1);
+  return date.toLocaleString(undefined, { month: 'short', year: 'numeric' });
+};
+const getOpenClockInCount = (row?: AttendanceRecord | null) => {
+  if (!row) {
+    return 0;
+  }
+  if (Array.isArray(row.clockings) && row.clockings.length > 0) {
+    return row.clockings.reduce((openCount, clocking) => {
+      if (clocking?.mode === 'clock-in') {
+        return openCount + 1;
+      }
+      if (clocking?.mode === 'clock-out') {
+        return Math.max(0, openCount - 1);
+      }
+      return openCount;
+    }, 0);
+  }
+  return row.checkIn && !row.checkOut ? 1 : 0;
+};
+const buildDeductionItemsForMonths = (rows: AttendanceRecord[], fromMonth: string, toMonth: string): DeductionItem[] => {
+  const start = String(fromMonth || '').slice(0, 7);
+  const end = String(toMonth || '').slice(0, 7);
+  return rows
+    .filter((row) => {
+      const month = String(row.date || '').slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return false;
+      }
+      if (start && month < start) {
+        return false;
+      }
+      if (end && month > end) {
+        return false;
+      }
+      return toMoneyNumber(row.deductionAmount) > 0 || toMoneyNumber(row.lateMinutes) > 0;
+    })
+    .map((row) => {
+      const amount = toMoneyNumber(row.deductionAmount);
+      const lateMinutes = toMoneyNumber(row.lateMinutes);
+      const checkInTime = String(row.checkIn || '').trim();
+      const clockInTime =
+        checkInTime ||
+        String(row.clockings?.find((clocking) => clocking.mode === 'clock-in')?.time || '').trim() ||
+        '—';
+      return {
+        id: String(row.id || `${row.date}-${clockInTime}`),
+        type: 'lateness',
+        label: lateMinutes > 0 || amount > 0 ? 'Lateness' : String(row.status || 'Deduction'),
+        date: String(row.date || ''),
+        time: clockInTime,
+        lateMinutes,
+        amount,
+      };
+    })
+    .filter((item) => item.amount > 0)
+    .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
+};
 const initialLoanForm = {
   type: 'Salary Advance',
   amount: '',
@@ -70,6 +168,10 @@ export const TrackingScreen = () => {
   const [leaveMessage, setLeaveMessage] = useState('');
   const [trackingRefreshLoading, setTrackingRefreshLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' | 'info' } | null>(null);
+  const [selectedMonthFrom, setSelectedMonthFrom] = useState(currentMonthValue());
+  const [selectedMonthTo, setSelectedMonthTo] = useState(currentMonthValue());
+  const [deductionModalVisible, setDeductionModalVisible] = useState(false);
+  const monthOptions = useMemo(() => buildRecentMonthOptions(12), []);
 
   const showMobileToast = useCallback((message: string, tone: 'success' | 'error' | 'info' = 'info') => {
     if (!message) {
@@ -149,6 +251,54 @@ export const TrackingScreen = () => {
 
   const currencyCode = '';
 
+  const todayAttendance = useMemo(
+    () => attendanceRows.find((row) => String(row.date || '') === todayIso()) || null,
+    [attendanceRows]
+  );
+
+  const monthlySalary = useMemo(() => {
+    const fromPayroll = toMoneyNumber(dashboardSummary?.compensation?.grossPay);
+    if (fromPayroll > 0) {
+      return fromPayroll;
+    }
+    return (
+      toMoneyNumber(employeeProfile?.basicPay) +
+      toMoneyNumber(employeeProfile?.monthlyBonuses) +
+      toMoneyNumber(employeeProfile?.transportAllowance) +
+      toMoneyNumber(employeeProfile?.housingAllowance) +
+      toMoneyNumber(employeeProfile?.foodAllowance)
+    );
+  }, [dashboardSummary?.compensation?.grossPay, employeeProfile]);
+
+  const normalizedMonthFrom = selectedMonthFrom <= selectedMonthTo ? selectedMonthFrom : selectedMonthTo;
+  const normalizedMonthTo = selectedMonthFrom <= selectedMonthTo ? selectedMonthTo : selectedMonthFrom;
+  const selectedMonthCount = countInclusiveMonths(normalizedMonthFrom, normalizedMonthTo);
+
+  const periodDeductionItems = useMemo(
+    () => buildDeductionItemsForMonths(attendanceRows, normalizedMonthFrom, normalizedMonthTo),
+    [attendanceRows, normalizedMonthFrom, normalizedMonthTo]
+  );
+
+  const periodDeductionAmount = useMemo(
+    () => periodDeductionItems.reduce((total, item) => total + item.amount, 0),
+    [periodDeductionItems]
+  );
+
+  const periodTotalSalary = monthlySalary * selectedMonthCount;
+  const periodRemainingBalance = Math.max(0, periodTotalSalary - periodDeductionAmount);
+
+  const renderMonthChip = (monthValue: string, selectedValue: string, onSelect: (value: string) => void) => (
+    <Pressable
+      key={`${selectedValue}-${monthValue}`}
+      style={[styles.monthChip, selectedValue === monthValue ? styles.monthChipActive : null]}
+      onPress={() => onSelect(monthValue)}
+    >
+      <Text style={[styles.monthChipText, selectedValue === monthValue ? styles.monthChipTextActive : null]}>
+        {formatMonthLabel(monthValue)}
+      </Text>
+    </Pressable>
+  );
+
   const renderDashboardModule = () => (
     <>
       <View style={styles.card}>
@@ -163,35 +313,45 @@ export const TrackingScreen = () => {
         </View>
       </View>
 
-      <View style={styles.statsRow}>
-        <StatCard
-          label="Take Home"
-          value={formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}
-          tone="success"
-          helper={
-            <Text style={styles.cardHelperText}>
-              {dashboardSummary?.compensation?.payrollPeriod || 'Current estimate'}
-            </Text>
-          }
-        />
-        <StatCard
-          label="Total Deductions"
-          value={formatMoney(dashboardSummary?.compensation?.totalDeductions, currencyCode)}
-          tone="warning"
-          helper={<Text style={styles.cardHelperText}>Today {formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}</Text>}
-        />
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Salary period</Text>
+        <Text style={styles.detailText}>
+          Choose the month range used for total salary, deductions, and remaining balance.
+        </Text>
+        <Text style={styles.fieldLabel}>From</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthChipRow}>
+          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthFrom, setSelectedMonthFrom))}
+        </ScrollView>
+        <Text style={styles.fieldLabel}>To</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthChipRow}>
+          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthTo, setSelectedMonthTo))}
+        </ScrollView>
+        <Text style={styles.cardHelperText}>
+          {formatMonthLabel(normalizedMonthFrom)}
+          {normalizedMonthFrom === normalizedMonthTo ? '' : ` → ${formatMonthLabel(normalizedMonthTo)}`}
+          {` • ${selectedMonthCount} month(s)`}
+        </Text>
       </View>
 
       <View style={styles.statsRow}>
         <StatCard
-          label="Month Deductions"
-          value={formatMoney(dashboardSummary?.monthToDate?.deductionAmount, currencyCode)}
-          tone="danger"
+          label="Total Salary"
+          value={formatMoney(periodTotalSalary, currencyCode)}
+          tone="default"
+          helper={<Text style={styles.cardHelperText}>{formatMoney(monthlySalary, currencyCode)} / month</Text>}
         />
         <StatCard
-          label="Today Status"
-          value={dashboardSummary?.attendance?.status || todayAttendance?.status || 'No Record'}
-          tone={String(dashboardSummary?.attendance?.status || '').toLowerCase() === 'late' ? 'warning' : 'default'}
+          label="Total Deduction"
+          value={formatMoney(periodDeductionAmount, currencyCode)}
+          tone="danger"
+          helper={<Text style={styles.cardHelperText}>{periodDeductionItems.length} item(s)</Text>}
+          onPress={() => setDeductionModalVisible(true)}
+        />
+        <StatCard
+          label="Take Home"
+          value={formatMoney(periodRemainingBalance, currencyCode)}
+          tone="success"
+          helper={<Text style={styles.cardHelperText}>Remaining after selected deductions</Text>}
         />
       </View>
 
@@ -199,23 +359,23 @@ export const TrackingScreen = () => {
         <Text style={styles.sectionTitle}>Pay breakdown</Text>
         <View style={styles.summaryList}>
           <View style={styles.summaryRow}>
-            <Text style={styles.detailText}>Gross pay</Text>
-            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.grossPay, currencyCode)}</Text>
+            <Text style={styles.detailText}>Gross pay (monthly)</Text>
+            <Text style={styles.summaryValue}>{formatMoney(monthlySalary, currencyCode)}</Text>
           </View>
           <View style={styles.summaryRow}>
-            <Text style={styles.detailText}>Total deductions</Text>
-            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.totalDeductions, currencyCode)}</Text>
+            <Text style={styles.detailText}>Selected-period deductions</Text>
+            <Text style={styles.summaryValue}>{formatMoney(periodDeductionAmount, currencyCode)}</Text>
           </View>
           <View style={styles.summaryRow}>
-            <Text style={styles.detailText}>Take-home pay</Text>
-            <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}</Text>
+            <Text style={styles.detailText}>Remaining balance</Text>
+            <Text style={styles.summaryValue}>{formatMoney(periodRemainingBalance, currencyCode)}</Text>
           </View>
           <View style={styles.summaryRow}>
             <Text style={styles.detailText}>Today deduction</Text>
             <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}</Text>
           </View>
           <View style={styles.summaryRow}>
-            <Text style={styles.detailText}>Month deduction</Text>
+            <Text style={styles.detailText}>Month-to-date deduction</Text>
             <Text style={styles.summaryValue}>{formatMoney(dashboardSummary?.monthToDate?.deductionAmount, currencyCode)}</Text>
           </View>
         </View>
@@ -266,13 +426,21 @@ export const TrackingScreen = () => {
           ? 'danger'
           : 'default';
 
-  const todayAttendance = useMemo(
-    () => attendanceRows.find((row) => String(row.date || '') === todayIso()) || null,
-    [attendanceRows]
-  );
+  const allowMultipleClockings = Boolean(tracking.settings?.randomSelfieEnabled);
+  const openClockInCount = getOpenClockInCount(todayAttendance);
+  const canClockIn = Boolean(mobileSettings?.allowClockIn) && (allowMultipleClockings || openClockInCount <= 0);
+  const canClockOut = Boolean(mobileSettings?.allowClockOut) && openClockInCount > 0;
 
   const handleClockAction = async (mode: 'clock-in' | 'clock-out') => {
     if (!session || !mobileSettings) {
+      return;
+    }
+    if (mode === 'clock-in' && !canClockIn) {
+      showMobileToast('Clock-in is already active. Clock out first.', 'info');
+      return;
+    }
+    if (mode === 'clock-out' && !canClockOut) {
+      showMobileToast('Clock in first before clocking out.', 'info');
       return;
     }
     setClockLoadingMode(mode);
@@ -298,6 +466,11 @@ export const TrackingScreen = () => {
       });
       setClockMessage(mode === 'clock-in' ? 'Clock-in captured with location.' : 'Clock-out captured with location.');
       showMobileToast(mode === 'clock-in' ? 'Thanks for clocking in.' : 'Clock-out captured successfully.', 'success');
+      if (mode === 'clock-in') {
+        await tracking.enableTracking();
+      } else {
+        await tracking.disableTracking();
+      }
       await tracking.refreshTrackingStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to complete attendance action';
@@ -363,16 +536,16 @@ export const TrackingScreen = () => {
       </Text>
       <View style={styles.buttonRow}>
         <Pressable
-          style={[styles.smallButton, !mobileSettings?.allowClockIn ? styles.disabledButton : null]}
+          style={[styles.smallButton, !canClockIn ? styles.disabledButton : null]}
           onPress={() => handleClockAction('clock-in')}
-          disabled={clockLoadingMode !== '' || !mobileSettings?.allowClockIn}
+          disabled={clockLoadingMode !== '' || !canClockIn}
         >
           <Text style={styles.buttonText}>{clockLoadingMode === 'clock-in' ? 'Clocking...' : 'Clock In'}</Text>
         </Pressable>
         <Pressable
-          style={[styles.smallButton, styles.secondaryButton, !mobileSettings?.allowClockOut ? styles.disabledButton : null]}
+          style={[styles.smallButton, styles.secondaryButton, !canClockOut ? styles.disabledButton : null]}
           onPress={() => handleClockAction('clock-out')}
-          disabled={clockLoadingMode !== '' || !mobileSettings?.allowClockOut}
+          disabled={clockLoadingMode !== '' || !canClockOut}
         >
           <Text style={styles.buttonText}>{clockLoadingMode === 'clock-out' ? 'Clocking...' : 'Clock Out'}</Text>
         </Pressable>
@@ -380,6 +553,11 @@ export const TrackingScreen = () => {
           <Text style={styles.ghostButtonText}>Refresh</Text>
         </Pressable>
       </View>
+      <Text style={styles.detailText}>
+        {allowMultipleClockings
+          ? 'Multiple clock-ins are enabled for random selfie verification.'
+          : 'Single session: clock in to start work and tracking, then clock out to stop both.'}
+      </Text>
       {clockMessage ? <Text style={styles.success}>{clockMessage}</Text> : null}
       <View style={styles.infoStrip}>
         <Text style={styles.infoStripText}>
@@ -553,12 +731,20 @@ export const TrackingScreen = () => {
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Tracking mission control</Text>
         <View style={styles.buttonRow}>
-          <Pressable style={styles.smallButton} onPress={tracking.enableTracking} disabled={tracking.loading}>
+          <Pressable
+            style={[styles.smallButton, tracking.enabled ? styles.disabledButton : null]}
+            onPress={tracking.enableTracking}
+            disabled={tracking.loading || tracking.enabled}
+          >
             <Text style={styles.buttonText}>
               {tracking.loading && !tracking.enabled ? 'Starting...' : tracking.enabled ? 'Tracking Active' : 'Start Tracking'}
             </Text>
           </Pressable>
-          <Pressable style={[styles.smallButton, styles.dangerButton]} onPress={tracking.disableTracking} disabled={tracking.loading}>
+          <Pressable
+            style={[styles.smallButton, styles.dangerButton, !tracking.enabled ? styles.disabledButton : null]}
+            onPress={tracking.disableTracking}
+            disabled={tracking.loading || !tracking.enabled}
+          >
             <Text style={styles.buttonText}>{tracking.loading && tracking.enabled ? 'Stopping...' : 'Stop Tracking'}</Text>
           </Pressable>
           <Pressable style={[styles.smallButton, styles.secondaryButton]} onPress={() => tracking.sendCurrentLocation()} disabled={tracking.loading}>
@@ -723,19 +909,26 @@ export const TrackingScreen = () => {
       ) : null}
 
       <View style={styles.statsRow}>
-        <StatCard label="Today Status" value={todayAttendance?.status || 'PENDING'} tone={todayAttendance?.checkOut ? 'success' : tracking.enabled ? 'success' : 'warning'} />
         <StatCard
-          label="Today Deduction"
-          value={formatMoney(dashboardSummary?.attendance?.deductionAmount, currencyCode)}
-          tone="warning"
+          label="Total Salary"
+          value={formatMoney(periodTotalSalary, currencyCode)}
+          helper={<Text style={styles.cardHelperText}>{formatMoney(monthlySalary, currencyCode)} / month</Text>}
+        />
+        <StatCard
+          label="Total Deduction"
+          value={formatMoney(periodDeductionAmount, currencyCode)}
+          tone="danger"
+          helper={<Text style={styles.cardHelperText}>{periodDeductionItems.length} item(s)</Text>}
+          onPress={() => setDeductionModalVisible(true)}
         />
       </View>
 
       <View style={styles.statsRow}>
         <StatCard
-          label="Month Take Home"
-          value={formatMoney(dashboardSummary?.compensation?.takeHomePay, currencyCode)}
+          label="Take Home"
+          value={formatMoney(periodRemainingBalance, currencyCode)}
           tone="success"
+          helper={<Text style={styles.cardHelperText}>Remaining after selected deductions</Text>}
         />
         <StatCard label="Tracking" value={tracking.enabled ? 'ARMED' : 'OFF'} tone={tracking.enabled ? 'success' : 'danger'} />
       </View>
@@ -761,6 +954,49 @@ export const TrackingScreen = () => {
       {selectedModule === 'leave-management' ? renderLeaveModule() : null}
       {selectedModule === 'monitoring-tracking' ? renderTrackingModule() : null}
       </ScrollView>
+
+      <Modal
+        visible={deductionModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setDeductionModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.heroTextWrap}>
+                <Text style={styles.sectionTitle}>Deduction details</Text>
+                <Text style={styles.detailText}>
+                  {formatMonthLabel(normalizedMonthFrom)}
+                  {normalizedMonthFrom === normalizedMonthTo ? '' : ` → ${formatMonthLabel(normalizedMonthTo)}`}
+                  {` • ${formatMoney(periodDeductionAmount, currencyCode)}`}
+                </Text>
+              </View>
+              <Pressable style={[styles.smallButton, styles.ghostButton]} onPress={() => setDeductionModalVisible(false)}>
+                <Text style={styles.ghostButtonText}>Close</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.modalList}>
+              {periodDeductionItems.length === 0 ? (
+                <Text style={styles.detailText}>No lateness or attendance deductions in the selected months.</Text>
+              ) : (
+                periodDeductionItems.map((item) => (
+                  <View key={item.id} style={styles.listRow}>
+                    <View style={styles.listTextWrap}>
+                      <Text style={styles.listTitle}>{item.label}</Text>
+                      <Text style={styles.detailText}>
+                        {item.date} at {item.time}
+                      </Text>
+                      <Text style={styles.mutedTiny}>{item.lateMinutes} minute(s) late</Text>
+                    </View>
+                    <Text style={styles.listMeta}>{formatMoney(item.amount, currencyCode)}</Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -1069,5 +1305,54 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 220,
     borderRadius: 12,
+  },
+  monthChipRow: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  monthChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  monthChipActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  monthChipText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  monthChipTextActive: {
+    color: colors.text,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2, 8, 23, 0.72)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    maxHeight: '78%',
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalList: {
+    gap: 10,
+    paddingBottom: 24,
   },
 });

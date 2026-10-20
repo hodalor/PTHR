@@ -59,6 +59,16 @@ export type MobileSettings = {
   allowTrackingView: boolean;
 };
 
+export type DeductionItem = {
+  id: string;
+  type: string;
+  label: string;
+  date: string;
+  time: string;
+  lateMinutes: number;
+  amount: number;
+};
+
 export type EmployeeDashboardSummary = {
   view: 'employee';
   date: string;

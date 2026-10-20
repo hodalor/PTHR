@@ -13,9 +13,11 @@ import {
 } from '../types/app';
 import {
   captureCurrentLocation,
+  persistTrackingRuntime,
   requestForegroundLocationPermission,
   requestTrackingPermissions,
   startBackgroundTracking,
+  stopBackgroundTracking,
   transmitLocation,
 } from './tracking';
 
@@ -489,8 +491,12 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
   const existingClockings = normalizeClockings(existingRow);
   const existingDerived = buildClockingDerivedFields(existingClockings);
 
+  const allowMultipleClockings = Boolean(trackingSettings?.randomSelfieEnabled);
   if (mode === 'clock-out' && existingDerived.openClockInCount <= 0) {
     throw new Error('No clock-in record found for today');
+  }
+  if (mode === 'clock-in' && !allowMultipleClockings && existingDerived.openClockInCount > 0) {
+    throw new Error('You are already clocked in. Clock out before clocking in again.');
   }
 
   const baseRecord: AttendanceRecord = existingRow || {
@@ -551,9 +557,10 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
   });
   const persistedRecord = persisted?.record || payload;
 
-  if (mode === 'clock-in' && settings.autoStartTrackingOnClockIn) {
+  if (mode === 'clock-in') {
     void (async () => {
       try {
+        await persistTrackingRuntime({ apiBaseUrl, session, armed: true });
         await runWithTimeout(
           requestTrackingPermissions(),
           8000,
@@ -564,6 +571,16 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
           8000,
           'Background tracking startup timed out.'
         );
+      } catch (error) {
+      }
+    })();
+  }
+
+  if (mode === 'clock-out') {
+    void (async () => {
+      try {
+        await persistTrackingRuntime({ apiBaseUrl, session, armed: false });
+        await stopBackgroundTracking();
       } catch (error) {
       }
     })();

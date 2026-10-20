@@ -3,7 +3,11 @@ import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, StyleShee
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme';
 
-export const LoginScreen = () => {
+type LoginScreenProps = {
+  onForgotPassword?: () => void;
+};
+
+export const LoginScreen = ({ onForgotPassword }: LoginScreenProps) => {
   const { isAuthenticating, login } = useAuth();
   const [tenantId, setTenantId] = useState('');
   const [identifier, setIdentifier] = useState('');
@@ -77,6 +81,12 @@ export const LoginScreen = () => {
         <Pressable style={styles.button} onPress={handleLogin} disabled={isAuthenticating}>
           {isAuthenticating ? <ActivityIndicator color={colors.text} /> : <Text style={styles.buttonText}>Sign In</Text>}
         </Pressable>
+
+        {onForgotPassword ? (
+          <Pressable style={styles.linkButton} onPress={onForgotPassword} disabled={isAuthenticating}>
+            <Text style={styles.linkText}>Forgot password?</Text>
+          </Pressable>
+        ) : null}
       </View>
     </KeyboardAvoidingView>
   );
@@ -143,5 +153,14 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 13,
     fontWeight: '600',
+  },
+  linkButton: {
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  linkText: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: 14,
   },
 });
