@@ -66,10 +66,10 @@ const buildEarningsRows = (payrollRow) => {
 const buildDeductionsRows = (payrollRow) => {
   const rows = [];
   if (Number(payrollRow?.napsaDeduction) > 0) {
-    rows.push({ label: 'NAPSA / Pension', value: Number(payrollRow.napsaDeduction) || 0 });
+    rows.push({ label: 'Pension Scheme', value: Number(payrollRow.napsaDeduction) || 0 });
   }
   if (Number(payrollRow?.nhimaDeduction) > 0) {
-    rows.push({ label: 'NHIMA / Health', value: Number(payrollRow.nhimaDeduction) || 0 });
+    rows.push({ label: 'Health Insurance', value: Number(payrollRow.nhimaDeduction) || 0 });
   }
   if (Number(payrollRow?.taxDeduction) > 0) {
     rows.push({ label: 'PAYE / Income Tax', value: Number(payrollRow.taxDeduction) || 0 });

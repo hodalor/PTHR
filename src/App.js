@@ -918,6 +918,7 @@ function App({ initialModuleId }) {
     'attendance-penalty-adjustments': [],
   }));
   const attendanceSettingsDraftRef = useRef(appSettings);
+  const generalSettingsRequestIdRef = useRef(0);
   const [backendHealth, setBackendHealth] = useState({
     status: 'unknown',
     mongo: 'unknown',
@@ -1301,7 +1302,8 @@ function App({ initialModuleId }) {
         if (!silent) {
           setGeneralSettingsSavedMessage('');
         }
-        const payload = buildGeneralSettingsPayload(nextSettings || appSettings);
+        generalSettingsRequestIdRef.current += 1;
+        const payload = buildGeneralSettingsPayload(nextSettings || attendanceSettingsDraftRef.current || appSettings);
         const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'), {
           method: 'POST',
           headers: jsonAuthHeaders,
@@ -1337,6 +1339,8 @@ function App({ initialModuleId }) {
       );
     let cancelled = false;
     const fetchGeneralSettings = async () => {
+      const requestId = generalSettingsRequestIdRef.current + 1;
+      generalSettingsRequestIdRef.current = requestId;
       try {
         setGeneralSettingsLoading(true);
         const response = await fetch(toApiUrl('http://localhost:8000/api/settings/general'), {
@@ -1346,7 +1350,7 @@ function App({ initialModuleId }) {
           throw new Error('Failed to load general settings');
         }
         const data = await response.json();
-        if (!cancelled && data) {
+        if (!cancelled && data && requestId === generalSettingsRequestIdRef.current) {
           setAppSettings((prev) => mergeGeneralSettingsIntoAppSettings(prev, data));
           setGeneralSettingsError('');
         }
@@ -9328,19 +9332,22 @@ function App({ initialModuleId }) {
                       {payrollAutoGenerateMessage ? <span className="settings-action-status">{payrollAutoGenerateMessage}</span> : null}
                     </div>
                     <label>
-                      <span>NAPSA Rule</span>
+                      <span>Pension Scheme</span>
                       <div className="inline-field">
                         <select
                           className="filter-select"
                           value={appSettings.statutoryRules.napsaMode}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                napsaMode: event.target.value,
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  napsaMode: event.target.value,
+                                },
+                              };
+                            })
                           }
                         >
                           <option value="percent-basic">Percent of Basic Pay</option>
@@ -9353,31 +9360,38 @@ function App({ initialModuleId }) {
                           step="0.01"
                           value={appSettings.statutoryRules.napsaValue}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                napsaValue: Math.max(0, Number(event.target.value) || 0),
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              const parsed = Number(event.target.value);
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  napsaValue: Number.isFinite(parsed) ? Math.max(0, parsed) : prev.statutoryRules.napsaValue,
+                                },
+                              };
+                            })
                           }
                         />
                       </div>
                     </label>
                     <label>
-                      <span>NHIMA Rule</span>
+                      <span>Health Insurance</span>
                       <div className="inline-field">
                         <select
                           className="filter-select"
                           value={appSettings.statutoryRules.nhimaMode}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                nhimaMode: event.target.value,
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  nhimaMode: event.target.value,
+                                },
+                              };
+                            })
                           }
                         >
                           <option value="percent-basic">Percent of Basic Pay</option>
@@ -9390,13 +9404,17 @@ function App({ initialModuleId }) {
                           step="0.01"
                           value={appSettings.statutoryRules.nhimaValue}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                nhimaValue: Math.max(0, Number(event.target.value) || 0),
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              const parsed = Number(event.target.value);
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  nhimaValue: Number.isFinite(parsed) ? Math.max(0, parsed) : prev.statutoryRules.nhimaValue,
+                                },
+                              };
+                            })
                           }
                         />
                       </div>
@@ -9408,13 +9426,16 @@ function App({ initialModuleId }) {
                           className="filter-select"
                           value={appSettings.statutoryRules.taxMode}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                taxMode: event.target.value,
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  taxMode: event.target.value,
+                                },
+                              };
+                            })
                           }
                         >
                           <option value="percent-basic">Percent of Basic Pay</option>
@@ -9427,13 +9448,17 @@ function App({ initialModuleId }) {
                           step="0.01"
                           value={appSettings.statutoryRules.taxValue}
                           onChange={(event) =>
-                            setAppSettings((prev) => ({
-                              ...prev,
-                              statutoryRules: {
-                                ...prev.statutoryRules,
-                                taxValue: Math.max(0, Number(event.target.value) || 0),
-                              },
-                            }))
+                            setAppSettings((prev) => {
+                              generalSettingsRequestIdRef.current += 1;
+                              const parsed = Number(event.target.value);
+                              return {
+                                ...prev,
+                                statutoryRules: {
+                                  ...prev.statutoryRules,
+                                  taxValue: Number.isFinite(parsed) ? Math.max(0, parsed) : prev.statutoryRules.taxValue,
+                                },
+                              };
+                            })
                           }
                         />
                       </div>
