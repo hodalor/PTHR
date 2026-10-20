@@ -26,6 +26,11 @@ app.use(express.json({ limit: '30mb' }));
 const trackingRoutes = require('./routes/tracking');
 const mobileRoutes = require('./routes/mobile');
 const { router: authRoutes, ensureSuperAdmin } = require('./routes/auth');
+const {
+  normalizePayrollAutoGenerate,
+  generatePayrollForTenantDb,
+  runPayrollAutoGenerateForAllTenants,
+} = require('./services/payrollAutoGenerate');
 
 const PORT = process.env.PORT || 8000;
 const MONGO_URI = process.env.MONGO_URI;
@@ -236,6 +241,12 @@ const defaultGeneralSettings = {
     { name: 'Finance', code: 'FN' },
     { name: 'Operations', code: 'OP' },
   ],
+  payrollAutoGenerate: {
+    enabled: false,
+    periodStartDay: 1,
+    periodEndDay: 30,
+    runHourUtc: 1,
+  },
 };
 
 let gcsBucket = null;
@@ -270,6 +281,63 @@ function normalizeIsoDateInput(value, fallback = getTodayIsoDate()) {
 
 function getMonthStartIsoDate(value) {
   return `${normalizeIsoDateInput(value).slice(0, 7)}-01`;
+}
+
+function normalizeMonthInput(value, fallbackDate = getTodayIsoDate()) {
+  const normalized = String(value || '').trim();
+  if (/^\d{4}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+  return normalizeIsoDateInput(fallbackDate).slice(0, 7);
+}
+
+function getMonthEndIsoDate(monthValue) {
+  const month = normalizeMonthInput(monthValue);
+  const [yearPart, monthPart] = month.split('-').map((part) => Number(part));
+  const lastDay = new Date(yearPart, monthPart, 0).getDate();
+  return `${month}-${String(lastDay).padStart(2, '0')}`;
+}
+
+function countInclusiveMonths(fromMonth, toMonth) {
+  const fromMatch = String(fromMonth || '').match(/^(\d{4})-(\d{2})$/);
+  const toMatch = String(toMonth || '').match(/^(\d{4})-(\d{2})$/);
+  if (!fromMatch || !toMatch) {
+    return 1;
+  }
+  const fromIndex = Number(fromMatch[1]) * 12 + Number(fromMatch[2]);
+  const toIndex = Number(toMatch[1]) * 12 + Number(toMatch[2]);
+  return Math.max(1, toIndex - fromIndex + 1);
+}
+
+function buildAttendanceDeductionItems(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const amount = Math.max(0, toNumberValue(row?.deductionAmount));
+      const lateMinutes = Math.max(0, toNumberValue(row?.lateMinutes));
+      if (amount <= 0) {
+        return null;
+      }
+      const checkIn = String(row?.checkIn || '').trim();
+      const clockIn =
+        checkIn ||
+        String(
+          (Array.isArray(row?.clockings) ? row.clockings : []).find(
+            (clocking) => String(clocking?.mode || '').toLowerCase() === 'clock-in'
+          )?.time || ''
+        ).trim() ||
+        '—';
+      return {
+        id: String(row?.id || `${row?.date || ''}-${clockIn}`),
+        type: 'lateness',
+        label: 'Lateness',
+        date: String(row?.date || ''),
+        time: clockIn,
+        lateMinutes,
+        amount,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
 }
 
 function toNumberValue(value) {
@@ -1938,6 +2006,9 @@ function normalizeGeneralSettings(payload) {
       ),
     },
     departments: normalizeDepartments(source.departments),
+    payrollAutoGenerate: normalizePayrollAutoGenerate(
+      source.payrollAutoGenerate || defaultGeneralSettings.payrollAutoGenerate
+    ),
   };
 }
 
@@ -3584,6 +3655,17 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
 
     const selectedDate = normalizeIsoDateInput(req.query?.date);
     const monthStartDate = getMonthStartIsoDate(selectedDate);
+    let monthFrom = normalizeMonthInput(req.query?.monthFrom, selectedDate);
+    let monthTo = normalizeMonthInput(req.query?.monthTo, selectedDate);
+    if (monthFrom > monthTo) {
+      const swap = monthFrom;
+      monthFrom = monthTo;
+      monthTo = swap;
+    }
+    const periodStartDate = `${monthFrom}-01`;
+    const periodEndDate = getMonthEndIsoDate(monthTo);
+    const requestedEmployeeId = String(req.query?.employeeId || '').trim();
+    const isEmployeeRole = normalizedRole === 'employee';
     const dashboardCacheKey = buildHotReadCacheKey([
       'tenant',
       req.tenantId,
@@ -3591,26 +3673,21 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       normalizedRole,
       authUser?.id || authUser?.username || '',
       selectedDate,
+      monthFrom,
+      monthTo,
+      requestedEmployeeId,
     ]);
     const cachedSummary = getHotReadCache(dashboardCacheKey);
     if (cachedSummary) {
       res.json(cachedSummary);
       return;
     }
-    const employeeId = String(authUser?.employeeId || '').trim();
-    const employeeName = String(authUser?.fullName || '').trim();
-    const employeeMatchQuery =
-      employeeId || employeeName
-        ? {
-            $or: [
-              ...(employeeId ? [{ employeeId }] : []),
-              ...(employeeName ? [{ employee: employeeName }] : []),
-            ],
-          }
-        : null;
+
     const attendanceSummaryProjection = {
+      id: 1,
       employeeId: 1,
       employee: 1,
+      date: 1,
       lateMinutes: 1,
       deductionAmount: 1,
       checkIn: 1,
@@ -3618,11 +3695,24 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       clockings: 1,
     };
 
-    if (normalizedRole === 'employee' && employeeMatchQuery) {
-      const [employeeRecord, dayAttendanceRows, monthAttendanceRows, employeeLoanRows, employeeLeaveRows, latestPayrollRow] =
+    const buildEmployeeSummaryPayload = async ({ employeeId, employeeName, includeView = true }) => {
+      const matchQuery =
+        employeeId || employeeName
+          ? {
+              $or: [
+                ...(employeeId ? [{ employeeId }] : []),
+                ...(employeeName ? [{ employee: employeeName }] : []),
+              ],
+            }
+          : null;
+      if (!matchQuery) {
+        return null;
+      }
+
+      const [employeeRecord, dayAttendanceRows, monthAttendanceRows, periodAttendanceRows, employeeLoanRows, employeeLeaveRows, latestPayrollRow] =
         await Promise.all([
           req.db.collection('employees').findOne(
-            { id: employeeId },
+            employeeId ? { id: employeeId } : { fullName: employeeName },
             {
               projection: {
                 id: 1,
@@ -3641,20 +3731,27 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
             }
           ),
           req.db.collection('attendanceTime').find(
-            { ...employeeMatchQuery, date: selectedDate },
+            { ...matchQuery, date: selectedDate },
             { projection: attendanceSummaryProjection }
           ).toArray(),
           req.db
             .collection('attendanceTime')
             .find(
-              { ...employeeMatchQuery, date: { $gte: monthStartDate, $lte: selectedDate } },
-              { projection: { lateMinutes: 1, deductionAmount: 1 } }
+              { ...matchQuery, date: { $gte: monthStartDate, $lte: selectedDate } },
+              { projection: { lateMinutes: 1, deductionAmount: 1, checkIn: 1, date: 1, clockings: 1, id: 1 } }
             )
             .toArray(),
-          req.db.collection('loanRecords').find(employeeMatchQuery, {
+          req.db
+            .collection('attendanceTime')
+            .find(
+              { ...matchQuery, date: { $gte: periodStartDate, $lte: periodEndDate } },
+              { projection: { lateMinutes: 1, deductionAmount: 1, checkIn: 1, date: 1, clockings: 1, id: 1 } }
+            )
+            .toArray(),
+          req.db.collection('loanRecords').find(matchQuery, {
             projection: { status: 1, balance: 1, amount: 1 },
           }).toArray(),
-          req.db.collection('leaveRequests').find(employeeMatchQuery, {
+          req.db.collection('leaveRequests').find(matchQuery, {
             projection: {
               departmentApproval: 1,
               supervisorApproval: 1,
@@ -3667,7 +3764,7 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
           }).toArray(),
           req.db
             .collection('payrollRecords')
-            .find(employeeMatchQuery, {
+            .find(matchQuery, {
               projection: {
                 totalDeductions: 1,
                 netPayable: 1,
@@ -3699,6 +3796,12 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         (total, row) => total + Math.max(0, toNumberValue(row?.deductionAmount)),
         0
       );
+      const deductionItems = buildAttendanceDeductionItems(periodAttendanceRows);
+      const periodDeductionAmount = deductionItems.reduce((total, item) => total + item.amount, 0);
+      const periodLateMinutes = periodAttendanceRows.reduce(
+        (total, row) => total + Math.max(0, toNumberValue(row?.lateMinutes)),
+        0
+      );
       const activeLoanRows = employeeLoanRows.filter(isLoanCountableRecord);
       const activeLoanBalance = activeLoanRows.reduce(
         (total, row) => total + Math.max(0, toNumberValue(row?.balance || row?.amount)),
@@ -3714,18 +3817,25 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         toNumberValue(employeeRecord?.transportAllowance) +
         toNumberValue(employeeRecord?.housingAllowance) +
         toNumberValue(employeeRecord?.foodAllowance);
+      const monthlySalary = latestPayrollRow
+        ? Math.max(0, toNumberValue(latestPayrollRow?.grossPay))
+        : grossPayEstimate;
+      const monthCount = countInclusiveMonths(monthFrom, monthTo);
+      const totalSalary = monthlySalary * monthCount;
+      const remainingBalance = Math.max(0, totalSalary - periodDeductionAmount);
       const totalDeductions = latestPayrollRow
         ? Math.max(0, toNumberValue(latestPayrollRow?.totalDeductions))
         : monthToDateDeductionAmount;
       const takeHomePay = latestPayrollRow
         ? Math.max(0, toNumberValue(latestPayrollRow?.netPayable))
         : Math.max(0, grossPayEstimate - monthToDateDeductionAmount);
-      const payload = {
-        view: 'employee',
+
+      return {
+        ...(includeView ? { view: 'employee' } : {}),
         date: selectedDate,
         employee: {
           id: String(employeeRecord?.id || employeeId || ''),
-          fullName: String(employeeRecord?.fullName || authUser?.fullName || ''),
+          fullName: String(employeeRecord?.fullName || employeeName || ''),
           department: String(employeeRecord?.department || ''),
           position: String(employeeRecord?.position || ''),
           status: String(employeeRecord?.status || ''),
@@ -3741,6 +3851,16 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
           lateMinutes: monthToDateLateMinutes,
           deductionAmount: monthToDateDeductionAmount,
         },
+        periodSummary: {
+          monthFrom,
+          monthTo,
+          monthCount,
+          totalSalary,
+          amountDeducted: periodDeductionAmount,
+          remainingBalance,
+          lateMinutes: periodLateMinutes,
+          deductionItems,
+        },
         loans: {
           activeCount: activeLoanRows.length,
           outstandingAmount: activeLoanBalance,
@@ -3751,7 +3871,7 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         },
         compensation: {
           source: latestPayrollRow ? 'latest-payroll' : 'estimate',
-          grossPay: latestPayrollRow ? Math.max(0, toNumberValue(latestPayrollRow?.grossPay)) : grossPayEstimate,
+          grossPay: monthlySalary,
           totalDeductions,
           takeHomePay,
           payrollPeriod:
@@ -3764,13 +3884,23 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
             ).trim() || '',
         },
       };
+    };
+
+    if (isEmployeeRole) {
+      const employeeId = String(authUser?.employeeId || '').trim();
+      const employeeName = String(authUser?.fullName || '').trim();
+      const payload = await buildEmployeeSummaryPayload({ employeeId, employeeName, includeView: true });
+      if (!payload) {
+        res.status(404).json({ error: 'Employee profile not found for dashboard summary' });
+        return;
+      }
       res.json(setHotReadCache(dashboardCacheKey, payload));
       return;
     }
 
-    const [employeeRows, dayAttendanceRows, monthAttendanceRows, loanRows, leaveRows] = await Promise.all([
+    const [employeeRows, dayAttendanceRows, monthAttendanceRows, periodAttendanceRows, loanRows, leaveRows] = await Promise.all([
       req.db.collection('employees').find({}, {
-        projection: { status: 1, employmentState: 1 },
+        projection: { id: 1, fullName: 1, department: 1, status: 1, employmentState: 1, basicPay: 1, monthlyBonuses: 1, transportAllowance: 1, housingAllowance: 1, foodAllowance: 1 },
       }).toArray(),
       req.db.collection('attendanceTime').find(
         { date: selectedDate },
@@ -3779,6 +3909,10 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       req.db.collection('attendanceTime').find(
         { date: { $gte: monthStartDate, $lte: selectedDate } },
         { projection: { deductionAmount: 1 } }
+      ).toArray(),
+      req.db.collection('attendanceTime').find(
+        { date: { $gte: periodStartDate, $lte: periodEndDate } },
+        { projection: { deductionAmount: 1, lateMinutes: 1 } }
       ).toArray(),
       req.db.collection('loanRecords').find({}, {
         projection: { status: 1, balance: 1, amount: 1 },
@@ -3809,6 +3943,22 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       (total, row) => total + Math.max(0, toNumberValue(row?.deductionAmount)),
       0
     );
+    const periodDeductionAmount = periodAttendanceRows.reduce(
+      (total, row) => total + Math.max(0, toNumberValue(row?.deductionAmount)),
+      0
+    );
+    const monthCount = countInclusiveMonths(monthFrom, monthTo);
+    const workforceMonthlySalary = activeEmployees.reduce((total, employee) => {
+      return (
+        total +
+        toNumberValue(employee?.basicPay) +
+        toNumberValue(employee?.monthlyBonuses) +
+        toNumberValue(employee?.transportAllowance) +
+        toNumberValue(employee?.housingAllowance) +
+        toNumberValue(employee?.foodAllowance)
+      );
+    }, 0);
+    const workforceTotalSalary = workforceMonthlySalary * monthCount;
     const activeLoanRows = loanRows.filter(isLoanCountableRecord);
     const activeLoanOutstanding = activeLoanRows.reduce(
       (total, row) => total + Math.max(0, toNumberValue(row?.balance || row?.amount)),
@@ -3818,6 +3968,18 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       (row) => !isLeaveRejectedRecord(row) && !isLeaveFullyApprovedRecord(row)
     ).length;
     const approvedLeaveCount = leaveRows.filter(isLeaveFullyApprovedRecord).length;
+
+    let selectedEmployee = null;
+    if (requestedEmployeeId) {
+      const matchedEmployee =
+        employeeRows.find((row) => String(row.id || '').trim() === requestedEmployeeId) || null;
+      selectedEmployee = await buildEmployeeSummaryPayload({
+        employeeId: requestedEmployeeId,
+        employeeName: String(matchedEmployee?.fullName || ''),
+        includeView: false,
+      });
+    }
+
     const payload = {
       view: 'admin',
       date: selectedDate,
@@ -3826,6 +3988,14 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         activeEmployees: activeEmployees.length,
         inactiveEmployees,
       },
+      employees: employeeRows
+        .map((row) => ({
+          id: String(row.id || ''),
+          fullName: String(row.fullName || ''),
+          department: String(row.department || ''),
+        }))
+        .filter((row) => row.id)
+        .sort((a, b) => a.fullName.localeCompare(b.fullName)),
       attendance: {
         onTimeCount,
         lateCount,
@@ -3835,6 +4005,15 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       monthToDate: {
         totalDeductionAmount: monthToDateDeductionAmount,
       },
+      periodSummary: {
+        monthFrom,
+        monthTo,
+        monthCount,
+        totalSalary: workforceTotalSalary,
+        amountDeducted: periodDeductionAmount,
+        remainingBalance: Math.max(0, workforceTotalSalary - periodDeductionAmount),
+      },
+      selectedEmployee,
       loans: {
         activeCount: activeLoanRows.length,
         outstandingAmount: activeLoanOutstanding,
@@ -3847,6 +4026,24 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
     res.json(setHotReadCache(dashboardCacheKey, payload));
   } catch (error) {
     res.status(500).json({ error: 'Failed to load dashboard summary' });
+  }
+});
+
+app.post('/api/payroll/auto-generate', requireAuthenticatedTenantContext, async (req, res) => {
+  try {
+    const authUser = req.authUser;
+    const role = String(authUser?.role || '').trim().toLowerCase();
+    if (!['admin', 'tenant-admin', 'hr', 'superadmin'].includes(role)) {
+      res.status(403).json({ error: 'Only admin/HR can trigger payroll auto-generation' });
+      return;
+    }
+    const force = req.body?.force !== false;
+    const asOfDate = normalizeIsoDateInput(req.body?.asOfDate || req.query?.asOfDate);
+    const result = await generatePayrollForTenantDb(req.db, { asOfDate, force });
+    invalidateTenantReadCaches(req.tenantId, 'payroll-management');
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to auto-generate payroll' });
   }
 });
 
@@ -4710,9 +4907,36 @@ async function start() {
     );
     await ensureSuperAdmin(masterDb);
     await ensureOperationalIndexes(masterDb, MONGO_MASTER_DB_NAME);
+
+    const payrollAutoGenerateIntervalMs = Math.max(
+      5 * 60 * 1000,
+      Number(process.env.PAYROLL_AUTO_GENERATE_INTERVAL_MS) || 15 * 60 * 1000
+    );
+    const runScheduledPayrollAutoGenerate = async () => {
+      try {
+        const results = await runPayrollAutoGenerateForAllTenants(masterDb, getTenantDatabase, {
+          asOfDate: getTodayIsoDate(),
+          force: false,
+        });
+        const createdTotal = results.reduce((total, row) => total + Number(row.created || 0), 0);
+        if (createdTotal > 0) {
+          console.log(`[payroll-auto] generated ${createdTotal} payroll row(s) across tenants`);
+        }
+      } catch (error) {
+        console.error('[payroll-auto] scheduled run failed', error);
+      }
+    };
+    setTimeout(() => {
+      void runScheduledPayrollAutoGenerate();
+    }, 45000);
+    setInterval(() => {
+      void runScheduledPayrollAutoGenerate();
+    }, payrollAutoGenerateIntervalMs);
+
     app.listen(PORT, () => {
       console.log(`Connected to MongoDB Atlas database "${MONGO_MASTER_DB_NAME}"`);
       console.log(`HR backend listening on port ${PORT}`);
+      console.log(`Payroll auto-generate scheduler interval: ${payrollAutoGenerateIntervalMs}ms`);
     });
   } catch (error) {
     console.error('Failed to start backend', error);

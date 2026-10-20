@@ -12,11 +12,21 @@ const {
   resolveTenantEffectiveLimits,
   resolveUserAllowedModulesForTenant,
 } = require('../tenancy');
+const {
+  OTP_TTL_SECONDS,
+  maskEmail,
+  maskPhone,
+  normalizePhoneE164,
+  sendEmailOtp,
+  sendSmsOtp,
+} = require('../services/otpDelivery');
 
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const PASSWORD_RESET_MAX_ATTEMPTS = Math.max(3, Number(process.env.PASSWORD_RESET_MAX_ATTEMPTS) || 5);
+const PASSWORD_RESET_MIN_PASSWORD_LENGTH = Math.max(6, Number(process.env.PASSWORD_RESET_MIN_PASSWORD_LENGTH) || 8);
 const SUPERADMIN_USERNAME = String(process.env.SUPERADMIN_USERNAME || 'superadmin').trim();
 const SUPERADMIN_PASSWORD = String(process.env.SUPERADMIN_PASSWORD || 'SuperAdmin@2026').trim();
 const SUPERADMIN_FULL_NAME = String(process.env.SUPERADMIN_FULL_NAME || 'Platform Super Admin').trim();
@@ -80,6 +90,46 @@ async function getLinkedEmployeeAccessState(db, userLike) {
     blocked: Boolean(reason),
     reason,
   };
+}
+
+function hashOtpCode(otp) {
+  return crypto.createHash('sha256').update(String(otp || '').trim()).digest('hex');
+}
+
+function createPasswordResetOtpCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function resolveEmployeeContactChannels(employee) {
+  const email = String(employee?.email || '').trim().toLowerCase();
+  const phone = normalizePhoneE164(employee?.phonePrimary || employee?.phoneSecondary || employee?.phone || '');
+  return {
+    email: isValidEmail(email) ? email : '',
+    phone,
+  };
+}
+
+async function findActiveUserByIdentifier(db, identifier) {
+  const normalized = String(identifier || '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const usernameRegex = new RegExp(`^${escapeRegex(normalized)}$`, 'i');
+  return db.collection('users').findOne({
+    isActive: true,
+    $or: [{ username: usernameRegex }, { employeeId: normalized }],
+  });
+}
+
+async function loadPasswordResetChallenge(db, resetToken) {
+  const token = String(resetToken || '').trim();
+  if (!token) {
+    return null;
+  }
+  return db.collection('passwordResetOtps').findOne({
+    resetToken: token,
+    consumedAt: null,
+  });
 }
 
 function escapeRegex(value) {
@@ -1137,6 +1187,254 @@ router.post('/logout', async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+router.post('/password-reset/request', async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.body?.tenantId || req.tenantId);
+    const identifier = String(req.body?.username || req.body?.identifier || '').trim();
+    const requestedChannels = Array.isArray(req.body?.channels)
+      ? req.body.channels.map((value) => String(value || '').trim().toLowerCase())
+      : [];
+    if (!tenantId || !identifier) {
+      res.status(400).json({ error: 'Tenant ID and username (or employee ID) are required' });
+      return;
+    }
+    if (req.tenant && String(req.tenant.status || 'active') !== 'active') {
+      res.status(403).json({ error: 'Tenant is inactive' });
+      return;
+    }
+
+    const genericResponse = {
+      ok: true,
+      message: 'If an account matches, a reset code has been sent to the registered email and/or phone.',
+    };
+
+    const user = await findActiveUserByIdentifier(req.db, identifier);
+    if (!user) {
+      res.json(genericResponse);
+      return;
+    }
+
+    const employeeAccessState = await getLinkedEmployeeAccessState(req.db, user);
+    if (employeeAccessState.blocked) {
+      res.status(403).json({
+        error: `${employeeAccessState.reason}. Password reset is not allowed for this account.`,
+      });
+      return;
+    }
+
+    const employeeId = String(user.employeeId || '').trim();
+    const contactEmployee = employeeId
+      ? await req.db.collection('employees').findOne(
+          { id: employeeId },
+          { projection: { id: 1, email: 1, phonePrimary: 1, phoneSecondary: 1, phone: 1 } }
+        )
+      : null;
+    const contacts = resolveEmployeeContactChannels(contactEmployee);
+    const wantsEmail = requestedChannels.length === 0 || requestedChannels.includes('email');
+    const wantsSms = requestedChannels.length === 0 || requestedChannels.includes('sms') || requestedChannels.includes('phone');
+    const channelsToSend = [];
+    if (wantsEmail && contacts.email) {
+      channelsToSend.push('email');
+    }
+    if (wantsSms && contacts.phone) {
+      channelsToSend.push('sms');
+    }
+
+    if (channelsToSend.length === 0) {
+      res.status(400).json({
+        error: 'No email or phone is registered for this account. Ask HR to update your employee profile.',
+      });
+      return;
+    }
+
+    const otp = createPasswordResetOtpCode();
+    const resetToken = crypto.randomUUID();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + OTP_TTL_SECONDS * 1000).toISOString();
+    const nowIso = now.toISOString();
+
+    await req.db.collection('passwordResetOtps').updateMany(
+      { userId: String(user._id), consumedAt: null },
+      { $set: { consumedAt: nowIso, updatedAt: nowIso } }
+    );
+
+    await req.db.collection('passwordResetOtps').insertOne({
+      resetToken,
+      userId: String(user._id),
+      tenantId: req.tenantId || tenantId,
+      username: String(user.username || ''),
+      employeeId,
+      otpHash: hashOtpCode(otp),
+      channels: channelsToSend,
+      attempts: 0,
+      maxAttempts: PASSWORD_RESET_MAX_ATTEMPTS,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      expiresAt,
+      verifiedAt: null,
+      consumedAt: null,
+    });
+
+    const deliveryResults = [];
+    for (const channel of channelsToSend) {
+      if (channel === 'email') {
+        deliveryResults.push(await sendEmailOtp({ to: contacts.email, otp, tenantId: req.tenantId || tenantId }));
+      } else if (channel === 'sms') {
+        deliveryResults.push(await sendSmsOtp({ to: contacts.phone, otp, tenantId: req.tenantId || tenantId }));
+      }
+    }
+
+    res.json({
+      ok: true,
+      resetToken,
+      expiresInSeconds: OTP_TTL_SECONDS,
+      channelsSent: channelsToSend,
+      maskedEmail: contacts.email ? maskEmail(contacts.email) : '',
+      maskedPhone: contacts.phone ? maskPhone(contacts.phone) : '',
+      providers: deliveryResults.map((result) => result.provider),
+      message: `Reset code sent via ${channelsToSend.join(' and ')}.`,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to start password reset';
+    res.status(500).json({ error: message || 'Failed to start password reset' });
+  }
+});
+
+router.post('/password-reset/verify', async (req, res) => {
+  try {
+    const resetToken = String(req.body?.resetToken || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    if (!resetToken || !otp) {
+      res.status(400).json({ error: 'Reset token and OTP are required' });
+      return;
+    }
+
+    const challenge = await loadPasswordResetChallenge(req.db, resetToken);
+    if (!challenge) {
+      res.status(400).json({ error: 'Invalid or expired reset request' });
+      return;
+    }
+    if (String(challenge.expiresAt || '') <= new Date().toISOString()) {
+      res.status(400).json({ error: 'Reset code has expired. Request a new one.' });
+      return;
+    }
+    if (Number(challenge.attempts || 0) >= Number(challenge.maxAttempts || PASSWORD_RESET_MAX_ATTEMPTS)) {
+      res.status(429).json({ error: 'Too many invalid attempts. Request a new reset code.' });
+      return;
+    }
+
+    const otpMatches = hashOtpCode(otp) === String(challenge.otpHash || '');
+    const nowIso = new Date().toISOString();
+    if (!otpMatches) {
+      await req.db.collection('passwordResetOtps').updateOne(
+        { _id: challenge._id },
+        { $inc: { attempts: 1 }, $set: { updatedAt: nowIso } }
+      );
+      res.status(400).json({ error: 'Invalid reset code' });
+      return;
+    }
+
+    await req.db.collection('passwordResetOtps').updateOne(
+      { _id: challenge._id },
+      { $set: { verifiedAt: nowIso, updatedAt: nowIso } }
+    );
+
+    res.json({
+      ok: true,
+      resetToken,
+      verified: true,
+      message: 'Reset code verified. You can set a new password.',
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to verify reset code' });
+  }
+});
+
+router.post('/password-reset/confirm', async (req, res) => {
+  try {
+    const resetToken = String(req.body?.resetToken || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    const newPassword = String(req.body?.newPassword || req.body?.password || '');
+    if (!resetToken || !otp || !newPassword) {
+      res.status(400).json({ error: 'Reset token, OTP, and new password are required' });
+      return;
+    }
+    if (newPassword.length < PASSWORD_RESET_MIN_PASSWORD_LENGTH) {
+      res.status(400).json({
+        error: `Password must be at least ${PASSWORD_RESET_MIN_PASSWORD_LENGTH} characters`,
+      });
+      return;
+    }
+
+    const challenge = await loadPasswordResetChallenge(req.db, resetToken);
+    if (!challenge) {
+      res.status(400).json({ error: 'Invalid or expired reset request' });
+      return;
+    }
+    if (String(challenge.expiresAt || '') <= new Date().toISOString()) {
+      res.status(400).json({ error: 'Reset code has expired. Request a new one.' });
+      return;
+    }
+    if (Number(challenge.attempts || 0) >= Number(challenge.maxAttempts || PASSWORD_RESET_MAX_ATTEMPTS)) {
+      res.status(429).json({ error: 'Too many invalid attempts. Request a new reset code.' });
+      return;
+    }
+    if (hashOtpCode(otp) !== String(challenge.otpHash || '')) {
+      const nowIso = new Date().toISOString();
+      await req.db.collection('passwordResetOtps').updateOne(
+        { _id: challenge._id },
+        { $inc: { attempts: 1 }, $set: { updatedAt: nowIso } }
+      );
+      res.status(400).json({ error: 'Invalid reset code' });
+      return;
+    }
+
+    let userObjectId = null;
+    try {
+      userObjectId = new ObjectId(String(challenge.userId || ''));
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid reset request' });
+      return;
+    }
+
+    const user = await req.db.collection('users').findOne({ _id: userObjectId, isActive: true });
+    if (!user) {
+      res.status(404).json({ error: 'Account not found' });
+      return;
+    }
+
+    const employeeAccessState = await getLinkedEmployeeAccessState(req.db, user);
+    if (employeeAccessState.blocked) {
+      res.status(403).json({
+        error: `${employeeAccessState.reason}. Password reset is not allowed for this account.`,
+      });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const nowIso = new Date().toISOString();
+    await req.db.collection('users').updateOne(
+      { _id: user._id },
+      { $set: { passwordHash, updatedAt: nowIso } }
+    );
+    await req.db.collection('authSessions').updateMany(
+      { userId: String(user._id), revokedAt: null },
+      { $set: { revokedAt: nowIso, updatedAt: nowIso } }
+    );
+    await req.db.collection('passwordResetOtps').updateOne(
+      { _id: challenge._id },
+      { $set: { consumedAt: nowIso, verifiedAt: challenge.verifiedAt || nowIso, updatedAt: nowIso } }
+    );
+
+    res.json({
+      ok: true,
+      message: 'Password updated. Sign in with your new password.',
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
