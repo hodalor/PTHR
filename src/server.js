@@ -3660,15 +3660,32 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
 
     const selectedDate = normalizeIsoDateInput(req.query?.date);
     const monthStartDate = getMonthStartIsoDate(selectedDate);
-    let monthFrom = normalizeMonthInput(req.query?.monthFrom, selectedDate);
-    let monthTo = normalizeMonthInput(req.query?.monthTo, selectedDate);
+    const requestedDateFrom = String(req.query?.dateFrom || req.query?.startDate || '').trim();
+    const requestedDateTo = String(req.query?.dateTo || req.query?.endDate || '').trim();
+    const hasDateRange =
+      /^\d{4}-\d{2}-\d{2}$/.test(requestedDateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(requestedDateTo);
+    let monthFrom = normalizeMonthInput(
+      req.query?.monthFrom || (hasDateRange ? requestedDateFrom.slice(0, 7) : ''),
+      selectedDate
+    );
+    let monthTo = normalizeMonthInput(
+      req.query?.monthTo || (hasDateRange ? requestedDateTo.slice(0, 7) : ''),
+      selectedDate
+    );
     if (monthFrom > monthTo) {
       const swap = monthFrom;
       monthFrom = monthTo;
       monthTo = swap;
     }
-    const periodStartDate = `${monthFrom}-01`;
-    const periodEndDate = getMonthEndIsoDate(monthTo);
+    let periodStartDate = hasDateRange ? requestedDateFrom : `${monthFrom}-01`;
+    let periodEndDate = hasDateRange ? requestedDateTo : getMonthEndIsoDate(monthTo);
+    if (periodStartDate > periodEndDate) {
+      const swap = periodStartDate;
+      periodStartDate = periodEndDate;
+      periodEndDate = swap;
+    }
+    monthFrom = periodStartDate.slice(0, 7);
+    monthTo = periodEndDate.slice(0, 7);
     const requestedEmployeeId = String(req.query?.employeeId || '').trim();
     const isEmployeeRole = normalizedRole === 'employee';
     const dashboardCacheKey = buildHotReadCacheKey([
@@ -3680,6 +3697,8 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       selectedDate,
       monthFrom,
       monthTo,
+      periodStartDate,
+      periodEndDate,
       requestedEmployeeId,
     ]);
     const cachedSummary = getHotReadCache(dashboardCacheKey);
@@ -3859,6 +3878,8 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
         periodSummary: {
           monthFrom,
           monthTo,
+          dateFrom: periodStartDate,
+          dateTo: periodEndDate,
           monthCount,
           totalSalary,
           amountDeducted: periodDeductionAmount,
@@ -4013,6 +4034,8 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       periodSummary: {
         monthFrom,
         monthTo,
+        dateFrom: periodStartDate,
+        dateTo: periodEndDate,
         monthCount,
         totalSalary: workforceTotalSalary,
         amountDeducted: periodDeductionAmount,
