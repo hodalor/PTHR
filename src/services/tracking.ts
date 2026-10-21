@@ -67,6 +67,7 @@ export const transmitLocation = async ({
     {
       method: 'POST',
       token: session.token,
+      tenantId: session.user.tenantId,
       body: {
         employeeId: session.user.employeeId,
         fullName: session.user.fullName,
@@ -101,6 +102,7 @@ export const reportLocationStatus = async ({
   const response = await apiRequest<{ ok: boolean; status?: string }>(apiBaseUrl, '/api/tracking/location-status', {
     method: 'POST',
     token: session.token,
+    tenantId: session.user.tenantId,
     body: {
       employeeId: session.user.employeeId,
       fullName: session.user.fullName,

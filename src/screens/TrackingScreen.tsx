@@ -39,8 +39,20 @@ const moduleLabels: Record<string, string> = {
   'leave-management': 'Leaves',
   'monitoring-tracking': 'Tracking',
 };
-const todayIso = () => new Date().toISOString().slice(0, 10);
-const currentMonthValue = () => new Date().toISOString().slice(0, 7);
+const todayIso = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+const currentMonthValue = () => todayIso().slice(0, 7);
+const monthEndIso = (monthValue: string) => {
+  const match = String(monthValue || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return todayIso();
+  }
+  const lastDay = new Date(Number(match[1]), Number(match[2]), 0).getDate();
+  return `${match[1]}-${match[2]}-${String(lastDay).padStart(2, '0')}`;
+};
+const isIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
 const toMoneyNumber = (value: string | number | undefined) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
@@ -170,6 +182,8 @@ export const TrackingScreen = () => {
   const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' | 'info' } | null>(null);
   const [selectedMonthFrom, setSelectedMonthFrom] = useState(currentMonthValue());
   const [selectedMonthTo, setSelectedMonthTo] = useState(currentMonthValue());
+  const [selectedDateFrom, setSelectedDateFrom] = useState(`${currentMonthValue()}-01`);
+  const [selectedDateTo, setSelectedDateTo] = useState(todayIso());
   const [deductionModalVisible, setDeductionModalVisible] = useState(false);
   const monthOptions = useMemo(() => buildRecentMonthOptions(12), []);
 
@@ -203,24 +217,37 @@ export const TrackingScreen = () => {
     try {
       const settings = await fetchMobileSettings(apiBaseUrl, session);
       setMobileSettings(settings);
+      const dateFrom = isIsoDate(selectedDateFrom) ? selectedDateFrom : `${selectedMonthFrom}-01`;
+      const dateTo = isIsoDate(selectedDateTo) ? selectedDateTo : todayIso();
       const [profileResult, attendanceResult, loanResult, leaveResult, summaryResult] = await Promise.allSettled([
         fetchEmployeeProfile(apiBaseUrl, session),
         fetchEmployeeAttendanceRows(apiBaseUrl, session),
         fetchEmployeeLoanRows(apiBaseUrl, session),
         fetchEmployeeLeaveRows(apiBaseUrl, session),
-        fetchEmployeeDashboardSummary(apiBaseUrl, session),
+        fetchEmployeeDashboardSummary(apiBaseUrl, session, {
+          date: dateTo,
+          dateFrom,
+          dateTo,
+          monthFrom: dateFrom.slice(0, 7),
+          monthTo: dateTo.slice(0, 7),
+        }),
       ]);
       setEmployeeProfile(profileResult.status === 'fulfilled' ? profileResult.value : null);
       setAttendanceRows(attendanceResult.status === 'fulfilled' ? attendanceResult.value : []);
       setLoanRows(loanResult.status === 'fulfilled' ? loanResult.value : []);
       setLeaveRows(leaveResult.status === 'fulfilled' ? leaveResult.value : []);
       setDashboardSummary(summaryResult.status === 'fulfilled' ? summaryResult.value : null);
+      if (summaryResult.status === 'rejected') {
+        const message =
+          summaryResult.reason instanceof Error ? summaryResult.reason.message : 'Unable to load dashboard summary';
+        setDashboardError(message);
+      }
     } catch (error) {
       setDashboardError(error instanceof Error ? error.message : 'Unable to load employee modules');
     } finally {
       setDashboardLoading(false);
     }
-  }, [apiBaseUrl, session]);
+  }, [apiBaseUrl, selectedDateFrom, selectedDateTo, selectedMonthFrom, session]);
 
   useEffect(() => {
     refreshDashboard();
@@ -256,10 +283,15 @@ export const TrackingScreen = () => {
     [attendanceRows]
   );
 
+  const employeeSummary =
+    dashboardSummary?.view === 'admin' && dashboardSummary.selectedEmployee
+      ? dashboardSummary.selectedEmployee
+      : dashboardSummary;
+
   const monthlySalary = useMemo(() => {
-    const fromPayroll = toMoneyNumber(dashboardSummary?.compensation?.grossPay);
-    if (fromPayroll > 0) {
-      return fromPayroll;
+    const fromApi = toMoneyNumber(employeeSummary?.compensation?.grossPay);
+    if (fromApi > 0) {
+      return fromApi;
     }
     return (
       toMoneyNumber(employeeProfile?.basicPay) +
@@ -268,24 +300,53 @@ export const TrackingScreen = () => {
       toMoneyNumber(employeeProfile?.housingAllowance) +
       toMoneyNumber(employeeProfile?.foodAllowance)
     );
-  }, [dashboardSummary?.compensation?.grossPay, employeeProfile]);
+  }, [employeeProfile, employeeSummary?.compensation?.grossPay]);
 
-  const normalizedMonthFrom = selectedMonthFrom <= selectedMonthTo ? selectedMonthFrom : selectedMonthTo;
-  const normalizedMonthTo = selectedMonthFrom <= selectedMonthTo ? selectedMonthTo : selectedMonthFrom;
+  const rangeDateFrom = isIsoDate(selectedDateFrom) ? selectedDateFrom : `${selectedMonthFrom}-01`;
+  const rangeDateTo = isIsoDate(selectedDateTo) ? selectedDateTo : todayIso();
+  const normalizedMonthFrom =
+    rangeDateFrom.slice(0, 7) <= rangeDateTo.slice(0, 7) ? rangeDateFrom.slice(0, 7) : rangeDateTo.slice(0, 7);
+  const normalizedMonthTo =
+    rangeDateFrom.slice(0, 7) <= rangeDateTo.slice(0, 7) ? rangeDateTo.slice(0, 7) : rangeDateFrom.slice(0, 7);
   const selectedMonthCount = countInclusiveMonths(normalizedMonthFrom, normalizedMonthTo);
 
-  const periodDeductionItems = useMemo(
-    () => buildDeductionItemsForMonths(attendanceRows, normalizedMonthFrom, normalizedMonthTo),
-    [attendanceRows, normalizedMonthFrom, normalizedMonthTo]
+  const localDeductionItems = useMemo(
+    () =>
+      buildDeductionItemsForMonths(attendanceRows, normalizedMonthFrom, normalizedMonthTo).filter((item) => {
+        if (rangeDateFrom && item.date < rangeDateFrom) {
+          return false;
+        }
+        if (rangeDateTo && item.date > rangeDateTo) {
+          return false;
+        }
+        return true;
+      }),
+    [attendanceRows, normalizedMonthFrom, normalizedMonthTo, rangeDateFrom, rangeDateTo]
   );
 
-  const periodDeductionAmount = useMemo(
-    () => periodDeductionItems.reduce((total, item) => total + item.amount, 0),
-    [periodDeductionItems]
-  );
-
-  const periodTotalSalary = monthlySalary * selectedMonthCount;
+  const apiPeriod = employeeSummary?.periodSummary;
+  const hasApiPeriod = Boolean(apiPeriod);
+  const periodDeductionItems =
+    Array.isArray(apiPeriod?.deductionItems) && apiPeriod.deductionItems.length > 0
+      ? apiPeriod.deductionItems
+      : localDeductionItems;
+  const periodDeductionAmount = hasApiPeriod
+    ? toMoneyNumber(apiPeriod?.amountDeducted)
+    : periodDeductionItems.reduce((total, item) => total + item.amount, 0);
+  const periodTotalSalary =
+    toMoneyNumber(apiPeriod?.totalSalary) > 0
+      ? toMoneyNumber(apiPeriod?.totalSalary)
+      : monthlySalary * selectedMonthCount;
   const periodRemainingBalance = Math.max(0, periodTotalSalary - periodDeductionAmount);
+
+  const applyMonthFrom = (monthValue: string) => {
+    setSelectedMonthFrom(monthValue);
+    setSelectedDateFrom(`${monthValue}-01`);
+  };
+  const applyMonthTo = (monthValue: string) => {
+    setSelectedMonthTo(monthValue);
+    setSelectedDateTo(monthEndIso(monthValue));
+  };
 
   const renderMonthChip = (monthValue: string, selectedValue: string, onSelect: (value: string) => void) => (
     <Pressable
@@ -316,19 +377,54 @@ export const TrackingScreen = () => {
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>Salary period</Text>
         <Text style={styles.detailText}>
-          Choose the month range used for total salary, deductions, and remaining balance.
+          Choose the date range used for total salary, deductions, and remaining balance. Summary cards load from the same dashboard API as the web app.
         </Text>
-        <Text style={styles.fieldLabel}>From</Text>
+        <View style={styles.fieldRow}>
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>From date</Text>
+            <TextInput
+              value={selectedDateFrom}
+              onChangeText={setSelectedDateFrom}
+              onEndEditing={() => {
+                if (isIsoDate(selectedDateFrom)) {
+                  setSelectedMonthFrom(selectedDateFrom.slice(0, 7));
+                }
+              }}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.fieldGroupWide}>
+            <Text style={styles.fieldLabel}>To date</Text>
+            <TextInput
+              value={selectedDateTo}
+              onChangeText={setSelectedDateTo}
+              onEndEditing={() => {
+                if (isIsoDate(selectedDateTo)) {
+                  setSelectedMonthTo(selectedDateTo.slice(0, 7));
+                }
+              }}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              style={styles.input}
+            />
+          </View>
+        </View>
+        <Text style={styles.fieldLabel}>From month</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthChipRow}>
-          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthFrom, setSelectedMonthFrom))}
+          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthFrom, applyMonthFrom))}
         </ScrollView>
-        <Text style={styles.fieldLabel}>To</Text>
+        <Text style={styles.fieldLabel}>To month</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthChipRow}>
-          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthTo, setSelectedMonthTo))}
+          {monthOptions.map((monthValue) => renderMonthChip(monthValue, selectedMonthTo, applyMonthTo))}
         </ScrollView>
         <Text style={styles.cardHelperText}>
-          {formatMonthLabel(normalizedMonthFrom)}
-          {normalizedMonthFrom === normalizedMonthTo ? '' : ` → ${formatMonthLabel(normalizedMonthTo)}`}
+          {rangeDateFrom} → {rangeDateTo}
+          {` • ${formatMonthLabel(normalizedMonthFrom)}`}
+          {normalizedMonthFrom === normalizedMonthTo ? '' : ` to ${formatMonthLabel(normalizedMonthTo)}`}
           {` • ${selectedMonthCount} month(s)`}
         </Text>
       </View>

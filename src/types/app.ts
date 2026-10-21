@@ -69,10 +69,31 @@ export type DeductionItem = {
   amount: number;
 };
 
+export type PeriodSummary = {
+  monthFrom?: string;
+  monthTo?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  monthCount?: number;
+  totalSalary?: number;
+  amountDeducted?: number;
+  remainingBalance?: number;
+  lateMinutes?: number;
+  deductionItems?: DeductionItem[];
+};
+
+export type EmployeePaySummary = {
+  source?: string;
+  grossPay?: number;
+  totalDeductions?: number;
+  takeHomePay?: number;
+  payrollPeriod?: string;
+};
+
 export type EmployeeDashboardSummary = {
-  view: 'employee';
+  view: 'employee' | 'admin';
   date: string;
-  employee: {
+  employee?: {
     id: string;
     fullName: string;
     department?: string;
@@ -85,10 +106,22 @@ export type EmployeeDashboardSummary = {
     status?: string;
     lateMinutes?: number;
     deductionAmount?: number;
+    totalDeductionAmount?: number;
   };
   monthToDate: {
     lateMinutes?: number;
     deductionAmount?: number;
+    totalDeductionAmount?: number;
+  };
+  periodSummary?: PeriodSummary;
+  selectedEmployee?: {
+    employee?: EmployeeDashboardSummary['employee'];
+    compensation?: EmployeePaySummary;
+    periodSummary?: PeriodSummary;
+    attendance?: EmployeeDashboardSummary['attendance'];
+    monthToDate?: EmployeeDashboardSummary['monthToDate'];
+    loans?: EmployeeDashboardSummary['loans'];
+    leaves?: EmployeeDashboardSummary['leaves'];
   };
   loans: {
     activeCount?: number;
@@ -98,13 +131,7 @@ export type EmployeeDashboardSummary = {
     pendingCount?: number;
     approvedCount?: number;
   };
-  compensation: {
-    source?: string;
-    grossPay?: number;
-    totalDeductions?: number;
-    takeHomePay?: number;
-    payrollPeriod?: string;
-  };
+  compensation?: EmployeePaySummary;
 };
 
 export type EmployeeProfile = {

@@ -38,7 +38,13 @@ const defaultMobileSettings: MobileSettings = {
   allowTrackingView: true,
 };
 
-const nowDate = () => new Date().toISOString().slice(0, 10);
+const nowDate = () => {
+  const current = new Date();
+  const year = current.getFullYear();
+  const month = String(current.getMonth() + 1).padStart(2, '0');
+  const day = String(current.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 const runWithTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -225,6 +231,7 @@ export const fetchMobileSettings = async (apiBaseUrl: string, session: AuthSessi
   try {
     const response = await apiRequest<Partial<MobileSettings>>(apiBaseUrl, '/api/mobile/settings', {
       token: session.token,
+    tenantId: session.user.tenantId,
     });
     return {
       ...defaultMobileSettings,
@@ -241,6 +248,7 @@ export const fetchMobileSettings = async (apiBaseUrl: string, session: AuthSessi
 export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSession) => {
   const response = await apiRequest<{ records?: EmployeeProfile[] }>(apiBaseUrl, '/api/modules/employee-management', {
     token: session.token,
+    tenantId: session.user.tenantId,
   });
   const rows = Array.isArray(response.records) ? response.records : [];
   const employeeId = String(session.user.employeeId || '').trim();
@@ -252,9 +260,32 @@ export const fetchEmployeeProfile = async (apiBaseUrl: string, session: AuthSess
   );
 };
 
-export const fetchEmployeeDashboardSummary = async (apiBaseUrl: string, session: AuthSession, date = nowDate()) => {
-  return apiRequest<EmployeeDashboardSummary>(apiBaseUrl, `/api/dashboard/summary?date=${encodeURIComponent(date)}`, {
+export const fetchEmployeeDashboardSummary = async (
+  apiBaseUrl: string,
+  session: AuthSession,
+  options: { date?: string; dateFrom?: string; dateTo?: string; monthFrom?: string; monthTo?: string } = {}
+) => {
+  const date = options.date || nowDate();
+  const params = new URLSearchParams({ date });
+  if (options.dateFrom) {
+    params.set('dateFrom', options.dateFrom);
+  }
+  if (options.dateTo) {
+    params.set('dateTo', options.dateTo);
+  }
+  if (options.monthFrom) {
+    params.set('monthFrom', options.monthFrom);
+  }
+  if (options.monthTo) {
+    params.set('monthTo', options.monthTo);
+  }
+  const employeeId = String(session.user.employeeId || '').trim();
+  if (employeeId) {
+    params.set('employeeId', employeeId);
+  }
+  return apiRequest<EmployeeDashboardSummary>(apiBaseUrl, `/api/dashboard/summary?${params.toString()}`, {
     token: session.token,
+    tenantId: session.user.tenantId,
   });
 };
 
@@ -287,6 +318,7 @@ export const getAvailableEmployeeModules = (session: AuthSession, settings: Mobi
 export const fetchEmployeeAttendanceRows = async (apiBaseUrl: string, session: AuthSession) => {
   const response = await apiRequest<{ records?: AttendanceRecord[] }>(apiBaseUrl, '/api/modules/attendance-time', {
     token: session.token,
+    tenantId: session.user.tenantId,
   });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
@@ -295,6 +327,7 @@ export const fetchEmployeeAttendanceRows = async (apiBaseUrl: string, session: A
 export const fetchEmployeeLoanRows = async (apiBaseUrl: string, session: AuthSession) => {
   const response = await apiRequest<{ records?: LoanRecord[] }>(apiBaseUrl, '/api/modules/loan-records', {
     token: session.token,
+    tenantId: session.user.tenantId,
   });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.issuedOn || '').localeCompare(String(a.issuedOn || '')));
@@ -303,6 +336,7 @@ export const fetchEmployeeLoanRows = async (apiBaseUrl: string, session: AuthSes
 export const fetchEmployeeLeaveRows = async (apiBaseUrl: string, session: AuthSession) => {
   const response = await apiRequest<{ records?: LeaveRecord[] }>(apiBaseUrl, '/api/modules/leave-management', {
     token: session.token,
+    tenantId: session.user.tenantId,
   });
   const rows = Array.isArray(response.records) ? response.records : [];
   return filterRowsForEmployee(rows, session).sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
@@ -371,6 +405,7 @@ export const submitLoanRequest = async (
   const response = await apiRequest<{ record?: LoanRecord }>(apiBaseUrl, '/api/modules/loan-records', {
     method: 'POST',
     token: session.token,
+    tenantId: session.user.tenantId,
     body: payload,
   });
 
@@ -423,6 +458,7 @@ export const submitLeaveRequest = async (
   const response = await apiRequest<{ record?: LeaveRecord }>(apiBaseUrl, '/api/modules/leave-management', {
     method: 'POST',
     token: session.token,
+    tenantId: session.user.tenantId,
     body: payload,
   });
 
@@ -553,6 +589,7 @@ export const saveAttendanceClock = async ({ apiBaseUrl, session, settings, track
   const persisted = await apiRequest<{ record?: AttendanceRecord }>(apiBaseUrl, endpoint, {
     method,
     token: session.token,
+    tenantId: session.user.tenantId,
     body: payload,
   });
   const persistedRecord = persisted?.record || payload;
