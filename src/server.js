@@ -3653,7 +3653,12 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
           tenantId: req.tenantId,
           defaultEmployeeModules,
         });
-    if (!allowedModules.includes('dashboard')) {
+    const tenantGrantedModules = isMasterSuperAdmin
+      ? allModules
+      : resolveTenantGrantedModules(req.tenant?.packageType, req.tenant?.grantedModules);
+    const tenantHasDashboard = tenantGrantedModules.includes('dashboard') || tenantGrantedModules.includes('*');
+    const userHasDashboard = allowedModules.includes('dashboard') || allowedModules.includes('*');
+    if (!tenantHasDashboard && !userHasDashboard) {
       res.status(403).json({ error: 'Forbidden: dashboard not enabled for this tenant/user' });
       return;
     }
@@ -3687,7 +3692,12 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
     monthFrom = periodStartDate.slice(0, 7);
     monthTo = periodEndDate.slice(0, 7);
     const requestedEmployeeId = String(req.query?.employeeId || '').trim();
+    const selfEmployeeId = String(authUser?.employeeId || '').trim();
     const isEmployeeRole = normalizedRole === 'employee';
+    const isRequestingOwnEmployeeSummary =
+      Boolean(selfEmployeeId) &&
+      requestedEmployeeId === selfEmployeeId &&
+      ['employee', 'manager', 'hr'].includes(normalizedRole);
     const dashboardCacheKey = buildHotReadCacheKey([
       'tenant',
       req.tenantId,
@@ -3912,8 +3922,8 @@ app.get('/api/dashboard/summary', requireAuthenticatedTenantContext, async (req,
       };
     };
 
-    if (isEmployeeRole) {
-      const employeeId = String(authUser?.employeeId || '').trim();
+    if (isEmployeeRole || isRequestingOwnEmployeeSummary) {
+      const employeeId = selfEmployeeId || requestedEmployeeId;
       const employeeName = String(authUser?.fullName || '').trim();
       const payload = await buildEmployeeSummaryPayload({ employeeId, employeeName, includeView: true });
       if (!payload) {
