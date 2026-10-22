@@ -52,6 +52,12 @@
         "CAMERA",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ]
     },
     "plugins": [
@@ -65,10 +71,13 @@
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
             "minSdkVersion": 24,
-            "ndkVersion": "27.0.12077973"
+            "buildToolsVersion": "35.0.0",
+            "ndkVersion": "27.1.12297006",
+            "useLegacyPackaging": false
           }
         }
       ],
+      "./plugins/with16KbPageSize",
       [
         "expo-location",
         {
@@ -81,10 +90,11 @@
       [
         "expo-image-picker",
         {
+          "photosPermission": false,
+          "microphonePermission": false,
           "cameraPermission": "Allow PTHR to use the camera to capture a required clock-in photo."
         }
-      ],
-      "expo-build-properties"
+      ]
     ],
     "extra": {
       "appEnv": "production-ready"

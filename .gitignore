@@ -45,3 +45,6 @@ yarn-error.*
 
 # Gradle build cache (huge generated caches)
 .gradle-home/
+
+# Play upload signing (back up this folder privately)
+credentials/

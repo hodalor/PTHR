@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { colors } from '../theme';
 
@@ -87,6 +87,16 @@ export const LoginScreen = ({ onForgotPassword }: LoginScreenProps) => {
             <Text style={styles.linkText}>Forgot password?</Text>
           </Pressable>
         ) : null}
+
+        <View style={styles.legalRow}>
+          <Pressable onPress={() => Linking.openURL('https://pthr.netlify.app/tandc')}>
+            <Text style={styles.legalLink}>Terms</Text>
+          </Pressable>
+          <Text style={styles.legalDivider}>·</Text>
+          <Pressable onPress={() => Linking.openURL('https://pthr.netlify.app/policy')}>
+            <Text style={styles.legalLink}>Privacy Policy</Text>
+          </Pressable>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -162,5 +172,22 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: '700',
     fontSize: 14,
+  },
+  legalRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 4,
+  },
+  legalLink: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  legalDivider: {
+    color: colors.textMuted,
+    fontSize: 13,
   },
 });
