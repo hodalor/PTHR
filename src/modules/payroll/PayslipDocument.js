@@ -2,7 +2,34 @@ import React, { useMemo } from 'react';
 
 const DEFAULT_CURRENCY_CODE = 'GHS';
 
-const formatCurrency = (value, currency = DEFAULT_CURRENCY_CODE) => {
+const EARNING_LINES = [
+  { key: 'basicPay', label: 'Basic Pay' },
+  { key: 'monthlyBonuses', label: 'Bonus / Commission' },
+  { key: 'transportAllowance', label: 'Transport Allowance' },
+  { key: 'housingAllowance', label: 'Housing Allowance' },
+  { key: 'foodAllowance', label: 'Food Allowance' },
+  { key: 'overtimeEarnings', label: 'Overtime Pay' },
+];
+
+const DEDUCTION_LINES = [
+  { key: 'napsaDeduction', label: 'Pension Scheme' },
+  { key: 'nhimaDeduction', label: 'Health Insurance' },
+  { key: 'taxDeduction', label: 'PAYE / Income Tax' },
+  { key: 'otherDeduction', label: 'Other Deductions / Loans' },
+  { key: 'lateDeduction', label: 'Late Deduction' },
+  { key: 'noClockInPenalty', label: 'No Clock-In Penalty' },
+  { key: 'noClockOutPenalty', label: 'No Clock-Out Penalty' },
+  { key: 'absentPenalty', label: 'Absent Penalty' },
+];
+
+const money = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const roundMoney = (value) => Math.round((money(value) + Number.EPSILON) * 100) / 100;
+
+export const formatCurrency = (value, currency = DEFAULT_CURRENCY_CODE) => {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return '—';
@@ -19,120 +46,122 @@ const formatCurrency = (value, currency = DEFAULT_CURRENCY_CODE) => {
   }
 };
 
-const formatNumber = (value, digits = 2) => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return '—';
-  }
-  return new Intl.NumberFormat('en-GB', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(numeric);
+export const buildEarningsBreakdown = (payrollRow) => {
+  const rows = EARNING_LINES.map((line) => {
+    const extra =
+      line.key === 'overtimeEarnings' && money(payrollRow?.overtimeMinutes) > 0
+        ? ` (${Math.round(money(payrollRow.overtimeMinutes) / 60)} hrs)`
+        : '';
+    return {
+      key: line.key,
+      label: `${line.label}${extra}`,
+      value: roundMoney(payrollRow?.[line.key]),
+    };
+  });
+  const total = roundMoney(rows.reduce((sum, row) => sum + row.value, 0));
+  const storedGross = roundMoney(payrollRow?.totalEarnings || payrollRow?.grossPay);
+  return {
+    rows,
+    total: storedGross > 0 ? storedGross : total,
+  };
 };
 
-const buildEarningsRows = (payrollRow) => {
-  const rows = [];
-  if (Number(payrollRow?.basicPay) > 0) {
-    rows.push({ label: 'Basic Pay', value: Number(payrollRow.basicPay) || 0 });
-  }
-  if (Number(payrollRow?.overtimeEarnings) > 0) {
+export const buildDeductionsBreakdown = (payrollRow) => {
+  const rows = DEDUCTION_LINES.map((line) => ({
+    key: line.key,
+    label: line.label,
+    value: roundMoney(payrollRow?.[line.key]),
+  }));
+  const attendanceParts =
+    money(payrollRow?.lateDeduction) +
+    money(payrollRow?.noClockInPenalty) +
+    money(payrollRow?.noClockOutPenalty) +
+    money(payrollRow?.absentPenalty);
+  const attendanceTotal = roundMoney(payrollRow?.totalAttendancePenalty);
+  if (attendanceTotal > attendanceParts + 0.009) {
     rows.push({
-      label: 'Overtime Pay',
-      hours: Math.round((Number(payrollRow.overtimeMinutes) || 0) / 60),
-      value: Number(payrollRow.overtimeEarnings) || 0,
+      key: 'otherAttendancePenalty',
+      label: 'Other Attendance Penalties',
+      value: roundMoney(attendanceTotal - attendanceParts),
     });
   }
-  if (Number(payrollRow?.monthlyBonuses) > 0) {
-    rows.push({ label: 'Bonus / Commission', value: Number(payrollRow.monthlyBonuses) || 0 });
+  const partsSum = roundMoney(rows.reduce((sum, row) => sum + row.value, 0));
+  const storedTotal = roundMoney(payrollRow?.totalDeductions);
+  if (storedTotal > partsSum + 0.009) {
+    const otherRow = rows.find((row) => row.key === 'otherDeduction');
+    const remainder = roundMoney(storedTotal - partsSum);
+    if (otherRow) {
+      otherRow.value = roundMoney(otherRow.value + remainder);
+    } else {
+      rows.push({ key: 'otherDeduction', label: 'Other Deductions / Loans', value: remainder });
+    }
   }
-  if (Number(payrollRow?.transportAllowance) > 0) {
-    rows.push({ label: 'Transport Allowance', value: Number(payrollRow.transportAllowance) || 0 });
-  }
-  if (Number(payrollRow?.housingAllowance) > 0) {
-    rows.push({ label: 'Housing Allowance', value: Number(payrollRow.housingAllowance) || 0 });
-  }
-  if (Number(payrollRow?.foodAllowance) > 0) {
-    rows.push({ label: 'Food Allowance', value: Number(payrollRow.foodAllowance) || 0 });
-  }
-  if (Number(payrollRow?.grossPay) > 0) {
-    rows.push({ label: 'Gross Pay (pre-deductions)', value: Number(payrollRow.grossPay) || 0 });
-  }
-  if (rows.length === 0 && Number(payrollRow?.totalEarnings) > 0) {
-    rows.push({ label: 'Total Earnings', value: Number(payrollRow.totalEarnings) || 0 });
-  }
-  return rows;
+  const total = roundMoney(rows.reduce((sum, row) => sum + row.value, 0));
+  return { rows, total };
 };
 
-const buildDeductionsRows = (payrollRow) => {
-  const rows = [];
-  if (Number(payrollRow?.napsaDeduction) > 0) {
-    rows.push({ label: 'Pension Scheme', value: Number(payrollRow.napsaDeduction) || 0 });
-  }
-  if (Number(payrollRow?.nhimaDeduction) > 0) {
-    rows.push({ label: 'Health Insurance', value: Number(payrollRow.nhimaDeduction) || 0 });
-  }
-  if (Number(payrollRow?.taxDeduction) > 0) {
-    rows.push({ label: 'PAYE / Income Tax', value: Number(payrollRow.taxDeduction) || 0 });
-  }
-  if (Number(payrollRow?.otherDeduction) > 0) {
-    rows.push({ label: 'Other Deductions / Loans', value: Number(payrollRow.otherDeduction) || 0 });
-  }
-  if (Number(payrollRow?.totalAttendancePenalty) > 0) {
-    rows.push({ label: 'Attendance Penalties', value: Number(payrollRow.totalAttendancePenalty) || 0 });
-  }
-  if (Number(payrollRow?.totalDeductions) > 0) {
-    rows.push({ label: 'Total Deductions before rounding', value: Number(payrollRow.totalDeductions) || 0 });
-  }
-  return rows;
-};
+const employeeMonthKey = (row) => String(row?.employeeId || row?.employee || '').trim().toLowerCase();
 
 const computePayrollYtd = ({ payrollRow, allPayrollRows = [] }) => {
-  const employeeKey = String(payrollRow?.employeeId || payrollRow?.employee || '').trim().toLowerCase();
+  const employeeKey = employeeMonthKey(payrollRow);
+  const currentMonth = String(payrollRow?.month || '').slice(0, 7);
+  const empty = {
+    grossPay: 0,
+    totalDeductions: 0,
+    netPay: 0,
+    earnings: {},
+    deductions: {},
+  };
   if (!employeeKey) {
+    const currentEarnings = buildEarningsBreakdown(payrollRow);
+    const currentDeductions = buildDeductionsBreakdown(payrollRow);
     return {
-      grossPay: Number(payrollRow?.totalEarnings || payrollRow?.grossPay || 0) || 0,
-      totalDeductions: Number(payrollRow?.totalDeductions || 0) || 0,
-      netPay: Number(payrollRow?.netPayable || 0) || 0,
+      grossPay: currentEarnings.total,
+      totalDeductions: currentDeductions.total,
+      netPay: money(payrollRow?.netPayable),
+      earnings: Object.fromEntries(currentEarnings.rows.map((row) => [row.key, row.value])),
+      deductions: Object.fromEntries(currentDeductions.rows.map((row) => [row.key, row.value])),
     };
   }
-  const currentMonth = String(payrollRow?.month || '').slice(0, 7);
-  const totals = allPayrollRows.reduce(
-    (acc, row) => {
-      const rowKey = String(row?.employeeId || row?.employee || '').trim().toLowerCase();
-      const rowMonth = String(row?.month || '').slice(0, 7);
-      if (rowKey !== employeeKey) {
-        return acc;
-      }
-      if (currentMonth && rowMonth && rowMonth > currentMonth) {
-        return acc;
-      }
-      acc.grossPay += Number(row?.totalEarnings || row?.grossPay || 0) || 0;
-      acc.totalDeductions += Number(row?.totalDeductions || 0) || 0;
-      acc.netPay += Number(row?.netPayable || 0) || 0;
+  return (Array.isArray(allPayrollRows) ? allPayrollRows : []).reduce((acc, row) => {
+    if (employeeMonthKey(row) !== employeeKey) {
       return acc;
-    },
-    { grossPay: 0, totalDeductions: 0, netPay: 0 }
-  );
-  return totals;
+    }
+    const rowMonth = String(row?.month || '').slice(0, 7);
+    if (currentMonth && rowMonth && rowMonth > currentMonth) {
+      return acc;
+    }
+    const earnings = buildEarningsBreakdown(row);
+    const deductions = buildDeductionsBreakdown(row);
+    earnings.rows.forEach((line) => {
+      acc.earnings[line.key] = roundMoney((acc.earnings[line.key] || 0) + line.value);
+    });
+    deductions.rows.forEach((line) => {
+      acc.deductions[line.key] = roundMoney((acc.deductions[line.key] || 0) + line.value);
+    });
+    acc.grossPay = roundMoney(acc.grossPay + earnings.total);
+    acc.totalDeductions = roundMoney(acc.totalDeductions + deductions.total);
+    acc.netPay = roundMoney(acc.netPay + money(row?.netPayable));
+    return acc;
+  }, empty);
 };
 
-export function PayslipDocument({ company, employee, payroll, payrollRow, allPayrollRows, currency }) {
+export function PayslipDocument({ company, employee, payroll, payrollRow, allPayrollRows, currency, documentRef }) {
   const currencyCode = String(currency || company?.defaultCurrency || DEFAULT_CURRENCY_CODE).toUpperCase();
   const primaryColor = String(company?.primaryColor || '#0f4ca3');
   const secondaryColor = String(company?.secondaryColor || '#21aa9c');
   const companyName = String(company?.companyName || 'PTHR');
   const logoUrl = String(company?.logoUrl || '').trim();
-  const earningsRows = useMemo(() => buildEarningsRows(payrollRow), [payrollRow]);
-  const deductionsRows = useMemo(() => buildDeductionsRows(payrollRow), [payrollRow]);
+  const earnings = useMemo(() => buildEarningsBreakdown(payrollRow), [payrollRow]);
+  const deductions = useMemo(() => buildDeductionsBreakdown(payrollRow), [payrollRow]);
   const ytd = useMemo(
     () => computePayrollYtd({ payrollRow, allPayrollRows: Array.isArray(allPayrollRows) ? allPayrollRows : [] }),
     [payrollRow, allPayrollRows]
   );
-  const grossPay = Number(payrollRow?.totalEarnings || payrollRow?.grossPay || 0) || 0;
-  const totalDeductions = Number(payrollRow?.totalDeductions || 0) || 0;
-  const netPay = Number(payrollRow?.netPayable || 0) || 0;
+  const netPay = roundMoney(money(payrollRow?.netPayable) || earnings.total - deductions.total);
+
   return (
-    <div className="payslip-document" style={{ background: '#fff' }}>
+    <div className="payslip-document" ref={documentRef} style={{ background: '#fff' }}>
       <div className="payslip-letterhead" style={{ background: `linear-gradient(135deg, ${primaryColor} 0%, ${secondaryColor} 100%)` }}>
         <div>
           <div className="payslip-company-name">{companyName}</div>
@@ -204,13 +233,13 @@ export function PayslipDocument({ company, employee, payroll, payrollRow, allPay
             ) : null}
             {employee?.pensionId || payrollRow?.pensionId ? (
               <div>
-                <span>Pension / NAPSA ID</span>
+                <span>Pension ID</span>
                 <strong>{employee.pensionId || payrollRow.pensionId || '—'}</strong>
               </div>
             ) : null}
             {employee?.nhimaNumber || payrollRow?.nhimaNumber ? (
               <div>
-                <span>NHIMA ID</span>
+                <span>Health Insurance ID</span>
                 <strong>{employee.nhimaNumber || payrollRow.nhimaNumber || '—'}</strong>
               </div>
             ) : null}
@@ -255,32 +284,28 @@ export function PayslipDocument({ company, employee, payroll, payrollRow, allPay
         <table className="payslip-table">
           <thead>
             <tr>
-              <th colSpan="3" className="payslip-table-header" style={{ background: primaryColor }}>
+              <th className="payslip-table-header" style={{ background: primaryColor }}>
                 EARNINGS
               </th>
-              <th className="payslip-table-header" style={{ background: primaryColor }}>
+              <th className="payslip-table-header payslip-num" style={{ background: primaryColor }}>
                 CURRENT
               </th>
-              <th className="payslip-table-header payslip-table-header-alt" style={{ background: secondaryColor }}>
+              <th className="payslip-table-header payslip-num payslip-table-header-alt" style={{ background: secondaryColor }}>
                 YTD
               </th>
             </tr>
           </thead>
           <tbody>
-            {earningsRows.map((row, index) => (
-              <tr key={`earn-${index}`}>
+            {earnings.rows.map((row) => (
+              <tr key={`earn-${row.key}`}>
                 <td>{row.label}</td>
-                <td className="payslip-num">{row.hours !== undefined && row.hours !== null ? formatNumber(row.hours, 0) : ''}</td>
-                <td className="payslip-num">{row.rate ? formatCurrency(row.rate, currencyCode) : ''}</td>
                 <td className="payslip-num payslip-strong">{formatCurrency(row.value, currencyCode)}</td>
-                <td className="payslip-num payslip-alt">—</td>
+                <td className="payslip-num payslip-alt">{formatCurrency(ytd.earnings[row.key] || 0, currencyCode)}</td>
               </tr>
             ))}
             <tr className="payslip-table-total">
-              <td colSpan="3" className="payslip-total-label">
-                GROSS PAY
-              </td>
-              <td className="payslip-num payslip-strong payslip-total-value">{formatCurrency(grossPay, currencyCode)}</td>
+              <td className="payslip-total-label">GROSS PAY</td>
+              <td className="payslip-num payslip-strong payslip-total-value">{formatCurrency(earnings.total, currencyCode)}</td>
               <td className="payslip-num payslip-alt payslip-strong payslip-total-value">{formatCurrency(ytd.grossPay, currencyCode)}</td>
             </tr>
           </tbody>
@@ -289,38 +314,34 @@ export function PayslipDocument({ company, employee, payroll, payrollRow, allPay
         <table className="payslip-table">
           <thead>
             <tr>
-              <th className="payslip-table-header" colSpan="3" style={{ background: primaryColor }}>
+              <th className="payslip-table-header" style={{ background: primaryColor }}>
                 DEDUCTIONS
               </th>
-              <th className="payslip-table-header" style={{ background: primaryColor }}>
+              <th className="payslip-table-header payslip-num" style={{ background: primaryColor }}>
                 CURRENT
               </th>
-              <th className="payslip-table-header payslip-table-header-alt" style={{ background: secondaryColor }}>
+              <th className="payslip-table-header payslip-num payslip-table-header-alt" style={{ background: secondaryColor }}>
                 YTD
               </th>
             </tr>
           </thead>
           <tbody>
-            {deductionsRows.map((row, index) => (
-              <tr key={`ded-${index}`}>
-                <td colSpan="3">{row.label}</td>
+            {deductions.rows.map((row) => (
+              <tr key={`ded-${row.key}`}>
+                <td>{row.label}</td>
                 <td className="payslip-num payslip-strong">{formatCurrency(row.value, currencyCode)}</td>
-                <td className="payslip-num payslip-alt">—</td>
+                <td className="payslip-num payslip-alt">{formatCurrency(ytd.deductions[row.key] || 0, currencyCode)}</td>
               </tr>
             ))}
             <tr className="payslip-table-total">
-              <td colSpan="3" className="payslip-total-label">
-                TOTAL DEDUCTIONS
-              </td>
-              <td className="payslip-num payslip-strong payslip-total-value">{formatCurrency(totalDeductions, currencyCode)}</td>
+              <td className="payslip-total-label">TOTAL DEDUCTIONS</td>
+              <td className="payslip-num payslip-strong payslip-total-value">{formatCurrency(deductions.total, currencyCode)}</td>
               <td className="payslip-num payslip-alt payslip-strong payslip-total-value">{formatCurrency(ytd.totalDeductions, currencyCode)}</td>
             </tr>
           </tbody>
         </table>
 
         <div className="payslip-net-pay-section">
-          <div />
-          <div />
           <div className="payslip-net-pay-tile" style={{ borderTop: `4px solid ${primaryColor}` }}>
             <span>NET PAY</span>
             <strong>{formatCurrency(netPay, currencyCode)}</strong>
@@ -333,9 +354,7 @@ export function PayslipDocument({ company, employee, payroll, payrollRow, allPay
       </div>
 
       <div className="payslip-footer">
-        <p>
-          If you have any questions about this payslip, please contact your HR / Payroll administrator.
-        </p>
+        <p>If you have any questions about this payslip, please contact your HR / Payroll administrator.</p>
         <p>
           This document was generated by <strong>{companyName}</strong>.
         </p>

@@ -4,6 +4,7 @@ import PayrollRecordForm from './PayrollRecordForm';
 import PayslipDocument from './PayslipDocument';
 import { enhancePayrollRows } from './enhancePayrollRows';
 import { parsePayrollCsvRows, downloadPayrollTemplate } from './payrollImport';
+import { printPayslipDocument } from './printPayslip';
 import { computePayrollPreviewValues, formatPayrollPeriodLabel, toPayrollMonthInputValue } from './payrollUtils';
 import { usePayrollForm } from './usePayrollForm';
 
@@ -85,6 +86,7 @@ export const usePayrollAdapter = ({
 }) => {
   const active = activeModuleId === 'payroll-management';
   const payrollUploadInputRef = useRef(null);
+  const payslipDocumentRef = useRef(null);
 
   const { payrollFormEmployeeMatches, selectedPayrollFormEmployee, payrollPreviewValues } = usePayrollForm({
     active,
@@ -356,35 +358,9 @@ export const usePayrollAdapter = ({
       paymentMethod: payrollRow.bankAccountNumber || payrollRow.mobileMoneyNumber ? 'Bank / Mobile Money Transfer' : 'Bank Transfer',
     };
     const allPayrollRows = Array.isArray(moduleRowsState?.['payroll-management']) ? moduleRowsState['payroll-management'] : [];
-    const handleOpenPrintPayslip = () => {
+    const handleOpenPrintPayslip = async () => {
       try {
-        const body = document.body;
-        if (!body) {
-          return;
-        }
-        body.classList.add('payslip-print-mode');
-        const cleanup = () => {
-          body.classList.remove('payslip-print-mode');
-          window.removeEventListener('afterprint', cleanup);
-          window.removeEventListener('beforeprint', clearFocus);
-        };
-        const clearFocus = () => {
-          if (document.activeElement && typeof document.activeElement.blur === 'function') {
-            document.activeElement.blur();
-          }
-        };
-        clearFocus();
-        window.addEventListener('afterprint', cleanup, { once: true });
-        setTimeout(() => {
-          try {
-            window.print();
-          } catch (error) {
-            cleanup();
-            showToast('Unable to open print dialog. Please use Ctrl+P / Cmd+P instead.', 'error');
-          } finally {
-            setTimeout(() => cleanup(), 100);
-          }
-        }, 240);
+        await printPayslipDocument(payslipDocumentRef.current);
       } catch (error) {
         showToast('Unable to open print dialog. Please use Ctrl+P / Cmd+P instead.', 'error');
       }
@@ -407,6 +383,7 @@ export const usePayrollAdapter = ({
             payrollRow={payrollRow}
             allPayrollRows={allPayrollRows}
             currency={company.defaultCurrency}
+            documentRef={payslipDocumentRef}
           />
         </div>
         {payrollLoansForHeader.length > 0 ? (

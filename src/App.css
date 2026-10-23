@@ -2685,6 +2685,9 @@ tbody tr:hover {
   box-shadow: 0 10px 30px rgba(15, 30, 60, 0.06);
   font-family: "Segoe UI", Arial, sans-serif;
   color: #172a45;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  color-adjust: exact;
 }
 
 .payslip-letterhead {
@@ -2795,6 +2798,12 @@ tbody tr:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+
+.payslip-info-grid strong {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .payslip-info-label {
@@ -2821,10 +2830,23 @@ tbody tr:hover {
 
 .payslip-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid #e3ecf5;
+}
+
+.payslip-table th:first-child,
+.payslip-table td:first-child {
+  width: 52%;
+}
+
+.payslip-table th:nth-child(2),
+.payslip-table td:nth-child(2),
+.payslip-table th:nth-child(3),
+.payslip-table td:nth-child(3) {
+  width: 24%;
 }
 
 .payslip-table th,
@@ -2881,9 +2903,9 @@ tbody tr:hover {
 
 .payslip-net-pay-section {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
   margin-top: 4px;
 }
 
@@ -2891,14 +2913,12 @@ tbody tr:hover {
   background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);
   border-radius: 14px;
   padding: 14px 16px 16px;
-  grid-column: 3;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .payslip-net-pay-tile-alt {
-  grid-column: 4;
   background: linear-gradient(180deg, #f4fffc 0%, #e5fff9 100%);
 }
 
@@ -2936,57 +2956,24 @@ tbody tr:hover {
   gap: 4px;
 }
 
-body.payslip-print-mode {
-  background: #fff !important;
-  color: #172a45 !important;
-}
-
-body.payslip-print-mode * {
-  visibility: hidden !important;
-  box-shadow: none !important;
-  text-shadow: none !important;
-}
-
-body.payslip-print-mode .payslip-print-root,
-body.payslip-print-mode .payslip-print-root * {
-  visibility: visible !important;
-}
-
-body.payslip-print-mode .payslip-print-root {
-  position: static !important;
-  width: 100% !important;
-  min-height: auto !important;
-  background: #fff !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  display: block !important;
-}
-
-body.payslip-print-mode .payslip-print-root .payslip-actions {
-  display: none !important;
-}
-
-body.payslip-print-mode .payslip-document {
-  max-width: none !important;
-  width: 100% !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  border: none !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-}
-
 @media print {
   @page {
-    size: A4;
+    size: A4 portrait;
     margin: 8mm 10mm;
   }
 
-  body.payslip-print-mode {
-    background: #fff;
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
   }
 
-  body.payslip-print-mode * {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
     box-shadow: none !important;
     text-shadow: none !important;
   }
@@ -2995,13 +2982,41 @@ body.payslip-print-mode .payslip-document {
     display: none !important;
   }
 
-  .payslip-net-pay-section {
+  .payslip-letterhead,
+  .payslip-table-header,
+  .payslip-table-header-alt,
+  .payslip-panel,
+  .payslip-net-pay-tile,
+  .payslip-info-grid > div {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .payslip-document {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+
+  .payslip-table,
+  .payslip-panel,
+  .payslip-net-pay-section,
+  .payslip-letterhead {
     break-inside: avoid;
     page-break-inside: avoid;
   }
 
-  .payslip-document {
-    page-break-inside: avoid;
-    break-inside: avoid;
+  .payslip-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .payslip-info-grid {
+    grid-template-columns: 1fr 1fr 1fr;
   }
 }

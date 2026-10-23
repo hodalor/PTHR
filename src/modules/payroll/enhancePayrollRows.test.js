@@ -237,4 +237,41 @@ describe('enhancePayrollRows attendance penalties', () => {
     expect(results[0].noClockInPenalty).toBe('0.00');
     expect(results[0].noClockOutPenalty).toBe('0.00');
   });
+
+  test('keeps saved payroll deduction snapshot instead of overwriting from live attendance', () => {
+    const results = enhancePayrollRows(
+      buildSharedArgs({
+        baseRows: [
+          {
+            employeeId: 'EMP-001',
+            employee: 'Amina Yusuf',
+            basicPay: '3000',
+            workingDays: '30',
+            napsaDeduction: '150.00',
+            nhimaDeduction: '30.00',
+            taxDeduction: '0.00',
+            otherDeduction: '20.00',
+            lateDeduction: '10.00',
+            noClockInPenalty: '0.00',
+            noClockOutPenalty: '0.00',
+            absentPenalty: '0.00',
+            totalDeductions: '210.00',
+            totalEarnings: '3000.00',
+          },
+        ],
+        moduleRowsState: {
+          ...buildSharedArgs().moduleRowsState,
+          'attendance-time': [],
+        },
+      })
+    );
+
+    expect(results[0].lateDeduction).toBe('10.00');
+    expect(results[0].napsaDeduction).toBe('150.00');
+    expect(results[0].nhimaDeduction).toBe('30.00');
+    expect(results[0].otherDeduction).toBe('20.00');
+    expect(results[0].totalAttendancePenalty).toBe('10.00');
+    expect(results[0].totalDeductions).toBe('210.00');
+    expect(results[0].netPayable).toBe('2790.00');
+  });
 });
