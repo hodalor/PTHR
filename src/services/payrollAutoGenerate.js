@@ -92,6 +92,149 @@ function resolvePeriodEndingOn(asOfDate, config) {
   };
 }
 
+function resolvePeriodForMonth(payrollMonth, config) {
+  const match = String(payrollMonth || '').trim().match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const normalized = normalizePayrollAutoGenerate({ ...config, enabled: true });
+  const asOfDate = isoDateFromParts(year, monthIndex, normalized.periodEndDay);
+  return resolvePeriodEndingOn(asOfDate, normalized);
+}
+
+function isLockedPayrollStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return ['paid', 'posted', 'final', 'finalized', 'closed'].includes(normalized);
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function payrollRowCoversDate(row, dateValue) {
+  const date = String(dateValue || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+  const start = String(row?.periodStart || '').slice(0, 10);
+  const end = String(row?.periodEnd || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return date >= start && date <= end;
+  }
+  const month = String(row?.payrollMonth || row?.month || row?.period || '').slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(month) && date.startsWith(month);
+}
+
+function penaltyFieldForType(penaltyType) {
+  const normalized = String(penaltyType || '').trim().toLowerCase();
+  if (normalized === 'no-clock-in') {
+    return 'noClockInPenalty';
+  }
+  if (normalized === 'no-clock-out') {
+    return 'noClockOutPenalty';
+  }
+  if (normalized === 'absent') {
+    return 'absentPenalty';
+  }
+  return 'lateDeduction';
+}
+
+function applyClearanceToPayrollRecord(row, adjustment) {
+  const clearedAmount = Math.max(0, toNumberValue(adjustment?.clearedAmount));
+  if (clearedAmount <= 0) {
+    return null;
+  }
+  const field = penaltyFieldForType(adjustment?.penaltyType);
+  const currentLate = Math.max(0, toNumberValue(row?.lateDeduction));
+  const currentNoClockIn = Math.max(0, toNumberValue(row?.noClockInPenalty));
+  const currentNoClockOut = Math.max(0, toNumberValue(row?.noClockOutPenalty));
+  const currentAbsent = Math.max(0, toNumberValue(row?.absentPenalty));
+  const storedAttendance = Math.max(0, toNumberValue(row?.totalAttendancePenalty));
+  const attendanceTotal = storedAttendance > 0
+    ? storedAttendance
+    : currentLate + currentNoClockIn + currentNoClockOut + currentAbsent;
+  const applied = Math.min(clearedAmount, attendanceTotal);
+  if (applied <= 0) {
+    return null;
+  }
+  let remaining = applied;
+  const nextLate = field === 'lateDeduction' ? Math.max(0, currentLate - remaining) : currentLate;
+  if (field === 'lateDeduction') {
+    remaining = Math.max(0, remaining - Math.min(remaining, currentLate));
+  }
+  const nextNoClockIn = field === 'noClockInPenalty' ? Math.max(0, currentNoClockIn - remaining) : currentNoClockIn;
+  if (field === 'noClockInPenalty') {
+    remaining = Math.max(0, remaining - Math.min(remaining, currentNoClockIn));
+  }
+  const nextNoClockOut = field === 'noClockOutPenalty' ? Math.max(0, currentNoClockOut - remaining) : currentNoClockOut;
+  if (field === 'noClockOutPenalty') {
+    remaining = Math.max(0, remaining - Math.min(remaining, currentNoClockOut));
+  }
+  const nextAbsent = field === 'absentPenalty' ? Math.max(0, currentAbsent - remaining) : currentAbsent;
+  if (field === 'absentPenalty') {
+    remaining = Math.max(0, remaining - Math.min(remaining, currentAbsent));
+  }
+  // Generated payroll currently stores the net attendance total on lateDeduction.
+  const fallbackLate = remaining > 0 ? Math.max(0, nextLate - remaining) : nextLate;
+  const nextAttendance = Math.max(0, attendanceTotal - applied);
+  const splitRemainder = nextNoClockIn + nextNoClockOut + nextAbsent;
+  const syncedLate = splitRemainder > 0 ? fallbackLate : nextAttendance;
+  const napsaDeduction = Math.max(0, toNumberValue(row?.napsaDeduction));
+  const nhimaDeduction = Math.max(0, toNumberValue(row?.nhimaDeduction));
+  const taxDeduction = Math.max(0, toNumberValue(row?.taxDeduction));
+  const otherDeduction = Math.max(0, toNumberValue(row?.otherDeduction));
+  const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + nextAttendance;
+  const totalEarnings = Math.max(
+    0,
+    toNumberValue(row?.totalEarnings || row?.grossPay || row?.basicPay)
+  );
+  return {
+    lateDeduction: syncedLate.toFixed(2),
+    noClockInPenalty: nextNoClockIn.toFixed(2),
+    noClockOutPenalty: nextNoClockOut.toFixed(2),
+    absentPenalty: nextAbsent.toFixed(2),
+    totalAttendancePenalty: nextAttendance.toFixed(2),
+    totalDeductions: totalDeductions.toFixed(2),
+    netPayable: Math.max(0, totalEarnings - totalDeductions).toFixed(2),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function applyPenaltyClearanceToOpenPayroll(db, adjustment = {}) {
+  const employeeId = String(adjustment.employeeId || '').trim();
+  const employeeName = String(adjustment.employee || '').trim();
+  const date = String(adjustment.date || '').slice(0, 10);
+  if ((!employeeId && !employeeName) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { updated: 0 };
+  }
+  const matchOr = [];
+  if (employeeId) {
+    const employeeRegex = new RegExp(`^${escapeRegex(employeeId)}$`, 'i');
+    matchOr.push({ employeeId: employeeRegex });
+    matchOr.push({ employee: employeeRegex });
+  }
+  if (employeeName) {
+    const nameRegex = new RegExp(`^${escapeRegex(employeeName)}$`, 'i');
+    matchOr.push({ employee: nameRegex });
+  }
+  const payrollRows = await db.collection('payrollRecords').find({ $or: matchOr }).toArray();
+  let updated = 0;
+  for (const row of payrollRows) {
+    if (isLockedPayrollStatus(row.status) || !payrollRowCoversDate(row, date)) {
+      continue;
+    }
+    const nextValues = applyClearanceToPayrollRecord(row, adjustment);
+    if (!nextValues) {
+      continue;
+    }
+    await db.collection('payrollRecords').updateOne({ _id: row._id }, { $set: nextValues });
+    updated += 1;
+  }
+  return { updated };
+}
+
 function calcStatutory(mode, value, basicPay, grossPay) {
   const numeric = Math.max(0, Number(value) || 0);
   if (mode === 'percent-gross') {
@@ -118,6 +261,8 @@ function buildPayrollRecordForEmployee({
   workingDays,
   statutoryRules,
   nowIso,
+  otherDeduction = 0,
+  existing = null,
 }) {
   const basicPay = toNumberValue(employee.basicPay);
   const monthlyBonuses = toNumberValue(employee.monthlyBonuses);
@@ -133,10 +278,13 @@ function buildPayrollRecordForEmployee({
       ? calcStatutory(statutoryRules?.taxMode || 'percent-basic', statutoryRules?.taxValue, basicPay, grossPay)
       : 0;
   const totalAttendancePenalty = Math.max(0, lateDeduction);
-  const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + totalAttendancePenalty;
+  const resolvedOtherDeduction = Math.max(0, toNumberValue(otherDeduction));
+  const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + resolvedOtherDeduction + totalAttendancePenalty;
   const totalEarnings = grossPay;
   const netPayable = Math.max(0, totalEarnings - totalDeductions);
-  const recordId = `PAY-AUTO-${String(employee.id || 'EMP').replace(/[^A-Za-z0-9]/g, '')}-${period.periodKey}`;
+  const recordId =
+    String(existing?.id || '').trim() ||
+    `PAY-AUTO-${String(employee.id || 'EMP').replace(/[^A-Za-z0-9]/g, '')}-${period.periodKey}`;
 
   return {
     id: recordId,
@@ -173,59 +321,74 @@ function buildPayrollRecordForEmployee({
     napsaDeduction: napsaDeduction.toFixed(2),
     nhimaDeduction: nhimaDeduction.toFixed(2),
     taxDeduction: taxDeduction.toFixed(2),
-    otherDeduction: '0.00',
+    otherDeduction: resolvedOtherDeduction.toFixed(2),
     overtimeEarnings: '0.00',
     grossPay: grossPay.toFixed(2),
     totalEarnings: totalEarnings.toFixed(2),
     totalDeductions: totalDeductions.toFixed(2),
     netPayable: netPayable.toFixed(2),
-    status: 'Draft',
+    status: String(existing?.status || 'Draft').trim() || 'Draft',
     autoGenerated: true,
-    source: 'auto-generate',
-    createdAt: nowIso,
+    source: existing?.source || 'auto-generate',
+    createdAt: existing?.createdAt || nowIso,
     updatedAt: nowIso,
   };
 }
 
 async function generatePayrollForTenantDb(db, options = {}) {
   const asOfDate = String(options.asOfDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const payrollMonthInput = String(options.payrollMonth || '').trim();
   const force = Boolean(options.force);
+  const updateExisting = options.updateExisting !== false;
   const attendanceSettingsRecord = await db.collection('appSettings').findOne({ _id: 'attendance-rules' });
   const generalSettingsRecord = await db.collection('appSettings').findOne({ _id: 'general-settings' });
   const attendanceSettings = attendanceSettingsRecord?.value || {};
   const generalSettings = generalSettingsRecord?.value || {};
   const autoConfig = normalizePayrollAutoGenerate(generalSettings.payrollAutoGenerate || {});
 
-  let period = resolvePeriodEndingOn(asOfDate, autoConfig);
-  if (!period && force && autoConfig.enabled) {
-    // Manual run: build the period that would end on the nearest prior/configured end day within this month.
-    const parsed = parseIsoDate(asOfDate);
-    if (parsed) {
-      period = resolvePeriodEndingOn(
-        isoDateFromParts(parsed.year, parsed.monthIndex, autoConfig.periodEndDay),
-        { ...autoConfig, enabled: true }
-      );
+  let period = null;
+  if (/^\d{4}-\d{2}$/.test(payrollMonthInput)) {
+    period = resolvePeriodForMonth(payrollMonthInput, autoConfig);
+  } else {
+    period = resolvePeriodEndingOn(asOfDate, autoConfig);
+    if (!period && force) {
+      const parsed = parseIsoDate(asOfDate);
+      if (parsed) {
+        period = resolvePeriodEndingOn(
+          isoDateFromParts(parsed.year, parsed.monthIndex, autoConfig.periodEndDay),
+          { ...autoConfig, enabled: true }
+        );
+      }
     }
   }
   if (!period) {
-    return { skipped: true, reason: 'Not period end day or auto-generate disabled', created: 0, skippedExisting: 0 };
+    return {
+      skipped: true,
+      reason: 'Could not resolve payroll period. Select a month or set the company period end day.',
+      created: 0,
+      updated: 0,
+      skippedExisting: 0,
+    };
   }
 
   const runMarkerId = `payroll-auto:${period.periodKey}`;
   const existingRun = await db.collection('appSettings').findOne({ _id: runMarkerId });
-  if (existingRun && !force) {
-    return { skipped: true, reason: 'Already generated for this period', created: 0, skippedExisting: 0, period };
+  if (existingRun && !force && !payrollMonthInput) {
+    return { skipped: true, reason: 'Already generated for this period', created: 0, updated: 0, skippedExisting: 0, period };
   }
 
   const employees = await db.collection('employees').find({}).toArray();
   const activeEmployees = employees.filter(isEmployeeActiveForPayroll);
-  const attendanceRows = await db
-    .collection('attendanceTime')
-    .find(
+  const [attendanceRows, adjustmentRows] = await Promise.all([
+    db.collection('attendanceTime').find(
       { date: { $gte: period.periodStart, $lte: period.periodEnd } },
       { projection: { employeeId: 1, employee: 1, deductionAmount: 1, lateMinutes: 1 } }
-    )
-    .toArray();
+    ).toArray(),
+    db.collection('attendancePenaltyAdjustments').find(
+      { date: { $gte: period.periodStart, $lte: period.periodEnd } },
+      { projection: { employeeId: 1, employee: 1, clearedAmount: 1, penaltyType: 1 } }
+    ).toArray(),
+  ]);
 
   const deductionByEmployee = new Map();
   attendanceRows.forEach((row) => {
@@ -238,11 +401,20 @@ async function generatePayrollForTenantDb(db, options = {}) {
     current.lateMinutes += Math.max(0, toNumberValue(row.lateMinutes));
     deductionByEmployee.set(key, current);
   });
+  const clearanceByEmployee = new Map();
+  adjustmentRows.forEach((row) => {
+    const key = String(row.employeeId || '').trim() || String(row.employee || '').trim();
+    if (!key) {
+      return;
+    }
+    clearanceByEmployee.set(key, (clearanceByEmployee.get(key) || 0) + Math.max(0, toNumberValue(row.clearedAmount)));
+  });
 
   const workingDays = Math.max(1, Number(attendanceSettings.payrollWorkingDays) || 26);
   const statutoryRules = generalSettings.statutoryRules || {};
   const nowIso = new Date().toISOString();
   let created = 0;
+  let updated = 0;
   let skippedExisting = 0;
 
   for (const employee of activeEmployees) {
@@ -252,9 +424,17 @@ async function generatePayrollForTenantDb(db, options = {}) {
     }
     const existing = await db.collection('payrollRecords').findOne({
       employeeId,
-      $or: [{ periodKey: period.periodKey }, { payrollMonth: period.payrollMonth, month: period.payrollMonth }],
+      $or: [
+        { periodKey: period.periodKey },
+        { payrollMonth: period.payrollMonth },
+        { month: period.payrollMonth },
+      ],
     });
-    if (existing) {
+    if (existing && isLockedPayrollStatus(existing.status)) {
+      skippedExisting += 1;
+      continue;
+    }
+    if (existing && !updateExisting) {
       skippedExisting += 1;
       continue;
     }
@@ -263,19 +443,31 @@ async function generatePayrollForTenantDb(db, options = {}) {
       deductionByEmployee.get(employeeId) ||
       deductionByEmployee.get(String(employee.fullName || '').trim()) ||
       { deductionAmount: 0, lateMinutes: 0 };
+    const clearedAmount =
+      clearanceByEmployee.get(employeeId) ||
+      clearanceByEmployee.get(String(employee.fullName || '').trim()) ||
+      0;
 
     const record = buildPayrollRecordForEmployee({
       employee,
       period,
-      lateDeduction: totals.deductionAmount,
+      lateDeduction: Math.max(0, totals.deductionAmount - clearedAmount),
       lateMinutes: totals.lateMinutes,
       workingDays,
       statutoryRules,
       nowIso,
+      otherDeduction: existing ? toNumberValue(existing.otherDeduction) : 0,
+      existing,
     });
 
-    await db.collection('payrollRecords').insertOne(record);
-    created += 1;
+    if (existing) {
+      const { _id, ...recordWithoutId } = record;
+      await db.collection('payrollRecords').updateOne({ _id: existing._id }, { $set: recordWithoutId });
+      updated += 1;
+    } else {
+      await db.collection('payrollRecords').insertOne(record);
+      created += 1;
+    }
   }
 
   await db.collection('appSettings').updateOne(
@@ -288,6 +480,7 @@ async function generatePayrollForTenantDb(db, options = {}) {
           periodEnd: period.periodEnd,
           payrollMonth: period.payrollMonth,
           created,
+          updated,
           skippedExisting,
           completedAt: nowIso,
         },
@@ -298,7 +491,7 @@ async function generatePayrollForTenantDb(db, options = {}) {
     { upsert: true }
   );
 
-  return { skipped: false, created, skippedExisting, period };
+  return { skipped: false, created, updated, skippedExisting, period };
 }
 
 async function runPayrollAutoGenerateForAllTenants(masterDb, getTenantDatabase, options = {}) {
@@ -329,6 +522,9 @@ async function runPayrollAutoGenerateForAllTenants(masterDb, getTenantDatabase, 
 module.exports = {
   normalizePayrollAutoGenerate,
   resolvePeriodEndingOn,
+  resolvePeriodForMonth,
   generatePayrollForTenantDb,
   runPayrollAutoGenerateForAllTenants,
+  applyPenaltyClearanceToOpenPayroll,
+  isLockedPayrollStatus,
 };

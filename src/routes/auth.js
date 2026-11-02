@@ -80,8 +80,9 @@ async function getLinkedEmployeeAccessState(db, userLike) {
   if (!employeeId) {
     return { employee: null, blocked: false, reason: '' };
   }
+  const identifierRegex = new RegExp(`^${escapeRegex(employeeId)}$`, 'i');
   const employee = await db.collection('employees').findOne(
-    { id: employeeId },
+    { $or: [{ id: identifierRegex }, { employeeId: identifierRegex }] },
     { projection: { id: 1, status: 1, employmentState: 1 } }
   );
   const reason = getEmployeeAccessBlockReason(employee);
@@ -109,16 +110,79 @@ function resolveEmployeeContactChannels(employee) {
   };
 }
 
-async function findActiveUserByIdentifier(db, identifier) {
+async function findUserByIdentifier(db, identifier, { activeOnly = true } = {}) {
   const normalized = String(identifier || '').trim();
   if (!normalized) {
     return null;
   }
-  const usernameRegex = new RegExp(`^${escapeRegex(normalized)}$`, 'i');
-  return db.collection('users').findOne({
-    isActive: true,
-    $or: [{ username: usernameRegex }, { employeeId: normalized }],
+  const identifierRegex = new RegExp(`^${escapeRegex(normalized)}$`, 'i');
+  const query = {
+    $or: [{ username: identifierRegex }, { employeeId: identifierRegex }],
+  };
+  if (activeOnly) {
+    query.isActive = true;
+  }
+  return db.collection('users').findOne(query);
+}
+
+async function findActiveUserByIdentifier(db, identifier) {
+  return findUserByIdentifier(db, identifier, { activeOnly: true });
+}
+
+async function findEmployeeByIdentifier(db, identifier) {
+  const normalized = String(identifier || '').trim();
+  if (!normalized) {
+    return null;
+  }
+  const identifierRegex = new RegExp(`^${escapeRegex(normalized)}$`, 'i');
+  return db.collection('employees').findOne({
+    $or: [{ id: identifierRegex }, { employeeId: identifierRegex }],
   });
+}
+
+async function ensureEmployeePortalUser(db, employee, password) {
+  const employeeId = String(employee?.id || employee?.employeeId || '').trim();
+  const portalPassword = String(password || employee?.password || '').trim();
+  if (!employeeId || !portalPassword) {
+    return null;
+  }
+  const users = db.collection('users');
+  const identifierRegex = new RegExp(`^${escapeRegex(employeeId)}$`, 'i');
+  const existing = await users.findOne({
+    $or: [{ username: identifierRegex }, { employeeId: identifierRegex }],
+  });
+  const passwordHash = await bcrypt.hash(portalPassword, 10);
+  const now = new Date().toISOString();
+  const employeeAccessBlocked = Boolean(getEmployeeAccessBlockReason(employee));
+  if (existing) {
+    await users.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          username: employeeId,
+          fullName: employee.fullName || existing.fullName || employeeId,
+          employeeId,
+          passwordHash,
+          isActive: employeeAccessBlocked ? false : true,
+          updatedAt: now,
+        },
+      }
+    );
+    return users.findOne({ _id: existing._id });
+  }
+  const inserted = {
+    username: employeeId,
+    fullName: employee.fullName || employeeId,
+    employeeId,
+    passwordHash,
+    role: 'employee',
+    allowedModules: [],
+    isActive: !employeeAccessBlocked,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const result = await users.insertOne(inserted);
+  return { ...inserted, _id: result.insertedId };
 }
 
 async function loadPasswordResetChallenge(db, resetToken) {
@@ -134,6 +198,29 @@ async function loadPasswordResetChallenge(db, resetToken) {
 
 function escapeRegex(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isBcryptHash(value) {
+  return /^\$2[aby]\$\d{2}\$/.test(String(value || '').trim());
+}
+
+async function passwordMatchesStoredSecret(storedValue, password) {
+  const stored = String(storedValue || '').trim();
+  const candidate = String(password || '');
+  if (!stored || !candidate) {
+    return false;
+  }
+  if (stored === candidate) {
+    return true;
+  }
+  if (!isBcryptHash(stored)) {
+    return false;
+  }
+  try {
+    return await bcrypt.compare(candidate, stored);
+  } catch (error) {
+    return false;
+  }
 }
 
 function getSessionExpiryIso(days = 7) {
@@ -1081,23 +1168,53 @@ router.post('/login', async (req, res) => {
       return;
     }
     const users = req.db.collection('users');
-    const usernameRegex = new RegExp(`^${escapeRegex(identifier)}$`, 'i');
-    const user = await users.findOne({
-      isActive: true,
-      $or: [{ username: usernameRegex }, { employeeId: identifier }],
-    });
+    let user = await findUserByIdentifier(req.db, identifier, { activeOnly: false });
+    const employee = await findEmployeeByIdentifier(req.db, identifier);
+    if (!user && employee) {
+      const employeeId = String(employee.id || employee.employeeId || '').trim();
+      if (employeeId) {
+        user = await findUserByIdentifier(req.db, employeeId, { activeOnly: false });
+      }
+    }
+    const employeePasswordMatches = await passwordMatchesStoredSecret(employee?.password, password);
+    if (!user && employee && employeePasswordMatches) {
+      user = await ensureEmployeePortalUser(req.db, employee, password);
+    }
+    if (!user?.passwordHash && employee && employeePasswordMatches) {
+      user = await ensureEmployeePortalUser(req.db, employee, password);
+    }
     if (!user?.passwordHash) {
       res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
       return;
     }
-    const employeeAccessState = await getLinkedEmployeeAccessState(req.db, user);
+    const employeeAccessState = await getLinkedEmployeeAccessState(req.db, {
+      ...user,
+      employeeId: user.employeeId || employee?.id || identifier,
+    });
     if (employeeAccessState.blocked) {
       res.status(403).json({
         error: `${employeeAccessState.reason}. This account cannot sign in.`,
       });
       return;
     }
-    const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+    if (user.isActive === false) {
+      if (employee && !employeeAccessState.blocked) {
+        const nowIso = new Date().toISOString();
+        await req.db.collection('users').updateOne(
+          { _id: user._id },
+          { $set: { isActive: true, updatedAt: nowIso } }
+        );
+        user = { ...user, isActive: true, updatedAt: nowIso };
+      } else {
+        res.status(403).json({ error: 'This account is inactive and cannot sign in.' });
+        return;
+      }
+    }
+    let passwordMatches = await bcrypt.compare(password, user.passwordHash);
+    if (!passwordMatches && employeePasswordMatches) {
+      user = await ensureEmployeePortalUser(req.db, employee || { id: user.employeeId, fullName: user.fullName }, password);
+      passwordMatches = Boolean(user?.passwordHash);
+    }
     if (!passwordMatches) {
       res.status(401).json({ error: 'Invalid tenant ID, username, or password' });
       return;

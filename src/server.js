@@ -30,6 +30,7 @@ const {
   normalizePayrollAutoGenerate,
   generatePayrollForTenantDb,
   runPayrollAutoGenerateForAllTenants,
+  applyPenaltyClearanceToOpenPayroll,
 } = require('./services/payrollAutoGenerate');
 
 const PORT = process.env.PORT || 8000;
@@ -535,21 +536,30 @@ function buildAttendanceComplianceQuery(query = {}, authUser = null) {
   const employeeId = String(authUser?.employeeId || '').trim();
   const employeeName = String(authUser?.fullName || '').trim();
   const targetDate = String(query.date || '').trim();
+  const dateFrom = String(query.dateFrom || query.startDate || '').trim();
+  const dateTo = String(query.dateTo || query.endDate || '').trim();
+  const filterEmployeeId = String(query.employeeId || '').trim();
   const mongoQuery = {};
-  if (/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+    mongoQuery.date =
+      dateFrom <= dateTo ? { $gte: dateFrom, $lte: dateTo } : { $gte: dateTo, $lte: dateFrom };
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
     mongoQuery.date = targetDate;
   }
+  const employeeOr = [];
   if (normalizedRole === 'employee') {
-    const employeeOr = [];
     if (employeeId) {
       employeeOr.push({ employeeId });
     }
     if (employeeName) {
       employeeOr.push({ employee: employeeName });
     }
-    if (employeeOr.length > 0) {
-      mongoQuery.$or = employeeOr;
-    }
+  } else if (filterEmployeeId) {
+    employeeOr.push({ employeeId: filterEmployeeId });
+    employeeOr.push({ employee: filterEmployeeId });
+  }
+  if (employeeOr.length > 0) {
+    mongoQuery.$or = employeeOr;
   }
   return mongoQuery;
 }
@@ -743,15 +753,16 @@ function buildAttendanceComplianceRows(records, query = {}, context = {}) {
     : 'employee';
   const sortDirection = String(query.sortDirection || '').trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
   const settings = context?.settings || defaultAttendanceSettings;
-  const targetDate = String(query.date || '').trim();
+  const queryDate = String(query.date || '').trim();
   const todayIsoDate = new Date().toISOString().slice(0, 10);
   const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
-  const isPastDate = targetDate < todayIsoDate;
   const leaveRows = Array.isArray(context?.leaveRows) ? context.leaveRows : [];
   const payrollByEmployeeKey = context?.payrollByEmployeeKey instanceof Map ? context.payrollByEmployeeKey : new Map();
   const mergedRows = mergeDuplicateAttendanceRecords(records, context);
   return mergedRows
     .map((attendanceRow) => {
+      const targetDate = String(attendanceRow?.date || queryDate || '').trim();
+      const isPastDate = Boolean(targetDate) && targetDate < todayIsoDate;
       const employeeId = String(attendanceRow?.employeeId || '').trim();
       const employeeName = String(attendanceRow?.employee || '').trim();
       const matchedEmployee =
@@ -1241,6 +1252,7 @@ function getAttendancePerformanceListView(records, query = {}, context = {}) {
 function getAttendancePenaltyListView(records, adjustments = [], query = {}, context = {}) {
   const searchText = String(query.search || '').trim().toLowerCase();
   const statusFilter = String(query.statusFilter || 'Outstanding').trim();
+  const penaltyTypeFilter = String(query.penaltyType || 'All').trim().toLowerCase();
   const sortKey = ['employee', 'date', 'penaltyLabel', 'outstandingAmount', 'status'].includes(
     String(query.sortKey || '').trim()
   )
@@ -1311,7 +1323,11 @@ function getAttendancePenaltyListView(records, adjustments = [], query = {}, con
         String(row?.employeeId || '').toLowerCase().includes(searchText) ||
         String(row?.department || '').toLowerCase().includes(searchText) ||
         String(row?.penaltyLabel || '').toLowerCase().includes(searchText);
-      return matchesStatus && matchesSearch;
+      const matchesPenaltyType =
+        penaltyTypeFilter === 'all' ||
+        penaltyTypeFilter === '' ||
+        String(row?.penaltyType || '').trim().toLowerCase() === penaltyTypeFilter;
+      return matchesStatus && matchesSearch && matchesPenaltyType;
     })
     .sort((left, right) => {
       const leftValue =
@@ -3365,8 +3381,9 @@ async function syncEmployeeUser(db, employee) {
     }
     const users = db.collection('users');
     const username = employeeId;
+    const identifierRegex = new RegExp(`^${String(employeeId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
     const existing = await users.findOne({
-      $or: [{ username }, { employeeId }],
+      $or: [{ username: identifierRegex }, { employeeId: identifierRegex }],
     });
     const passwordHash = await bcrypt.hash(portalPassword, 10);
     const now = new Date().toISOString();
@@ -3380,7 +3397,7 @@ async function syncEmployeeUser(db, employee) {
         ? existing.allowedModules
         : [];
     const employeeAccessBlocked = Boolean(getEmployeeAccessBlockReason(employee));
-    const nextIsActive = employeeAccessBlocked ? false : existing?.isActive !== false;
+    const nextIsActive = !employeeAccessBlocked;
     if (existing) {
       await users.updateOne(
         { _id: existing._id },
@@ -4077,7 +4094,13 @@ app.post('/api/payroll/auto-generate', requireAuthenticatedTenantContext, async 
     }
     const force = req.body?.force !== false;
     const asOfDate = normalizeIsoDateInput(req.body?.asOfDate || req.query?.asOfDate);
-    const result = await generatePayrollForTenantDb(req.db, { asOfDate, force });
+    const payrollMonth = String(req.body?.payrollMonth || req.query?.payrollMonth || '').trim();
+    const result = await generatePayrollForTenantDb(req.db, {
+      asOfDate,
+      force,
+      payrollMonth,
+      updateExisting: req.body?.updateExisting !== false,
+    });
     invalidateTenantReadCaches(req.tenantId, 'payroll-management');
     res.json({ ok: true, ...result });
   } catch (error) {
@@ -4459,12 +4482,32 @@ app.get('/api/modules/:moduleId', async (req, res) => {
     }
     if (attendanceMode === 'penalty-page') {
       const attendanceQuery = buildAttendanceComplianceQuery(req.query, req.user);
+      if (!attendanceQuery.date) {
+        const todayIsoDate = new Date().toISOString().slice(0, 10);
+        const fromDate = new Date();
+        fromDate.setUTCDate(fromDate.getUTCDate() - 62);
+        attendanceQuery.date = { $gte: fromDate.toISOString().slice(0, 10), $lte: todayIsoDate };
+      }
       const targetDate = String(req.query?.date || '').trim();
+      const dateFrom = String(req.query?.dateFrom || req.query?.startDate || targetDate || '').trim();
+      const dateTo = String(req.query?.dateTo || req.query?.endDate || targetDate || '').trim();
       const leaveScopeClauses = getAttendanceEmployeeMatchClauses(req.user, {
         idField: 'employeeId',
         nameField: 'employee',
       });
       const scopedOr = leaveScopeClauses.length > 0 ? { $or: leaveScopeClauses } : {};
+      const leaveDateQuery =
+        /^\d{4}-\d{2}-\d{2}$/.test(dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+          ? { startDate: { $lte: dateTo }, endDate: { $gte: dateFrom } }
+          : /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+            ? { startDate: { $lte: targetDate }, endDate: { $gte: targetDate } }
+            : {};
+      const adjustmentDateQuery =
+        /^\d{4}-\d{2}-\d{2}$/.test(dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+          ? { date: { $gte: dateFrom, $lte: dateTo } }
+          : /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+            ? { date: targetDate }
+            : {};
       const [rangeRecords, settingsRecord, employees, leaveRows, adjustmentRows] = await Promise.all([
         collection.find(attendanceQuery).sort({ date: -1, updatedAt: -1, _id: -1 }).toArray(),
         req.db.collection('appSettings').findOne({ _id: 'attendance-rules' }),
@@ -4486,8 +4529,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         ).toArray(),
         req.db.collection('leaveRequests').find(
           {
-            startDate: { $lte: targetDate },
-            endDate: { $gte: targetDate },
+            ...leaveDateQuery,
             ...scopedOr,
           },
           {
@@ -4506,7 +4548,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
         ).toArray(),
         req.db.collection('attendancePenaltyAdjustments').find(
           {
-            date: targetDate,
+            ...adjustmentDateQuery,
             ...scopedOr,
           },
           {
@@ -4520,6 +4562,7 @@ app.get('/api/modules/:moduleId', async (req, res) => {
               penaltyLabel: 1,
               clearanceMode: 1,
               clearedAmount: 1,
+              reason: 1,
               remark: 1,
               actorUsername: 1,
               actedOn: 1,
@@ -4746,6 +4789,14 @@ app.post('/api/modules/:moduleId', async (req, res) => {
         : moduleId === 'employee-management'
           ? normalizeEmployeeAccountFields(normalizeEmployeePhoneFields(req.body))
           : req.body;
+    if (moduleId === 'attendance-penalty-adjustments') {
+      const reason = String(incoming?.reason || incoming?.remark || '').trim();
+      if (!reason) {
+        res.status(400).json({ error: 'Reason is required to clear a penalty.' });
+        return;
+      }
+      incoming = { ...incoming, reason, remark: String(incoming?.remark || reason).trim() };
+    }
     if (moduleId === 'employee-management') {
       const incomingId = String(incoming?.id || '').trim().toUpperCase();
       if (!incomingId) {
@@ -4840,6 +4891,10 @@ app.post('/api/modules/:moduleId', async (req, res) => {
     const inserted = await collection.findOne({ _id: result.insertedId });
     if (moduleId === 'employee-management' && inserted) {
       await syncEmployeeUser(req.db, inserted);
+    }
+    if (moduleId === 'attendance-penalty-adjustments' && inserted) {
+      await applyPenaltyClearanceToOpenPayroll(req.db, inserted);
+      invalidateTenantReadCaches(req.tenantId, 'payroll-management');
     }
     invalidateTenantReadCaches(req.tenantId, moduleId);
     res.status(201).json({ record: await hydrateModuleRecordMedia(moduleId, inserted) });
