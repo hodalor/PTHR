@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import PayrollPage from '../../pages/PayrollPage';
 import PayrollRecordForm from './PayrollRecordForm';
 import PayslipDocument from './PayslipDocument';
@@ -7,6 +7,7 @@ import { parsePayrollCsvRows, downloadPayrollTemplate } from './payrollImport';
 import { printPayslipDocument } from './printPayslip';
 import { computePayrollPreviewValues, formatPayrollPeriodLabel, toPayrollMonthInputValue } from './payrollUtils';
 import { usePayrollForm } from './usePayrollForm';
+import { toApiUrl } from '../../config/api';
 
 const payrollDetailSections = [
   {
@@ -83,10 +84,15 @@ export const usePayrollAdapter = ({
   toMinutesFromClock,
   getMinutesBetweenClocks,
   isLoanCountableRecord,
+  jsonAuthHeaders,
 }) => {
   const active = activeModuleId === 'payroll-management';
   const payrollUploadInputRef = useRef(null);
   const payslipDocumentRef = useRef(null);
+  const currentMonthValue = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+  const [payrollGenerateMonth, setPayrollGenerateMonth] = useState(currentMonthValue);
+  const [payrollGenerating, setPayrollGenerating] = useState(false);
+  const [payrollGenerateMessage, setPayrollGenerateMessage] = useState('');
 
   const { payrollFormEmployeeMatches, selectedPayrollFormEmployee, payrollPreviewValues } = usePayrollForm({
     active,
@@ -152,6 +158,65 @@ export const usePayrollAdapter = ({
       .sort((a, b) => String(b.issuedOn || '').localeCompare(String(a.issuedOn || '')))
       .slice(0, 5);
   }, [active, isLoanCountableRecord, modalState.rowId, moduleRowsState]);
+
+  const handleGeneratePayroll = async () => {
+    const monthValue = String(payrollGenerateMonth || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(monthValue)) {
+      showToast('Select a payroll month before generating.', 'error');
+      return;
+    }
+    setPayrollGenerating(true);
+    setPayrollGenerateMessage('');
+    try {
+      const response = await fetch(toApiUrl('http://localhost:8000/api/payroll/auto-generate'), {
+        method: 'POST',
+        headers: jsonAuthHeaders || { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          payrollMonth: monthValue,
+          force: true,
+          updateExisting: true,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to generate payroll');
+      }
+      if (data.skipped) {
+        const message = data.reason || 'Payroll generate was skipped.';
+        setPayrollGenerateMessage(message);
+        showToast(message, 'error');
+        return;
+      }
+      const created = Number(data.created || 0);
+      const updated = Number(data.updated || 0);
+      const skippedLocked = Number(data.skippedExisting || 0);
+      const periodLabel = data?.period?.periodStart && data?.period?.periodEnd
+        ? `${data.period.periodStart} → ${data.period.periodEnd}`
+        : monthValue;
+      const message = `Payroll ${periodLabel}: created ${created}, updated ${updated}, skipped locked ${skippedLocked}.`;
+      setPayrollGenerateMessage(message);
+      showToast(message, 'success');
+      const listResponse = await fetch(toApiUrl('http://localhost:8000/api/modules/payroll-management'), {
+        headers: jsonAuthHeaders || {},
+      });
+      if (listResponse.ok) {
+        const listData = await listResponse.json().catch(() => null);
+        const records = Array.isArray(listData?.records) ? listData.records : Array.isArray(listData) ? listData : null;
+        if (records) {
+          setModuleRowsState((prev) => ({
+            ...prev,
+            'payroll-management': records,
+          }));
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to generate payroll';
+      setPayrollGenerateMessage(message);
+      showToast(message, 'error');
+    } finally {
+      setPayrollGenerating(false);
+    }
+  };
 
   const handleOpenPayrollUpload = () => {
     if (!payrollUploadInputRef.current) {
@@ -289,6 +354,11 @@ export const usePayrollAdapter = ({
       handleDownloadPayrollTemplate={downloadPayrollTemplate}
       handleOpenPayrollUpload={handleOpenPayrollUpload}
       payrollLoansForModal={payrollLoansForHeader}
+      payrollGenerateMonth={payrollGenerateMonth}
+      setPayrollGenerateMonth={setPayrollGenerateMonth}
+      payrollGenerating={payrollGenerating}
+      payrollGenerateMessage={payrollGenerateMessage}
+      handleGeneratePayroll={handleGeneratePayroll}
     />
   );
 

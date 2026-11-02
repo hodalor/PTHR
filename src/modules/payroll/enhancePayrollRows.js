@@ -316,30 +316,33 @@ export const enhancePayrollRows = ({
       (fixedScope === 'individual' &&
         String(matchedEmployee?.id || payrollEmployeeId || '') === String(appSettings.attendanceFixedEmployeeId || ''));
     const minuteRate = appSettings.attendanceCalculationMode === 'fixed' && fixedApplies ? fixedMinuteRate : autoMinuteRate;
-    const lateDeduction = lateDeductionByEmployee[key] > 0 ? lateDeductionByEmployee[key] : lateMinutes * minuteRate;
-    const noClockInPenalty = noClockInPenaltyByEmployee[key] || 0;
-    const noClockOutPenalty = noClockOutPenaltyByEmployee[key] || 0;
-    const absentPenalty = absentPenaltyByEmployee[key] || 0;
+    const liveLateDeduction = lateDeductionByEmployee[key] > 0 ? lateDeductionByEmployee[key] : lateMinutes * minuteRate;
+    const liveNoClockInPenalty = noClockInPenaltyByEmployee[key] || 0;
+    const liveNoClockOutPenalty = noClockOutPenaltyByEmployee[key] || 0;
+    const liveAbsentPenalty = absentPenaltyByEmployee[key] || 0;
     const lateClearance = clearedByPenaltyAndEmployee[`${key}|lateness`] || 0;
     const noClockInClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-in`] || 0;
     const noClockOutClearance = clearedByPenaltyAndEmployee[`${key}|no-clock-out`] || 0;
     const absentClearance = clearedByPenaltyAndEmployee[`${key}|absent`] || 0;
-    const liveLateDeduction = Math.max(0, lateDeduction - lateClearance);
-    const liveNoClockInPenalty = Math.max(0, noClockInPenalty - noClockInClearance);
-    const liveNoClockOutPenalty = Math.max(0, noClockOutPenalty - noClockOutClearance);
-    const liveAbsentPenalty = Math.max(0, absentPenalty - absentClearance);
-    const hasStoredDeductionSnapshot =
-      payrollRow.lateDeduction !== undefined &&
-      payrollRow.lateDeduction !== null &&
-      String(payrollRow.lateDeduction) !== '';
-    const netLateDeduction = hasStoredDeductionSnapshot ? toNumberValue(payrollRow.lateDeduction) : liveLateDeduction;
-    const netNoClockInPenalty = hasStoredDeductionSnapshot
+    const hasStoredAttendanceSnapshot = [
+      payrollRow.lateDeduction,
+      payrollRow.noClockInPenalty,
+      payrollRow.noClockOutPenalty,
+      payrollRow.absentPenalty,
+      payrollRow.totalAttendancePenalty,
+    ].some((value) => value !== undefined && value !== null && String(value).trim() !== '');
+    const netLateDeduction = hasStoredAttendanceSnapshot
+      ? toNumberValue(payrollRow.lateDeduction)
+      : Math.max(0, liveLateDeduction - lateClearance);
+    const netNoClockInPenalty = hasStoredAttendanceSnapshot
       ? toNumberValue(payrollRow.noClockInPenalty)
-      : liveNoClockInPenalty;
-    const netNoClockOutPenalty = hasStoredDeductionSnapshot
+      : Math.max(0, liveNoClockInPenalty - noClockInClearance);
+    const netNoClockOutPenalty = hasStoredAttendanceSnapshot
       ? toNumberValue(payrollRow.noClockOutPenalty)
-      : liveNoClockOutPenalty;
-    const netAbsentPenalty = hasStoredDeductionSnapshot ? toNumberValue(payrollRow.absentPenalty) : liveAbsentPenalty;
+      : Math.max(0, liveNoClockOutPenalty - noClockOutClearance);
+    const netAbsentPenalty = hasStoredAttendanceSnapshot
+      ? toNumberValue(payrollRow.absentPenalty)
+      : Math.max(0, liveAbsentPenalty - absentClearance);
     const totalAttendancePenalty = netLateDeduction + netNoClockInPenalty + netNoClockOutPenalty + netAbsentPenalty;
     const napsaDeduction = toNumberValue(payrollRow.napsaDeduction);
     const nhimaDeduction = toNumberValue(payrollRow.nhimaDeduction);
@@ -359,7 +362,7 @@ export const enhancePayrollRows = ({
       loanSummary.activeCount > 0 ? `${loanSummary.activeCount} loan(s) • bal ${loanSummary.totalBalance.toFixed(2)}` : '';
     return {
       ...payrollRow,
-      lateMinutes: String(hasStoredDeductionSnapshot ? toNumberValue(payrollRow.lateMinutes) || lateMinutes : lateMinutes),
+      lateMinutes: String(lateMinutes),
       deductionRatePerMinute: minuteRate.toFixed(3),
       lateDeduction: netLateDeduction.toFixed(2),
       noClockInPenalty: netNoClockInPenalty.toFixed(2),

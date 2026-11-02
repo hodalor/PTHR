@@ -44,6 +44,14 @@ export default function AttendanceTimePage({
   setSelectedComplianceKey,
   attendancePenaltyStatusFilter,
   setAttendancePenaltyStatusFilter,
+  attendancePenaltyDateFrom,
+  setAttendancePenaltyDateFrom,
+  attendancePenaltyDateTo,
+  setAttendancePenaltyDateTo,
+  attendancePenaltyEmployeeSearch,
+  setAttendancePenaltyEmployeeSearch,
+  attendancePenaltyTypeFilter,
+  setAttendancePenaltyTypeFilter,
   attendancePenaltyFilteredRows,
   attendancePenaltySort,
   setAttendancePenaltySort,
@@ -301,7 +309,15 @@ export default function AttendanceTimePage({
   ]);
   useEffect(() => {
     effectiveSetPenaltyPage(1);
-  }, [attendancePenaltyStatusFilter, effectivePenaltySort, effectiveSetPenaltyPage]);
+  }, [
+    attendancePenaltyStatusFilter,
+    attendancePenaltyDateFrom,
+    attendancePenaltyDateTo,
+    attendancePenaltyEmployeeSearch,
+    attendancePenaltyTypeFilter,
+    effectivePenaltySort,
+    effectiveSetPenaltyPage,
+  ]);
   useEffect(() => {
     effectiveSetPerformancePage(1);
   }, [
@@ -1257,6 +1273,47 @@ export default function AttendanceTimePage({
             <h4>Penalty Clearance</h4>
             <div className="attendance-audit-filters">
               <label>
+                <span>From</span>
+                <input
+                  type="date"
+                  value={attendancePenaltyDateFrom || ''}
+                  max={attendancePenaltyDateTo || todayIsoDate}
+                  onChange={(event) => setAttendancePenaltyDateFrom(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>To</span>
+                <input
+                  type="date"
+                  value={attendancePenaltyDateTo || ''}
+                  max={todayIsoDate}
+                  onChange={(event) => setAttendancePenaltyDateTo(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Employee</span>
+                <input
+                  type="search"
+                  placeholder="Name or ID"
+                  value={attendancePenaltyEmployeeSearch || ''}
+                  onChange={(event) => setAttendancePenaltyEmployeeSearch(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Penalty</span>
+                <select
+                  className="filter-select"
+                  value={attendancePenaltyTypeFilter || 'All'}
+                  onChange={(event) => setAttendancePenaltyTypeFilter(event.target.value)}
+                >
+                  <option value="All">All</option>
+                  <option value="lateness">Late Clock In</option>
+                  <option value="no-clock-in">No Clock In</option>
+                  <option value="no-clock-out">No Clock Out</option>
+                  <option value="absent">Absent</option>
+                </select>
+              </label>
+              <label>
                 <span>Status</span>
                 <select
                   className="filter-select"
@@ -1397,14 +1454,17 @@ export default function AttendanceTimePage({
                     <option value="full">Full Clearance</option>
                   </select>
                 </label>
-                <label>
-                  <span>Remark</span>
+                <label className="attendance-ops-reason">
+                  <span>Reason *</span>
                   <textarea
                     rows={3}
-                    value={penaltyActionDraft.remark}
+                    required
+                    placeholder="Why this penalty is being cleared"
+                    value={penaltyActionDraft.reason || penaltyActionDraft.remark || ''}
                     onChange={(event) =>
                       setPenaltyActionDraft((prev) => ({
                         ...prev,
+                        reason: event.target.value,
                         remark: event.target.value,
                       }))
                     }

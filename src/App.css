@@ -354,6 +354,23 @@ body {
   max-width: 100%;
 }
 
+.payroll-generate-month {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.payroll-generate-month span {
+  font-size: 13px;
+  color: #4f6382;
+  font-weight: 600;
+}
+
+.payroll-generate-month input {
+  min-width: 150px;
+}
+
 .panel-title-row h2 {
   margin: 0;
   color: #1f3670;
@@ -1234,8 +1251,13 @@ tbody tr:hover {
   font-weight: 600;
 }
 
+.attendance-ops-reason {
+  grid-column: 1 / -1;
+}
+
 .attendance-ops-form input,
 .attendance-ops-form select,
+.attendance-ops-form textarea,
 .attendance-audit-filters input,
 .attendance-audit-filters select {
   width: 100%;
@@ -1252,8 +1274,14 @@ tbody tr:hover {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+.attendance-ops-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
 .attendance-ops-form input:focus,
 .attendance-ops-form select:focus,
+.attendance-ops-form textarea:focus,
 .attendance-audit-filters input:focus,
 .attendance-audit-filters select:focus {
   border-color: #3363da;

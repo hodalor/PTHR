@@ -5,6 +5,11 @@ export default function PayrollPage({
   handleDownloadPayrollTemplate,
   handleOpenPayrollUpload,
   payrollLoansForModal,
+  payrollGenerateMonth,
+  setPayrollGenerateMonth,
+  payrollGenerating,
+  payrollGenerateMessage,
+  handleGeneratePayroll,
 }) {
   return (
     <>
@@ -19,6 +24,17 @@ export default function PayrollPage({
         <button type="button" className="primary-btn" onClick={startCreate}>
           + Add Payroll
         </button>
+        <label className="payroll-generate-month">
+          <span>Month</span>
+          <input
+            type="month"
+            value={payrollGenerateMonth || ''}
+            onChange={(event) => setPayrollGenerateMonth?.(event.target.value)}
+          />
+        </label>
+        <button type="button" className="primary-btn" onClick={handleGeneratePayroll} disabled={payrollGenerating}>
+          {payrollGenerating ? 'Generating...' : 'Generate / Update'}
+        </button>
         <button type="button" className="neutral-btn" onClick={handleDownloadPayrollTemplate}>
           Download Template
         </button>
@@ -26,6 +42,7 @@ export default function PayrollPage({
           Bulk Upload
         </button>
       </div>
+      {payrollGenerateMessage ? <p className="settings-action-status">{payrollGenerateMessage}</p> : null}
       {payrollLoansForModal.length > 0 ? (
         <div className="employee-ops-card">
           <div className="employee-ops-header">

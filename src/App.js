@@ -650,6 +650,13 @@ function App({ initialModuleId }) {
   const [attendancePenaltyPageLoading, setAttendancePenaltyPageLoading] = useState(false);
   const [attendancePenaltyPageRefreshCounter, setAttendancePenaltyPageRefreshCounter] = useState(0);
   const [attendancePenaltyStatusFilter, setAttendancePenaltyStatusFilter] = useState('Outstanding');
+  const [attendancePenaltyDateFrom, setAttendancePenaltyDateFrom] = useState(() => {
+    const today = getTodayIsoDate();
+    return `${String(today).slice(0, 7)}-01`;
+  });
+  const [attendancePenaltyDateTo, setAttendancePenaltyDateTo] = useState(getTodayIsoDate);
+  const [attendancePenaltyEmployeeSearch, setAttendancePenaltyEmployeeSearch] = useState('');
+  const [attendancePenaltyTypeFilter, setAttendancePenaltyTypeFilter] = useState('All');
   const [selectedPenaltyKey, setSelectedPenaltyKey] = useState('');
   const [selectedComplianceKey, setSelectedComplianceKey] = useState('');
   const [attendancePerformancePeriod, setAttendancePerformancePeriod] = useState('monthly');
@@ -716,6 +723,7 @@ function App({ initialModuleId }) {
   const [penaltyActionDraft, setPenaltyActionDraft] = useState({
     mode: 'partial',
     amount: '',
+    reason: '',
     remark: '',
   });
   const [penaltyActionSaving, setPenaltyActionSaving] = useState(false);
@@ -2014,14 +2022,25 @@ function App({ initialModuleId }) {
     moduleRowsState,
   ]);
   useEffect(() => {
+    setAttendancePenaltyPage(1);
+  }, [
+    attendancePenaltyDateFrom,
+    attendancePenaltyDateTo,
+    attendancePenaltyEmployeeSearch,
+    attendancePenaltyTypeFilter,
+    attendancePenaltyStatusFilter,
+  ]);
+  useEffect(() => {
     if (!authToken || !currentUser || activeModuleId !== 'attendance-time' || attendanceViewTab !== 'penalties') {
       return;
     }
     let cancelled = false;
     const requestParams = new URLSearchParams({
       mode: 'penalty-page',
-      date: attendanceAuditDate,
-      search: attendanceAuditSearchText,
+      dateFrom: attendancePenaltyDateFrom,
+      dateTo: attendancePenaltyDateTo,
+      search: attendancePenaltyEmployeeSearch,
+      penaltyType: attendancePenaltyTypeFilter,
       statusFilter: attendancePenaltyStatusFilter,
       page: String(attendancePenaltyPage),
       pageSize: String(attendancePenaltyPageSize),
@@ -2056,8 +2075,10 @@ function App({ initialModuleId }) {
     };
   }, [
     activeModuleId,
-    attendanceAuditDate,
-    attendanceAuditSearchText,
+    attendancePenaltyDateFrom,
+    attendancePenaltyDateTo,
+    attendancePenaltyEmployeeSearch,
+    attendancePenaltyTypeFilter,
     attendancePenaltyPage,
     attendancePenaltyPageRefreshCounter,
     attendancePenaltyPageSize,
@@ -5540,6 +5561,7 @@ function App({ initialModuleId }) {
     toMinutesFromClock,
     getMinutesBetweenClocks,
     isLoanCountableRecord,
+    jsonAuthHeaders,
   });
 
   const handleModuleChange = (moduleId) => {
@@ -6405,9 +6427,13 @@ function App({ initialModuleId }) {
       return;
     }
     const actor = String(appSettings.penaltyActorUsername || '').trim();
-    const remark = String(penaltyActionDraft.remark || '').trim();
-    if (!actor || !remark) {
-      showToast('Actor name and remark are required before saving a penalty clearance.', 'error');
+    const remark = String(penaltyActionDraft.reason || penaltyActionDraft.remark || '').trim();
+    if (!actor) {
+      showToast('Set the penalty actor name in Attendance settings before clearing a penalty.', 'error');
+      return;
+    }
+    if (!remark) {
+      showToast('Reason is required before saving a penalty clearance.', 'error');
       return;
     }
     const isFull = penaltyActionDraft.mode === 'full';
@@ -6430,6 +6456,7 @@ function App({ initialModuleId }) {
       penaltyLabel: selectedPenaltyRow.penaltyLabel,
       clearanceMode: penaltyActionDraft.mode,
       clearedAmount,
+      reason: remark,
       remark,
       actorUsername: actor,
       actedOn: `${getTodayIsoDate()} ${getCurrentClockValue()}`,
@@ -6448,16 +6475,85 @@ function App({ initialModuleId }) {
       }
       const data = await response.json().catch(() => null);
       const savedAdjustment = data?.record || nextAdjustment;
-      setModuleRowsState((prev) => ({
-        ...prev,
-        'attendance-penalty-adjustments': [
+      setModuleRowsState((prev) => {
+        const nextAdjustments = [
           savedAdjustment,
-          ...(prev['attendance-penalty-adjustments'] || []).filter((row) => String(row.id || '') !== String(savedAdjustment.id || '')),
-        ],
-      }));
+          ...(prev['attendance-penalty-adjustments'] || []).filter(
+            (row) => String(row.id || '') !== String(savedAdjustment.id || '')
+          ),
+        ];
+        const payrollRows = Array.isArray(prev['payroll-management']) ? prev['payroll-management'] : [];
+        if (payrollRows.length === 0) {
+          return {
+            ...prev,
+            'attendance-penalty-adjustments': nextAdjustments,
+          };
+        }
+        const penaltyDate = String(selectedPenaltyRow.date || '').slice(0, 10);
+        const employeeId = String(selectedPenaltyRow.employeeId || '').trim().toLowerCase();
+        const employeeName = String(selectedPenaltyRow.employee || '').trim().toLowerCase();
+        const lockedStatuses = new Set(['paid', 'posted', 'final', 'finalized', 'closed']);
+        return {
+          ...prev,
+          'attendance-penalty-adjustments': nextAdjustments,
+          'payroll-management': payrollRows.map((row) => {
+            const status = String(row.status || '').trim().toLowerCase();
+            if (lockedStatuses.has(status)) {
+              return row;
+            }
+            const rowEmployeeId = String(row.employeeId || '').trim().toLowerCase();
+            const rowEmployeeName = String(row.employee || '').trim().toLowerCase();
+            const matchesEmployee =
+              (employeeId && rowEmployeeId === employeeId) ||
+              (employeeName && rowEmployeeName === employeeName);
+            if (!matchesEmployee) {
+              return row;
+            }
+            const start = String(row.periodStart || '').slice(0, 10);
+            const end = String(row.periodEnd || '').slice(0, 10);
+            const month = String(row.payrollMonth || row.month || row.period || '').slice(0, 7);
+            const inPeriod =
+              (/^\d{4}-\d{2}-\d{2}$/.test(start) &&
+                /^\d{4}-\d{2}-\d{2}$/.test(end) &&
+                penaltyDate >= start &&
+                penaltyDate <= end) ||
+              (/^\d{4}-\d{2}$/.test(month) && penaltyDate.startsWith(month));
+            if (!inPeriod) {
+              return row;
+            }
+            const attendanceTotal = Math.max(
+              0,
+              toNumberValue(row.totalAttendancePenalty) ||
+                toNumberValue(row.lateDeduction) +
+                  toNumberValue(row.noClockInPenalty) +
+                  toNumberValue(row.noClockOutPenalty) +
+                  toNumberValue(row.absentPenalty)
+            );
+            const applied = Math.min(clearedAmount, attendanceTotal);
+            if (applied <= 0) {
+              return row;
+            }
+            const nextAttendance = Math.max(0, attendanceTotal - applied);
+            const napsaDeduction = toNumberValue(row.napsaDeduction);
+            const nhimaDeduction = toNumberValue(row.nhimaDeduction);
+            const taxDeduction = toNumberValue(row.taxDeduction);
+            const otherDeduction = toNumberValue(row.otherDeduction);
+            const totalDeductions = napsaDeduction + nhimaDeduction + taxDeduction + otherDeduction + nextAttendance;
+            const totalEarnings = toNumberValue(row.totalEarnings || row.grossPay || row.basicPay);
+            return {
+              ...row,
+              lateDeduction: nextAttendance.toFixed(2),
+              totalAttendancePenalty: nextAttendance.toFixed(2),
+              totalDeductions: totalDeductions.toFixed(2),
+              netPayable: Math.max(0, totalEarnings - totalDeductions).toFixed(2),
+            };
+          }),
+        };
+      });
       setPenaltyActionDraft({
         mode: 'partial',
         amount: '',
+        reason: '',
         remark: '',
       });
       setAttendancePenaltyPageRefreshCounter((prev) => prev + 1);
@@ -10128,6 +10224,14 @@ function App({ initialModuleId }) {
                   setSelectedComplianceKey={setSelectedComplianceKey}
                   attendancePenaltyStatusFilter={attendancePenaltyStatusFilter}
                   setAttendancePenaltyStatusFilter={setAttendancePenaltyStatusFilter}
+                  attendancePenaltyDateFrom={attendancePenaltyDateFrom}
+                  setAttendancePenaltyDateFrom={setAttendancePenaltyDateFrom}
+                  attendancePenaltyDateTo={attendancePenaltyDateTo}
+                  setAttendancePenaltyDateTo={setAttendancePenaltyDateTo}
+                  attendancePenaltyEmployeeSearch={attendancePenaltyEmployeeSearch}
+                  setAttendancePenaltyEmployeeSearch={setAttendancePenaltyEmployeeSearch}
+                  attendancePenaltyTypeFilter={attendancePenaltyTypeFilter}
+                  setAttendancePenaltyTypeFilter={setAttendancePenaltyTypeFilter}
                   attendancePenaltyFilteredRows={attendancePenaltyFilteredRows}
                   attendancePenaltySort={attendancePenaltySort}
                   setAttendancePenaltySort={setAttendancePenaltySort}
@@ -12171,7 +12275,7 @@ function App({ initialModuleId }) {
                           <th>Actor</th>
                           <th>Mode</th>
                           <th>Cleared Amount</th>
-                          <th>Remark</th>
+                          <th>Reason</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -12182,7 +12286,7 @@ function App({ initialModuleId }) {
                               <td>{adjustment.actorUsername}</td>
                               <td>{adjustment.clearanceMode}</td>
                               <td>{toNumberValue(adjustment.clearedAmount).toFixed(2)}</td>
-                              <td>{adjustment.remark || '—'}</td>
+                              <td>{adjustment.reason || adjustment.remark || '—'}</td>
                             </tr>
                           ))
                         ) : (

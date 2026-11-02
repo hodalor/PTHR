@@ -238,7 +238,7 @@ describe('enhancePayrollRows attendance penalties', () => {
     expect(results[0].noClockOutPenalty).toBe('0.00');
   });
 
-  test('keeps saved payroll deduction snapshot instead of overwriting from live attendance', () => {
+  test('keeps stored payroll deductions so later clearance does not wipe generated amounts', () => {
     const results = enhancePayrollRows(
       buildSharedArgs({
         baseRows: [
@@ -255,6 +255,7 @@ describe('enhancePayrollRows attendance penalties', () => {
             noClockInPenalty: '0.00',
             noClockOutPenalty: '0.00',
             absentPenalty: '0.00',
+            totalAttendancePenalty: '10.00',
             totalDeductions: '210.00',
             totalEarnings: '3000.00',
           },
@@ -273,5 +274,36 @@ describe('enhancePayrollRows attendance penalties', () => {
     expect(results[0].totalAttendancePenalty).toBe('10.00');
     expect(results[0].totalDeductions).toBe('210.00');
     expect(results[0].netPayable).toBe('2790.00');
+  });
+
+  test('applies live penalty clearance when payroll has no stored attendance snapshot', () => {
+    const results = enhancePayrollRows(
+      buildSharedArgs({
+        moduleRowsState: {
+          ...buildSharedArgs().moduleRowsState,
+          'attendance-time': [
+            {
+              id: 'ATT-005',
+              employeeId: 'EMP-001',
+              employee: 'Amina Yusuf',
+              date: '2026-09-12',
+              shift: 'Main Shift',
+              checkIn: '09:20',
+              checkOut: '13:15',
+            },
+          ],
+          'attendance-penalty-adjustments': [
+            {
+              employeeId: 'EMP-001',
+              penaltyType: 'lateness',
+              clearedAmount: 4,
+            },
+          ],
+        },
+      })
+    );
+
+    expect(results[0].lateDeduction).toBe('6.00');
+    expect(results[0].totalAttendancePenalty).toBe('6.00');
   });
 });
